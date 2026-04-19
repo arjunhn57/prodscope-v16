@@ -80,7 +80,15 @@ export function MetricsStrip() {
   const sectionRef = useRef<HTMLElement>(null);
   const [triggered, setTriggered] = useState(false);
   const [shaderVisible, setShaderVisible] = useState(false);
+  const [allowShader, setAllowShader] = useState(false);
   const reduceMotion = useReducedMotion() ?? false;
+
+  useEffect(() => {
+    const isFinePointer = window.matchMedia(
+      "(hover: hover) and (pointer: fine)"
+    ).matches;
+    setAllowShader(isFinePointer);
+  }, []);
 
   useEffect(() => {
     const el = sectionRef.current;
@@ -121,7 +129,7 @@ export function MetricsStrip() {
           zIndex: 1,
         }}
       >
-        {shaderVisible && <ShaderBackground lineColor={[0.58, 0.56, 0.65]} />}
+        {allowShader && shaderVisible && <ShaderBackground lineColor={[0.58, 0.56, 0.65]} />}
       </div>
 
       {/* Corner glow orbs */}
@@ -267,7 +275,6 @@ export function MetricsStrip() {
                   boxShadow:
                     "0 18px 44px -10px rgba(51, 65, 85, 0.10), 0 2px 6px rgba(15, 23, 42, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.95), inset 0 0 0 1px rgba(148, 163, 184, 0.06)",
                   border: "1px solid rgba(71, 85, 105, 0.10)",
-                  backdropFilter: "blur(10px)",
                 }}
               >
                 <motion.div
