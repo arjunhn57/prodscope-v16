@@ -10,6 +10,7 @@ import {
 } from "../tokens";
 import { clusterScreensByClassification } from "../useReportData";
 import { ScreenLightbox, type LightboxScreen } from "./ScreenLightbox";
+import { Picture } from "@/components/ui/Picture";
 
 interface ScreenAtlasProps {
   report: CrawlReport;
@@ -42,10 +43,11 @@ function Thumb({
       aria-label={`Open screen ${screen.step}`}
     >
       {screen.path ? (
-        <img
+        <Picture
           src={screen.path}
           alt={`Screen ${screen.step} — ${screen.activity}`}
-          loading="lazy"
+          width={180}
+          height={390}
           className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
         />
       ) : (

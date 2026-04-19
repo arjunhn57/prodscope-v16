@@ -1,4 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion";
+import { Picture } from "@/components/ui/Picture";
 
 interface PhoneMockupProps {
   activeScreen: number;
@@ -30,14 +31,15 @@ export function PhoneMockup({ activeScreen, screens, size = "md" }: PhoneMockupP
         {/* Screen area */}
         <div className="relative rounded-[20px] overflow-hidden bg-white aspect-[9/19.5]">
           {/* Seed frame — always-visible fallback so the frame is never empty */}
-          <img
+          <Picture
             src={screens[0].image}
             alt=""
             aria-hidden="true"
+            priority
+            width={280}
+            height={607}
             className="absolute inset-0 w-full h-full object-cover"
             draggable={false}
-            loading="eager"
-            fetchPriority="high"
           />
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
@@ -48,12 +50,14 @@ export function PhoneMockup({ activeScreen, screens, size = "md" }: PhoneMockupP
               transition={{ duration: 0.4, ease: EASE }}
               className="absolute inset-0"
             >
-              <img
+              <Picture
                 src={current.image}
                 alt={current.name}
+                priority
+                width={280}
+                height={607}
                 className="w-full h-full object-cover"
                 draggable={false}
-                loading="eager"
               />
             </motion.div>
           </AnimatePresence>

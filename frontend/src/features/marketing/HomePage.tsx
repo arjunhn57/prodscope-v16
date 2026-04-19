@@ -19,6 +19,8 @@ const SHOWCASE_BG: CSSProperties = {
     "radial-gradient(ellipse 50% 25% at 20% 85%, rgba(124, 58, 237, 0.06), transparent 55%)",
     "linear-gradient(180deg, #F8F7FF 0%, #FAFAFA 25%, #FFFFFF 50%, #FAFAFA 75%, #F8F7FF 100%)",
   ].join(", "),
+  contentVisibility: "auto",
+  containIntrinsicSize: "1px 2400px",
 };
 
 const HOWITWORKS_BG: CSSProperties = {
@@ -29,6 +31,13 @@ const HOWITWORKS_BG: CSSProperties = {
     "radial-gradient(ellipse 50% 15% at 92% 97%, rgba(120, 190, 255, 0.45), transparent 62%)",
     "linear-gradient(180deg, #FFFFFF 0%, #FAFAFA 20%, #f7eaff 70%, #fde2ea 100%)",
   ].join(", "),
+  contentVisibility: "auto",
+  containIntrinsicSize: "1px 1200px",
+};
+
+const BELOW_FOLD: CSSProperties = {
+  contentVisibility: "auto",
+  containIntrinsicSize: "1px 800px",
 };
 
 export function HomePage() {
@@ -66,9 +75,15 @@ export function HomePage() {
         <FeatureTabs />
         <ReportPreview />
       </div>
-      <Pricing />
-      <FinalCTA />
-      <Footer />
+      <div style={BELOW_FOLD}>
+        <Pricing />
+      </div>
+      <div style={BELOW_FOLD}>
+        <FinalCTA />
+      </div>
+      <div style={BELOW_FOLD}>
+        <Footer />
+      </div>
     </div>
   );
 }

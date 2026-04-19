@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { PhoneMockup } from "./PhoneMockup";
 import type { ScreenData } from "./PhoneMockup";
+import { useInViewport, usePageActive } from "@/lib/useVisibility";
 
 const EASE_OUT_QUINT: [number, number, number, number] = [0.22, 1, 0.36, 1];
 
@@ -197,8 +198,11 @@ function DesktopScrollDemo() {
   const [screenIdx, setScreenIdx] = useState(0);
   const [scanning, setScanning] = useState(false);
   const [scanCount, setScanCount] = useState(0);
+  const [rootRef, inView] = useInViewport<HTMLDivElement>({ rootMargin: "100px" });
+  const pageActive = usePageActive();
 
   useEffect(() => {
+    if (!inView || !pageActive) return;
     const id = window.setInterval(() => {
       setScanning(true);
       setScanCount((c) => c + 1);
@@ -208,13 +212,13 @@ function DesktopScrollDemo() {
       }, 900);
     }, 2700);
     return () => window.clearInterval(id);
-  }, []);
+  }, [inView, pageActive]);
 
   const currentScreenName = SCREENS[screenIdx]?.name ?? "";
   const progress = (screenIdx + 1) / SCREENS.length;
 
   return (
-    <div className="mx-auto max-w-[1120px] w-full px-6 py-16">
+    <div ref={rootRef} className="mx-auto max-w-[1120px] w-full px-6 py-16">
       <div className="flex items-start gap-12 lg:gap-20">
         {/* Left: Live activity feed */}
         <div
@@ -364,8 +368,11 @@ function MobileScrollDemo() {
   const [screenIdx, setScreenIdx] = useState(0);
   const [scanning, setScanning] = useState(false);
   const [scanCount, setScanCount] = useState(0);
+  const [rootRef, inView] = useInViewport<HTMLDivElement>({ rootMargin: "100px" });
+  const pageActive = usePageActive();
 
   useEffect(() => {
+    if (!inView || !pageActive) return;
     const id = window.setInterval(() => {
       setScanning(true);
       setScanCount((c) => c + 1);
@@ -375,10 +382,10 @@ function MobileScrollDemo() {
       }, 900);
     }, 2750);
     return () => window.clearInterval(id);
-  }, []);
+  }, [inView, pageActive]);
 
   return (
-    <div className="flex justify-center">
+    <div ref={rootRef} className="flex justify-center">
       <div className="relative overflow-hidden rounded-[28px]">
         <PhoneMockup activeScreen={screenIdx} screens={SCREENS} />
         <ScanOverlay scanning={scanning} direction={scanCount % 2 === 0 ? "down" : "up"} />

@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { X, ChevronLeft, ChevronRight } from "lucide-react";
 import { EDITORIAL_EASE } from "../tokens";
+import { Picture } from "@/components/ui/Picture";
 
 export interface LightboxScreen {
   path: string | null;
@@ -130,9 +131,12 @@ export function ScreenLightbox({
             <div className="w-full rounded-2xl overflow-hidden bg-white shadow-xl">
               <div className="aspect-[9/19] bg-[#F1F5F9] flex items-center justify-center">
                 {current.path ? (
-                  <img
+                  <Picture
                     src={current.path}
                     alt={current.label}
+                    priority
+                    width={400}
+                    height={866}
                     className="w-full h-full object-cover"
                   />
                 ) : (

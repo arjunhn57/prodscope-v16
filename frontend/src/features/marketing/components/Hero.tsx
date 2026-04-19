@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   motion,
@@ -9,8 +9,13 @@ import {
   type MotionValue,
 } from "framer-motion";
 import { ArrowRight, Zap } from "lucide-react";
-import { DotLottieReact } from "@lottiefiles/dotlottie-react";
 import { Button } from "@/components/ui/Button";
+import { Picture } from "@/components/ui/Picture";
+import { usePageActive } from "@/lib/useVisibility";
+
+const DotLottieReact = lazy(() =>
+  import("@lottiefiles/dotlottie-react").then((m) => ({ default: m.DotLottieReact }))
+);
 
 /* ── Grid Pattern (from infinite-grid) ─────────────────────────────────────── */
 
@@ -101,7 +106,7 @@ function IconRow({
         className="h-16 w-16 flex-shrink-0 rounded-full bg-white/70 flex items-center justify-center transition-transform duration-200 hover:scale-[1.12] hover:bg-white"
         style={{ border: "1px solid rgba(108, 71, 255, 0.08)" }}
       >
-        <img src={src} alt="" className="h-9 w-9 object-contain" />
+        <Picture src={src} alt="" width={36} height={36} className="h-9 w-9 object-contain" />
       </div>
     ));
 
@@ -182,12 +187,25 @@ export function Hero() {
   const navigate = useNavigate();
   const prefersReducedMotion = useReducedMotion();
   const noMotion = prefersReducedMotion ?? false;
+  const pageActive = usePageActive();
 
   const containerRef = useRef<HTMLDivElement>(null);
   const mouseX = useMotionValue(0);
   const mouseY = useMotionValue(0);
   const gridOffsetX = useMotionValue(0);
   const gridOffsetY = useMotionValue(0);
+
+  const [heroVisible, setHeroVisible] = useState(true);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(
+      ([entry]) => setHeroVisible(entry.isIntersecting),
+      { rootMargin: "50px" }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
 
   const cyclingWords = useMemo(
     () => [
@@ -208,7 +226,7 @@ export function Hero() {
   }
 
   useAnimationFrame(() => {
-    if (noMotion) return;
+    if (noMotion || !heroVisible || !pageActive) return;
     gridOffsetX.set((gridOffsetX.get() + 0.5) % 40);
     gridOffsetY.set((gridOffsetY.get() + 0.5) % 40);
   });
@@ -312,12 +330,14 @@ export function Hero() {
                 className="-ml-0.5 inline-flex items-center justify-center shrink-0"
                 style={{ width: 22, height: 22 }}
               >
-                <DotLottieReact
-                  src="/android-logo.lottie"
-                  autoplay
-                  loop
-                  style={{ width: "100%", height: "100%" }}
-                />
+                <Suspense fallback={<span style={{ width: "100%", height: "100%" }} />}>
+                  <DotLottieReact
+                    src="/android-logo.lottie"
+                    autoplay
+                    loop
+                    style={{ width: "100%", height: "100%" }}
+                  />
+                </Suspense>
               </span>
               Analyze Your App &mdash; Free
               <ArrowRight className="w-4 h-4" />

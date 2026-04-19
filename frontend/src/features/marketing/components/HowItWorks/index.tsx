@@ -6,6 +6,7 @@ import {
   FileCheck,
   type LucideIcon,
 } from "lucide-react";
+import { useInViewport, usePageActive } from "@/lib/useVisibility";
 
 const ACCENT = "#6C47FF";
 const TEXT_PRIMARY = "#0F172A";
@@ -141,8 +142,11 @@ export function HowItWorks() {
 
   const dashOffset1 = useMotionValue(0);
   const dashOffset2 = useMotionValue(0);
+  const [sectionRef, inView] = useInViewport<HTMLElement>({ rootMargin: "200px" });
+  const pageActive = usePageActive();
 
   useEffect(() => {
+    if (!inView || !pageActive) return;
     const controls1 = animate(dashOffset1, -12, {
       duration: 1.5,
       repeat: Infinity,
@@ -157,9 +161,10 @@ export function HowItWorks() {
       controls1.stop();
       controls2.stop();
     };
-  }, [dashOffset1, dashOffset2]);
+  }, [dashOffset1, dashOffset2, inView, pageActive]);
 
   useEffect(() => {
+    if (!inView || !pageActive) return;
     const mql = window.matchMedia("(min-width: 768px)");
     let rafId = 0;
     const startedAt = performance.now();
@@ -218,10 +223,11 @@ export function HowItWorks() {
       mql.removeEventListener("change", onChange);
       stop();
     };
-  }, []);
+  }, [inView, pageActive]);
 
   return (
     <section
+      ref={sectionRef}
       id="how-it-works"
       role="region"
       aria-label="How it works"

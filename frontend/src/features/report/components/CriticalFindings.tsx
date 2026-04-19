@@ -18,6 +18,7 @@ import {
 import { CountTease } from "../../../components/shared/CountTease";
 import { useAuthStore, canAccessFeature } from "../../../stores/auth";
 import { ScreenLightbox, type LightboxScreen } from "./ScreenLightbox";
+import { Picture } from "@/components/ui/Picture";
 
 interface CriticalFindingsProps {
   report: CrawlReport;
@@ -175,10 +176,11 @@ export function CriticalFindings({ report }: CriticalFindingsProps) {
                     aria-label={`Open screenshot for ${headlineFor(finding)}`}
                   >
                     {trail.screenshotPath ? (
-                      <img
+                      <Picture
                         src={trail.screenshotPath}
                         alt={`Step ${finding.step}: ${headlineFor(finding)}`}
-                        loading="lazy"
+                        width={220}
+                        height={476}
                         className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
                       />
                     ) : (

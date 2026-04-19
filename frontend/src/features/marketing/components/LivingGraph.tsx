@@ -8,6 +8,7 @@ import {
   type MotionValue,
 } from "framer-motion";
 import { AlertTriangle, CheckCircle2, type LucideIcon } from "lucide-react";
+import { Picture } from "@/components/ui/Picture";
 
 /* ═════════════════════════════════════════════════════════════════════════
    Living Graph — an animated visualization of an app being analyzed.
@@ -264,9 +265,11 @@ function NodeCard({ node, index, elapsed, noMotion }: NodeCardProps) {
 
   return (
     <motion.div style={{ ...style, opacity, scale }}>
-      <img
+      <Picture
         src={node.image}
         alt=""
+        width={120}
+        height={260}
         draggable={false}
         className="h-full w-full object-cover"
         style={{ display: "block" }}

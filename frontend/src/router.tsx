@@ -2,8 +2,6 @@ import { lazy, Suspense } from "react";
 import { createBrowserRouter, Navigate, useParams } from "react-router-dom";
 import { AppShell } from "./components/layout/AppShell";
 import { AuthGuard } from "./features/auth/AuthGuard";
-import { LoginPage } from "./features/auth/LoginPage";
-import { DashboardPage } from "./features/dashboard/DashboardPage";
 
 const LiveCrawlPage = lazy(() =>
   import("./features/crawl/LiveCrawlPage").then((m) => ({ default: m.LiveCrawlPage }))
@@ -32,7 +30,10 @@ export const router = createBrowserRouter([
   },
   {
     path: "/login",
-    element: <LoginPage />,
+    lazy: () =>
+      import("./features/auth/LoginPage").then((m) => ({
+        Component: m.LoginPage,
+      })),
   },
   {
     path: "/mockup",
@@ -95,7 +96,13 @@ export const router = createBrowserRouter([
       </AuthGuard>
     ),
     children: [
-      { path: "dashboard", element: <DashboardPage /> },
+      {
+        path: "dashboard",
+        lazy: () =>
+          import("./features/dashboard/DashboardPage").then((m) => ({
+            Component: m.DashboardPage,
+          })),
+      },
       {
         path: "upload",
         lazy: () =>
