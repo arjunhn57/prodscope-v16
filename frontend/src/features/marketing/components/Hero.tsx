@@ -103,24 +103,24 @@ function IconRow({
     items.map((src, i) => (
       <div
         key={i}
-        className="h-16 w-16 flex-shrink-0 rounded-full bg-white/70 flex items-center justify-center transition-transform duration-200 hover:scale-[1.12] hover:bg-white"
+        className="h-11 w-11 sm:h-14 sm:w-14 lg:h-16 lg:w-16 flex-shrink-0 rounded-full bg-white/70 flex items-center justify-center transition-transform duration-200 hover:scale-[1.12] hover:bg-white"
         style={{ border: "1px solid rgba(108, 71, 255, 0.08)" }}
       >
-        <Picture src={src} alt="" width={36} height={36} className="h-9 w-9 object-contain" />
+        <Picture src={src} alt="" width={36} height={36} className="h-6 w-6 sm:h-8 sm:w-8 lg:h-9 lg:w-9 object-contain" />
       </div>
     ));
 
   return (
     <div
       ref={rowRef}
-      className="flex gap-10"
+      className="flex gap-5 sm:gap-8 lg:gap-10"
       onMouseEnter={() => setPlaybackRate(0.3)}
       onMouseLeave={() => setPlaybackRate(1)}
     >
-      <div className={`flex shrink-0 gap-10 ${animClass}`}>
+      <div className={`flex shrink-0 gap-5 sm:gap-8 lg:gap-10 ${animClass}`}>
         {renderItems()}
       </div>
-      <div className={`flex shrink-0 gap-10 ${animClass}`} aria-hidden="true">
+      <div className={`flex shrink-0 gap-5 sm:gap-8 lg:gap-10 ${animClass}`} aria-hidden="true">
         {renderItems()}
       </div>
     </div>
@@ -386,7 +386,7 @@ export function Hero() {
           <span className="h-px w-12 bg-gradient-to-l from-transparent to-[rgba(15,23,42,0.18)]" />
         </div>
 
-        <div className="space-y-6">
+        <div className="space-y-4 sm:space-y-5 lg:space-y-6 pb-10 sm:pb-14 lg:pb-16">
           <IconRow icons={ICONS_ROW_1} />
           <IconRow icons={ICONS_ROW_2} reverse />
         </div>
