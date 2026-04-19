@@ -574,7 +574,7 @@ export function ScrollDemo() {
         </div>
 
         {/* Mobile layout (stacked cards) */}
-        <div className="md:hidden px-6 pb-16">
+        <div className="md:hidden px-6 pb-4">
           <MobileScrollDemo />
         </div>
       </div>

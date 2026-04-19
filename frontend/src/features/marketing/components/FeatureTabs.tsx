@@ -540,7 +540,7 @@ export function FeatureTabs() {
   return (
     <section
       id="features"
-      className="py-24 lg:py-32"
+      className="pt-12 pb-24 md:py-24 lg:py-32"
     >
       <div className="mx-auto max-w-[1120px] px-6">
         {/* Heading */}
