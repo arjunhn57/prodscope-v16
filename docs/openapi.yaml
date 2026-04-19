@@ -1,0 +1,433 @@
+openapi: 3.1.0
+info:
+  title: ProdScope API
+  description: |
+    ProdScope automated Android app crawler API.
+    Submit APKs for automated UI crawling, analysis, and report generation.
+  version: 1.0.0
+  contact:
+    name: ProdScope Team
+
+servers:
+  - url: /api/v1
+    description: API v1
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+
+  schemas:
+    SuccessEnvelope:
+      type: object
+      properties:
+        success:
+          type: boolean
+          const: true
+        data:
+          type: object
+      required: [success, data]
+
+    ErrorEnvelope:
+      type: object
+      properties:
+        success:
+          type: boolean
+          const: false
+        error:
+          type: string
+        code:
+          type: string
+        details:
+          type: array
+          items:
+            type: string
+      required: [success, error]
+
+    JobStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [queued, processing, complete, degraded, failed, interrupted]
+        step:
+          type: integer
+        steps:
+          type: array
+          items:
+            type: string
+        screenshots:
+          type: array
+          items:
+            type: string
+        report:
+          type: object
+          nullable: true
+        stopReason:
+          type: string
+          nullable: true
+        crawlQuality:
+          type: string
+          enum: [full, degraded, minimal, uncrawlable]
+          nullable: true
+        error:
+          type: string
+          nullable: true
+        emailStatus:
+          type: string
+          nullable: true
+        queuePosition:
+          type: integer
+
+    QueueStatus:
+      type: object
+      properties:
+        processing:
+          type: boolean
+        currentJobId:
+          type: string
+          nullable: true
+        queueDepth:
+          type: integer
+        backend:
+          type: string
+          enum: [redis, in-memory]
+        waiting:
+          type: integer
+        active:
+          type: integer
+        completed:
+          type: integer
+        failed:
+          type: integer
+        emulators:
+          type: array
+          items:
+            type: object
+            properties:
+              serial:
+                type: string
+              status:
+                type: string
+                enum: [idle, busy, unhealthy]
+              currentJobId:
+                type: string
+                nullable: true
+
+    HealthCheck:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        uptime:
+          type: integer
+        queue:
+          type: object
+          properties:
+            processing:
+              type: boolean
+            depth:
+              type: integer
+            currentJobId:
+              type: string
+              nullable: true
+        db:
+          type: string
+          enum: [ok, error]
+        memory:
+          type: object
+          properties:
+            rss:
+              type: integer
+              description: RSS in MB
+            heap:
+              type: integer
+              description: Heap used in MB
+
+security:
+  - bearerAuth: []
+  - apiKey: []
+
+paths:
+  /auth/login:
+    post:
+      summary: Exchange API key for JWT token
+      tags: [Authentication]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                apiKey:
+                  type: string
+              required: [apiKey]
+      responses:
+        '200':
+          description: JWT token issued
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          token:
+                            type: string
+                          expiresIn:
+                            type: string
+        '401':
+          description: Invalid API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '429':
+          description: Rate limited (10 attempts per 15 min)
+        '501':
+          description: Authentication not configured
+
+  /start-job:
+    post:
+      summary: Upload APK and start crawl job
+      tags: [Jobs]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                apk:
+                  type: string
+                  format: binary
+                  description: Android APK file (max 200MB)
+                email:
+                  type: string
+                  format: email
+                  description: Email for report delivery
+                credentials:
+                  type: string
+                  description: JSON string with app credentials (username/password)
+                goldenPath:
+                  type: string
+                  description: Expected navigation path
+                painPoints:
+                  type: string
+                  description: Known issues to investigate
+                goals:
+                  type: string
+                  description: Crawl goals and focus areas
+              required: [apk]
+      responses:
+        '200':
+          description: Job queued
+          headers:
+            X-Trace-Id:
+              schema:
+                type: string
+              description: Correlation ID for tracing
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          jobId:
+                            type: string
+                            format: uuid
+                          status:
+                            type: string
+                            const: queued
+                          queuePosition:
+                            type: integer
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: Authentication required
+        '429':
+          description: Rate limited (10 per minute)
+
+  /job-status/{jobId}:
+    get:
+      summary: Get job progress and results
+      tags: [Jobs]
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Job status
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/JobStatus'
+        '404':
+          description: Job not found
+        '429':
+          description: Rate limited (120 per minute)
+
+  /job-live-stream/{jobId}:
+    get:
+      summary: Live MJPEG stream of emulator screen
+      tags: [Live]
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: single
+          in: query
+          schema:
+            type: string
+            enum: ['1']
+          description: Return single PNG frame instead of stream
+      responses:
+        '200':
+          description: Multipart MJPEG stream or single PNG
+          content:
+            multipart/x-mixed-replace:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+        '204':
+          description: Job already complete
+        '404':
+          description: Job not found
+        '503':
+          description: Job not started yet
+
+  /job-sse/{jobId}:
+    get:
+      summary: Server-Sent Events stream of job progress
+      tags: [Live]
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '404':
+          description: Job not found
+
+  /job-screenshot/{jobId}/{filename}:
+    get:
+      summary: Serve a crawl screenshot
+      tags: [Jobs]
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: filename
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: PNG screenshot
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Screenshot not found
+
+  /queue-status:
+    get:
+      summary: Get queue health and emulator pool status
+      tags: [Operations]
+      responses:
+        '200':
+          description: Queue status
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/QueueStatus'
+        '429':
+          description: Rate limited
+
+  # Non-versioned endpoints
+  /health:
+    servers:
+      - url: /
+    get:
+      summary: Health check
+      tags: [Operations]
+      security: []
+      responses:
+        '200':
+          description: Server health
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/HealthCheck'
+
+  /metrics:
+    servers:
+      - url: /
+    get:
+      summary: Prometheus metrics
+      tags: [Operations]
+      security: []
+      responses:
+        '200':
+          description: Prometheus text format
+          content:
+            text/plain:
+              schema:
+                type: string

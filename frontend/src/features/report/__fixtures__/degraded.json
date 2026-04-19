@@ -1,0 +1,101 @@
+{
+  "jobId": "demo-degraded-def67890",
+  "packageName": "com.example.travel",
+  "appName": "Wayfair Journeys",
+  "completedAt": "2026-04-18T13:10:00.000Z",
+  "status": "degraded",
+  "stopReason": "out_of_app_limit",
+  "crawlQuality": "degraded",
+  "engineVersion": "ProdScope v2.4.1",
+  "model": "claude-haiku-4-5",
+
+  "screens": [
+    { "index": 0, "step": 1, "path": "/demo/deg-01.png", "activity": "SplashActivity", "timestamp": 1710001000000, "screenType": "onboarding", "feature": "welcome", "fuzzyFp": "fp-b1" },
+    { "index": 1, "step": 2, "path": "/demo/deg-02.png", "activity": "LoginActivity", "timestamp": 1710001014000, "screenType": "auth", "feature": "signin", "fuzzyFp": "fp-b2" },
+    { "index": 2, "step": 3, "path": "/demo/deg-03.png", "activity": "LoginActivity", "timestamp": 1710001028000, "screenType": "auth", "feature": "signin", "fuzzyFp": "fp-b2" },
+    { "index": 3, "step": 4, "path": "/demo/deg-04.png", "activity": "HomeActivity", "timestamp": 1710001042000, "screenType": "feed", "feature": "home", "fuzzyFp": "fp-b3" },
+    { "index": 4, "step": 5, "path": "/demo/deg-05.png", "activity": "SearchActivity", "timestamp": 1710001056000, "screenType": "search", "feature": "search", "fuzzyFp": "fp-b4" },
+    { "index": 5, "step": 6, "path": "/demo/deg-06.png", "activity": "ResultsActivity", "timestamp": 1710001070000, "screenType": "list", "feature": "results", "fuzzyFp": "fp-b5" },
+    { "index": 6, "step": 7, "path": "/demo/deg-07.png", "activity": "DetailActivity", "timestamp": 1710001084000, "screenType": "detail", "feature": "listing", "fuzzyFp": "fp-b6" },
+    { "index": 7, "step": 8, "path": "/demo/deg-08.png", "activity": "com.chrome.browser", "timestamp": 1710001098000, "screenType": "other", "feature": "external", "fuzzyFp": "fp-b7" }
+  ],
+
+  "actionsTaken": [
+    { "step": 1, "type": "tap", "description": "Get started" },
+    { "step": 2, "type": "input", "description": "email" },
+    { "step": 3, "type": "recovery", "description": "back", "reason": "invalid_state" },
+    { "step": 4, "type": "tap", "description": "open search" },
+    { "step": 5, "type": "input", "description": "Paris" },
+    { "step": 6, "type": "tap", "description": "first result" },
+    { "step": 7, "type": "tap", "description": "Book Now" },
+    { "step": 8, "type": "out_of_app", "description": "Chrome opened" }
+  ],
+
+  "graph": {
+    "nodes": [],
+    "transitions": [],
+    "totalSteps": 8,
+    "uniqueStates": 7,
+    "parentMap": {}
+  },
+
+  "stats": {
+    "totalSteps": 8,
+    "uniqueStates": 7,
+    "totalTransitions": 9,
+    "recoveryStats": { "back": { "attempts": 2, "successes": 1 } },
+    "tokenUsage": { "input_tokens": 22400, "output_tokens": 5100 }
+  },
+
+  "oracleFindings": [
+    {
+      "id": "f-a11y-b1",
+      "type": "missing_content_description",
+      "severity": "medium",
+      "detail": "8/12 clickable elements on SearchActivity lack content-descriptions.",
+      "step": 5,
+      "element": "SearchActivity"
+    },
+    {
+      "id": "f-tap-b1",
+      "type": "small_tap_target",
+      "severity": "low",
+      "detail": "5 tap targets on ResultsActivity smaller than 44dp.",
+      "step": 6,
+      "element": "ResultsActivity"
+    }
+  ],
+  "oracleFindingsByStep": {},
+
+  "coverage": {
+    "home": 55,
+    "search": 48,
+    "listing": 30,
+    "booking": 15
+  },
+
+  "v2Coverage": {
+    "stepsUsed": 8,
+    "uniqueScreens": 7,
+    "uniquePerStep": 0.87,
+    "uniquePerMinute": 3.2,
+    "stepsWastedOnRecovery": 1,
+    "visionFirstMode": true,
+    "tokenUsage": { "inputTokens": 22400, "outputTokens": 5100, "cacheCreationInputTokens": 2800, "cacheReadInputTokens": 8100 },
+    "costUSD": 0.14,
+    "cacheHitRate": 0.74
+  },
+
+  "flows": [
+    { "name": "Sign-in", "status": "completed", "steps": 2 },
+    { "name": "Search & book", "status": "failed", "steps": 4 }
+  ],
+
+  "metrics": {
+    "stepTimings": { "avgMs": 3420, "medianMs": 2900, "p95Ms": 9800 },
+    "readinessWaits": { "total": 8, "avgMs": 910 },
+    "actionOutcomes": { "advanced": 5, "no_change": 1, "recovery": 2 },
+    "recoveryEvents": 2,
+    "ineffectiveActionRate": 0.25
+  }
+}

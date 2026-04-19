@@ -1,0 +1,52 @@
+# ProdScope Docker Compose
+# Emulator runs on the host — backend connects via ADB over TCP.
+#
+# Usage:
+#   docker compose up -d
+#   docker compose logs -f backend
+
+services:
+  backend:
+    build: .
+    container_name: prodscope-backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - NODE_ENV=production
+      - PORT=8080
+      # ADB connects to host emulator via TCP
+      - ADB_SERVER_HOST=host-gateway
+    ports:
+      - "8080:8080"
+    volumes:
+      - app-data:/app/data
+      - app-uploads:/app/uploads
+      - app-screenshots:/app/screenshots
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  nginx:
+    image: nginx:alpine
+    container_name: prodscope-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - nginx-certs:/etc/letsencrypt:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  app-data:
+  app-uploads:
+  app-screenshots:
+  nginx-certs:

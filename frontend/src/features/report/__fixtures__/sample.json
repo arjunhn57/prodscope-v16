@@ -1,0 +1,164 @@
+{
+  "jobId": "sample",
+  "packageName": "co.parity.app",
+  "appName": "Parity",
+  "completedAt": "2026-04-19T19:14:00.000Z",
+  "status": "complete",
+  "stopReason": "budget_exhausted",
+  "crawlQuality": "full",
+  "engineVersion": "ProdScope v2.4.1",
+  "model": "claude-sonnet-4-6",
+
+  "screens": [
+    { "index": 0, "step": 1, "path": "/mockup-screens/1.png", "activity": "OnboardingActivity", "timestamp": 1713553920000, "screenType": "onboarding", "feature": "welcome", "fuzzyFp": "fp-p1" },
+    { "index": 1, "step": 2, "path": "/mockup-screens/2.png", "activity": "PersonalizeActivity", "timestamp": 1713553932000, "screenType": "onboarding", "feature": "personalize", "fuzzyFp": "fp-p2" },
+    { "index": 2, "step": 3, "path": "/mockup-screens/3.png", "activity": "SubscriptionActivity", "timestamp": 1713553944000, "screenType": "paywall", "feature": "subscription", "fuzzyFp": "fp-p3" },
+    { "index": 3, "step": 4, "path": "/mockup-screens/4.png", "activity": "LoginActivity", "timestamp": 1713553956000, "screenType": "auth", "feature": "signin", "fuzzyFp": "fp-p4" },
+    { "index": 4, "step": 5, "path": "/mockup-screens/5.png", "activity": "SignupActivity", "timestamp": 1713553968000, "screenType": "auth", "feature": "signup", "fuzzyFp": "fp-p5" },
+    { "index": 5, "step": 6, "path": "/mockup-screens/6.png", "activity": "ChatsActivity", "timestamp": 1713553980000, "screenType": "feed", "feature": "chats", "fuzzyFp": "fp-p6" },
+    { "index": 6, "step": 7, "path": "/mockup-screens/7.png", "activity": "ConversationActivity", "timestamp": 1713553992000, "screenType": "detail", "feature": "conversation", "fuzzyFp": "fp-p7" },
+    { "index": 7, "step": 8, "path": "/mockup-screens/8.png", "activity": "MapActivity", "timestamp": 1713554004000, "screenType": "list", "feature": "discover", "fuzzyFp": "fp-p8" },
+    { "index": 8, "step": 9, "path": "/mockup-screens/9.png", "activity": "CheckoutActivity", "timestamp": 1713554016000, "screenType": "checkout", "feature": "payment", "fuzzyFp": "fp-p9" },
+    { "index": 9, "step": 10, "path": "/mockup-screens/10.png", "activity": "SettingsActivity", "timestamp": 1713554028000, "screenType": "settings", "feature": "settings", "fuzzyFp": "fp-p10" },
+    { "index": 10, "step": 11, "path": "/mockup-screens/2.png", "activity": "PersonalizeActivity", "timestamp": 1713554040000, "screenType": "onboarding", "feature": "personalize", "fuzzyFp": "fp-p2" },
+    { "index": 11, "step": 12, "path": "/mockup-screens/6.png", "activity": "ChatsActivity", "timestamp": 1713554052000, "screenType": "feed", "feature": "chats", "fuzzyFp": "fp-p6" },
+    { "index": 12, "step": 13, "path": "/mockup-screens/7.png", "activity": "ConversationActivity", "timestamp": 1713554064000, "screenType": "detail", "feature": "conversation", "fuzzyFp": "fp-p11" },
+    { "index": 13, "step": 14, "path": "/mockup-screens/8.png", "activity": "MapActivity", "timestamp": 1713554076000, "screenType": "list", "feature": "discover", "fuzzyFp": "fp-p12" },
+    { "index": 14, "step": 15, "path": "/mockup-screens/9.png", "activity": "CheckoutActivity", "timestamp": 1713554088000, "screenType": "checkout", "feature": "payment", "fuzzyFp": "fp-p13" }
+  ],
+
+  "actionsTaken": [
+    { "step": 1, "type": "tap", "description": "tap 'Get Started' on onboarding" },
+    { "step": 2, "type": "tap", "description": "select two interest chips" },
+    { "step": 3, "type": "tap", "description": "dismiss paywall" },
+    { "step": 4, "type": "input", "description": "fill login credentials" },
+    { "step": 5, "type": "tap", "description": "tap 'Create account' instead" },
+    { "step": 6, "type": "tap", "description": "open chats tab" },
+    { "step": 7, "type": "tap", "description": "open first conversation" },
+    { "step": 8, "type": "swipe", "description": "pan the discover map" },
+    { "step": 9, "type": "tap", "description": "tap 'Place order' — crashed" },
+    { "step": 10, "type": "tap", "description": "open settings" },
+    { "step": 11, "type": "back", "description": "back to chats" },
+    { "step": 12, "type": "tap", "description": "retry checkout from conversation" }
+  ],
+
+  "graph": {
+    "nodes": [],
+    "transitions": [],
+    "totalSteps": 15,
+    "uniqueStates": 13,
+    "parentMap": {}
+  },
+
+  "stats": {
+    "totalSteps": 15,
+    "uniqueStates": 13,
+    "totalTransitions": 19,
+    "recoveryStats": { "total": 2, "succeeded": 2 },
+    "tokenUsage": { "input_tokens": 42300, "output_tokens": 11200 }
+  },
+
+  "oracleFindings": [
+    {
+      "id": "f-crash-1",
+      "type": "crash",
+      "severity": "critical",
+      "detail": "FATAL EXCEPTION in co.parity.app.CheckoutActivity — NullPointerException when tapping 'Place order' while the selected payment method was null. Reproduced on step 9.",
+      "step": 9,
+      "element": "CheckoutActivity"
+    },
+    {
+      "id": "f-anr-1",
+      "type": "anr",
+      "severity": "high",
+      "detail": "ANR in MapActivity when loading nearby venues on a cold cache. Main thread blocked for 6.8s before the discover grid rendered.",
+      "step": 8,
+      "element": "MapActivity"
+    },
+    {
+      "id": "f-a11y-1",
+      "type": "missing_content_description",
+      "severity": "medium",
+      "detail": "9 of 13 icon-only buttons in ConversationActivity lack content descriptions — screen readers announce them as 'unlabeled button'.",
+      "step": 7,
+      "element": "ConversationActivity"
+    },
+    {
+      "id": "f-a11y-2",
+      "type": "missing_content_description",
+      "severity": "medium",
+      "detail": "The payment method picker in CheckoutActivity is a grid of bare images — no contentDescription on card / wallet tiles.",
+      "step": 9,
+      "element": "CheckoutActivity"
+    },
+    {
+      "id": "f-tap-1",
+      "type": "small_tap_target",
+      "severity": "low",
+      "detail": "6 tap targets on ChatsActivity (the status toggle row) are 32dp — WCAG minimum is 44dp.",
+      "step": 6,
+      "element": "ChatsActivity"
+    },
+    {
+      "id": "f-tap-2",
+      "type": "small_tap_target",
+      "severity": "low",
+      "detail": "Close button on the SubscriptionActivity paywall is 28dp and sits 4dp from the notch — easy to miss.",
+      "step": 3,
+      "element": "SubscriptionActivity"
+    },
+    {
+      "id": "f-slow-1",
+      "type": "slow_transition",
+      "severity": "low",
+      "detail": "Transition from ConversationActivity \u2192 CheckoutActivity took 13.4s (budget: 12s). Payment SDK boot on first open.",
+      "step": 15,
+      "element": "CheckoutActivity"
+    }
+  ],
+  "oracleFindingsByStep": {},
+
+  "coverage": {
+    "onboarding": 96,
+    "auth": 88,
+    "chats": 92,
+    "conversation": 84,
+    "discover": 68,
+    "checkout": 52,
+    "settings": 74,
+    "subscription": 60
+  },
+
+  "v2Coverage": {
+    "stepsUsed": 15,
+    "uniqueScreens": 13,
+    "uniquePerStep": 0.87,
+    "uniquePerMinute": 4.6,
+    "stepsWastedOnRecovery": 2,
+    "visionFirstMode": true,
+    "tokenUsage": {
+      "inputTokens": 42300,
+      "outputTokens": 11200,
+      "cacheCreationInputTokens": 5400,
+      "cacheReadInputTokens": 19800
+    },
+    "costUSD": 0.28,
+    "cacheHitRate": 0.74
+  },
+
+  "flows": [
+    { "name": "Onboarding", "status": "completed", "outcome": "completed", "steps": 3 },
+    { "name": "Sign-in", "status": "completed", "outcome": "completed", "steps": 2 },
+    { "name": "Chats", "status": "completed", "outcome": "completed", "steps": 2 },
+    { "name": "Discover", "status": "completed", "outcome": "completed", "steps": 2 },
+    { "name": "Checkout", "status": "failed", "outcome": "failed", "steps": 3 }
+  ],
+
+  "metrics": {
+    "stepTimings": { "avgMs": 2610, "medianMs": 2310, "p95Ms": 6840 },
+    "readinessWaits": { "total": 15, "avgMs": 620 },
+    "actionOutcomes": { "advanced": 12, "no_change": 1, "recovery": 2 },
+    "recoveryEvents": 2,
+    "ineffectiveActionRate": 0.08
+  }
+}

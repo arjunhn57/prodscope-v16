@@ -1,0 +1,147 @@
+{
+  "jobId": "demo-complete-abc12345",
+  "packageName": "com.example.shopping",
+  "appName": "Everglow Commerce",
+  "completedAt": "2026-04-18T14:32:00.000Z",
+  "status": "complete",
+  "stopReason": "budget_exhausted",
+  "crawlQuality": "full",
+  "engineVersion": "ProdScope v2.4.1",
+  "model": "claude-haiku-4-5",
+
+  "screens": [
+    { "index": 0, "step": 1, "path": "/demo/shot-01.png", "activity": "LaunchActivity", "timestamp": 1710000000000, "screenType": "onboarding", "feature": "welcome", "fuzzyFp": "fp-a1" },
+    { "index": 1, "step": 2, "path": "/demo/shot-02.png", "activity": "LoginActivity", "timestamp": 1710000012000, "screenType": "auth", "feature": "signin", "fuzzyFp": "fp-a2" },
+    { "index": 2, "step": 3, "path": "/demo/shot-03.png", "activity": "HomeActivity", "timestamp": 1710000029000, "screenType": "feed", "feature": "home", "fuzzyFp": "fp-a3" },
+    { "index": 3, "step": 4, "path": "/demo/shot-04.png", "activity": "HomeActivity", "timestamp": 1710000041000, "screenType": "feed", "feature": "home", "fuzzyFp": "fp-a4" },
+    { "index": 4, "step": 5, "path": "/demo/shot-05.png", "activity": "ProductDetailActivity", "timestamp": 1710000053000, "screenType": "detail", "feature": "product", "fuzzyFp": "fp-a5" },
+    { "index": 5, "step": 6, "path": "/demo/shot-06.png", "activity": "ProductDetailActivity", "timestamp": 1710000065000, "screenType": "detail", "feature": "product", "fuzzyFp": "fp-a6" },
+    { "index": 6, "step": 7, "path": "/demo/shot-07.png", "activity": "SearchActivity", "timestamp": 1710000077000, "screenType": "search", "feature": "search", "fuzzyFp": "fp-a7" },
+    { "index": 7, "step": 8, "path": "/demo/shot-08.png", "activity": "CartActivity", "timestamp": 1710000089000, "screenType": "checkout", "feature": "cart", "fuzzyFp": "fp-a8" },
+    { "index": 8, "step": 9, "path": "/demo/shot-09.png", "activity": "CheckoutActivity", "timestamp": 1710000101000, "screenType": "checkout", "feature": "payment", "fuzzyFp": "fp-a9" },
+    { "index": 9, "step": 10, "path": "/demo/shot-10.png", "activity": "SettingsActivity", "timestamp": 1710000113000, "screenType": "settings", "feature": "settings", "fuzzyFp": "fp-a10" },
+    { "index": 10, "step": 11, "path": "/demo/shot-11.png", "activity": "ProfileActivity", "timestamp": 1710000125000, "screenType": "settings", "feature": "account", "fuzzyFp": "fp-a11" },
+    { "index": 11, "step": 12, "path": "/demo/shot-12.png", "activity": "NotificationsActivity", "timestamp": 1710000137000, "screenType": "settings", "feature": "notifications", "fuzzyFp": "fp-a12" },
+    { "index": 12, "step": 13, "path": "/demo/shot-13.png", "activity": "HelpActivity", "timestamp": 1710000149000, "screenType": "settings", "feature": "help", "fuzzyFp": "fp-a13" },
+    { "index": 13, "step": 14, "path": "/demo/shot-14.png", "activity": "HomeActivity", "timestamp": 1710000161000, "screenType": "feed", "feature": "home", "fuzzyFp": "fp-a3" },
+    { "index": 14, "step": 15, "path": "/demo/shot-15.png", "activity": "CategoryListActivity", "timestamp": 1710000173000, "screenType": "list", "feature": "browse", "fuzzyFp": "fp-a14" },
+    { "index": 15, "step": 16, "path": "/demo/shot-16.png", "activity": "WishlistActivity", "timestamp": 1710000185000, "screenType": "list", "feature": "wishlist", "fuzzyFp": "fp-a15" },
+    { "index": 16, "step": 17, "path": "/demo/shot-17.png", "activity": "OrdersActivity", "timestamp": 1710000197000, "screenType": "list", "feature": "orders", "fuzzyFp": "fp-a16" },
+    { "index": 17, "step": 18, "path": "/demo/shot-18.png", "activity": "ReviewActivity", "timestamp": 1710000209000, "screenType": "form", "feature": "reviews", "fuzzyFp": "fp-a17" }
+  ],
+
+  "actionsTaken": [
+    { "step": 1, "type": "tap", "description": "tap 'Get Started'" },
+    { "step": 2, "type": "input", "description": "fill login form" },
+    { "step": 3, "type": "tap", "description": "tap 'Sign In'" },
+    { "step": 4, "type": "swipe", "description": "scroll feed" },
+    { "step": 5, "type": "tap", "description": "open product card" },
+    { "step": 6, "type": "tap", "description": "tap size selector" },
+    { "step": 7, "type": "back", "description": "back to feed" },
+    { "step": 8, "type": "tap", "description": "tap search icon" },
+    { "step": 9, "type": "tap", "description": "add to cart" },
+    { "step": 10, "type": "tap", "description": "open checkout" }
+  ],
+
+  "graph": {
+    "nodes": [],
+    "transitions": [],
+    "totalSteps": 18,
+    "uniqueStates": 17,
+    "parentMap": {}
+  },
+
+  "stats": {
+    "totalSteps": 18,
+    "uniqueStates": 17,
+    "totalTransitions": 23,
+    "recoveryStats": {},
+    "tokenUsage": { "input_tokens": 48200, "output_tokens": 12400 }
+  },
+
+  "oracleFindings": [
+    {
+      "id": "f-crash-1",
+      "type": "crash",
+      "severity": "critical",
+      "detail": "FATAL EXCEPTION on com.example.shopping.CheckoutActivity — NullPointerException when tapping 'Place Order' with empty cart metadata.",
+      "step": 9,
+      "element": "CheckoutActivity"
+    },
+    {
+      "id": "f-anr-1",
+      "type": "anr",
+      "severity": "high",
+      "detail": "ANR in SearchActivity when loading 2k+ result catalog on a cold cache. Blocked main thread for 7.3s.",
+      "step": 7,
+      "element": "SearchActivity"
+    },
+    {
+      "id": "f-a11y-1",
+      "type": "missing_content_description",
+      "severity": "medium",
+      "detail": "11/14 clickable elements on ProductDetailActivity lack content-descriptions.",
+      "step": 5,
+      "element": "ProductDetailActivity"
+    },
+    {
+      "id": "f-tap-1",
+      "type": "small_tap_target",
+      "severity": "low",
+      "detail": "7 tap targets on HomeActivity are smaller than 44dp (WCAG min).",
+      "step": 3,
+      "element": "HomeActivity"
+    },
+    {
+      "id": "f-slow-1",
+      "type": "slow_transition",
+      "severity": "low",
+      "detail": "Transition from ProductDetail \u2192 Cart took 14.2s (budget: 12s).",
+      "step": 8,
+      "element": "CartActivity"
+    }
+  ],
+  "oracleFindingsByStep": {},
+
+  "coverage": {
+    "home": 92,
+    "product": 88,
+    "search": 76,
+    "cart": 70,
+    "checkout": 55,
+    "settings": 84,
+    "notifications": 40,
+    "help": 30
+  },
+
+  "v2Coverage": {
+    "stepsUsed": 18,
+    "uniqueScreens": 17,
+    "uniquePerStep": 0.94,
+    "uniquePerMinute": 5.1,
+    "stepsWastedOnRecovery": 1,
+    "visionFirstMode": true,
+    "tokenUsage": {
+      "inputTokens": 48200,
+      "outputTokens": 12400,
+      "cacheCreationInputTokens": 6400,
+      "cacheReadInputTokens": 22800
+    },
+    "costUSD": 0.32,
+    "cacheHitRate": 0.78
+  },
+
+  "flows": [
+    { "name": "Sign-in flow", "status": "completed", "steps": 3 },
+    { "name": "Product discovery", "status": "completed", "steps": 5 },
+    { "name": "Checkout", "status": "failed", "steps": 4 }
+  ],
+
+  "metrics": {
+    "stepTimings": { "avgMs": 2840, "medianMs": 2450, "p95Ms": 7120 },
+    "readinessWaits": { "total": 18, "avgMs": 680 },
+    "actionOutcomes": { "advanced": 14, "no_change": 2, "recovery": 2 },
+    "recoveryEvents": 2,
+    "ineffectiveActionRate": 0.11
+  }
+}

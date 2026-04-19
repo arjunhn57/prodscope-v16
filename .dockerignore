@@ -1,0 +1,15 @@
+node_modules
+.env
+*.log
+data/
+uploads/
+screenshots/
+*.apk
+.git
+.github
+.DS_Store
+CRAWL_ROADMAP.md
+CRAWL_ROADMAP_V2.md
+infra/
+test-cli.cjs
+**/__tests__/

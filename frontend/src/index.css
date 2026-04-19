@@ -1,0 +1,306 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ── Design Tokens — Light Minimalism ─────────────────────────────────────── */
+
+@theme {
+  --color-bg-primary:    #FAFAFA;
+  --color-bg-secondary:  #FFFFFF;
+  --color-bg-tertiary:   #F1F5F9;
+  --color-bg-muted:      #E2E8F0;
+  --color-bg-hover:      #F1F5F9;
+
+  --color-border-default: #E2E8F0;
+  --color-border-subtle:  #F1F5F9;
+  --color-border-hover:   #CBD5E1;
+
+  --color-accent:            #6C47FF;
+  --color-accent-dim:        #5833E8;
+  --color-accent-decorative: #8A6CFF;
+  --color-accent-light:      #EFEBFF;
+  --color-accent-glow:       rgba(108, 71, 255, 0.12);
+  --color-accent-ring:       rgba(108, 71, 255, 0.25);
+
+  --color-warning: #F59E0B;
+  --color-danger:  #EF4444;
+  --color-success: #10B981;
+  --color-info:    #3B82F6;
+
+  --color-text-primary:   #1A1A2E;
+  --color-text-secondary: #64748B;
+  --color-text-muted:     #94A3B8;
+  --color-text-on-accent: #FFFFFF;
+
+  --font-sans:     'Geist', system-ui, -apple-system, sans-serif;
+  --font-heading:  'Satoshi', 'Geist', system-ui, -apple-system, sans-serif;
+  --font-label:    'Geist', system-ui, -apple-system, sans-serif;
+  --font-mono:     'Geist Mono', ui-monospace, monospace;
+}
+
+/* ── Base ──────────────────────────────────────────────────────────────────── */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: light;
+  scroll-behavior: smooth;
+  scroll-padding-top: 104px;
+}
+
+html.lenis,
+html.lenis body {
+  height: auto;
+}
+
+.lenis.lenis-smooth {
+  scroll-behavior: auto !important;
+}
+
+.lenis.lenis-stopped {
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+#root {
+  min-height: 100dvh;
+  display: flex;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
+}
+
+.reasoning-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.reasoning-scroll::-webkit-scrollbar-thumb {
+  background: rgba(108, 71, 255, 0.55);
+  border-radius: 3px;
+}
+.reasoning-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(108, 71, 255, 0.8);
+}
+
+/* Cinematic tile shimmer (pre-SSE) */
+@keyframes cinematic-shimmer {
+  0% { background-position: -120% 0; }
+  100% { background-position: 220% 0; }
+}
+.cinematic-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(138, 108, 255, 0.05) 0%,
+    rgba(138, 108, 255, 0.18) 50%,
+    rgba(138, 108, 255, 0.05) 100%
+  );
+  background-size: 220% 100%;
+  animation: cinematic-shimmer 1.6s ease-in-out infinite;
+  border-radius: 4px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cinematic-shimmer {
+    animation: none;
+    background: rgba(138, 108, 255, 0.10);
+  }
+}
+
+/* ── Surface Utilities ─────────────────────────────────────────────────────── */
+
+.surface-card {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-default);
+  border-radius: 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+
+.surface-muted {
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 10px;
+}
+
+.surface-accent {
+  background: var(--color-accent-glow);
+  border: 1px solid rgba(108, 71, 255, 0.2);
+  border-radius: 10px;
+}
+
+/* ── Gradient Text ─────────────────────────────────────────────────────────── */
+
+@keyframes gradient-shift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.gradient-text {
+  background: linear-gradient(135deg, #1A1A2E 0%, #6C47FF 50%, #1A1A2E 100%);
+  background-size: 200% 200%;
+  animation: gradient-shift 6s ease-in-out infinite;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ── CTA Button ────────────────────────────────────────────────────────────── */
+
+.glow-button {
+  background: var(--color-accent);
+  color: var(--color-text-on-accent);
+  transition: background-color 0.2s ease;
+}
+
+.glow-button:hover {
+  background: var(--color-accent-dim);
+}
+
+
+/* ── Skeleton ──────────────────────────────────────────────────────────────── */
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.skeleton {
+  background: linear-gradient(90deg, #F1F5F9 25%, #E2E8F0 50%, #F1F5F9 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  border-radius: 0.5rem;
+}
+
+/* ── Gating Overlay ────────────────────────────────────────────────────────── */
+
+.content-locked {
+  position: relative;
+  overflow: hidden;
+}
+
+.content-locked::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: inherit;
+  z-index: 1;
+}
+
+/* ── Accent Gradient ───────────────────────────────────────────────────────── */
+
+.accent-gradient {
+  background: linear-gradient(135deg, #6C47FF 0%, #8A6CFF 100%);
+}
+
+/* ── Keyframes ─────────────────────────────────────────────────────────────── */
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 3s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-8px); }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Marquee ───────────────────────────────────────────────────────────────── */
+
+@keyframes marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(calc(-100% - 2.5rem)); }
+}
+
+.animate-marquee {
+  animation: marquee 55s linear infinite;
+}
+
+@keyframes marquee-reverse {
+  from { transform: translateX(calc(-100% - 2.5rem)); }
+  to { transform: translateX(0); }
+}
+
+.animate-marquee-reverse {
+  animation: marquee-reverse 55s linear infinite;
+}
+
+/* ── Scan Line (LiveAnalysis) ──────────────────────────────────────────────── */
+
+@keyframes scan-sweep {
+  0%   { top: 0%; opacity: 0; }
+  5%   { opacity: 1; }
+  95%  { opacity: 1; }
+  100% { top: 100%; opacity: 0; }
+}
+
+/* ── Typewriter Cursor ─────────────────────────────────────────────────────── */
+
+@keyframes blink-cursor {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.animate-blink {
+  animation: blink-cursor 0.8s ease-in-out infinite;
+}
+
+/* ── CPU Architecture Animations (legacy — app pages) ─────────────────────── */
+
+@keyframes cpu-flow {
+  0% { offset-distance: 0%; }
+  100% { offset-distance: 100%; }
+}
+
+.cpu-line-1 { offset-path: path("M 10 20 h 79.5 q 5 0 5 5 v 24"); animation: cpu-flow 3s ease-in-out infinite; }
+.cpu-line-2 { offset-path: path("M 180 10 h -69.7 q -5 0 -5 5 v 24"); animation: cpu-flow 4s ease-in-out 0.5s infinite; }
+.cpu-line-3 { offset-path: path("M 130 20 v 21.8 q 0 5 -5 5 h -10"); animation: cpu-flow 2.5s ease-in-out 1s infinite; }
+.cpu-line-4 { offset-path: path("M 170 80 v -21.8 q 0 -5 -5 -5 h -50"); animation: cpu-flow 3.5s ease-in-out 0.3s infinite; }
+.cpu-line-5 { offset-path: path("M 135 65 h 15 q 5 0 5 5 v 10 q 0 5 -5 5 h -39.8 q -5 0 -5 -5 v -20"); animation: cpu-flow 5s ease-in-out 0.8s infinite; }
+.cpu-line-6 { offset-path: path("M 94.8 95 v -36"); animation: cpu-flow 2s ease-in-out 1.5s infinite; }
+.cpu-line-7 { offset-path: path("M 88 88 v -15 q 0 -5 -5 -5 h -10 q -5 0 -5 -5 v -5 q 0 -5 5 -5 h 14"); animation: cpu-flow 4.5s ease-in-out 0.2s infinite; }
+.cpu-line-8 { offset-path: path("M 30 30 h 25 q 5 0 5 5 v 6.5 q 0 5 5 5 h 20"); animation: cpu-flow 3s ease-in-out 1.2s infinite; }
+
+.loader {
+  width: 24px;
+  height: 24px;
+  border: 2px solid rgba(0,0,0,0.1);
+  border-top-color: rgba(0,0,0,0.4);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}

@@ -1,0 +1,32 @@
+node_modules/
+.env
+.env.*
+!.env.example
+app.log
+*.log
+data/
+artifacts/
+dist/
+coverage/
+.DS_Store
+
+# Frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/.vite/
+
+# Playwright / visual audit artifacts
+.playwright-mcp/
+frontend/.playwright-mcp/
+playwright-report/
+test-results/
+audit-*.png
+frontend/audit-*.png
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo

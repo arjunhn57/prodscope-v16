@@ -1,0 +1,136 @@
+import { lazy, Suspense } from "react";
+import { createBrowserRouter, Navigate, useParams } from "react-router-dom";
+import { AppShell } from "./components/layout/AppShell";
+import { AuthGuard } from "./features/auth/AuthGuard";
+import { LoginPage } from "./features/auth/LoginPage";
+import { DashboardPage } from "./features/dashboard/DashboardPage";
+
+const LiveCrawlPage = lazy(() =>
+  import("./features/crawl/LiveCrawlPage").then((m) => ({ default: m.LiveCrawlPage }))
+);
+
+function LazyLiveCrawl() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-[#0A0A14]" />}>
+      <LiveCrawlPage />
+    </Suspense>
+  );
+}
+
+function LegacyCrawlRedirect() {
+  const { jobId } = useParams<{ jobId: string }>();
+  return <Navigate to={`/run/${jobId ?? ""}`} replace />;
+}
+
+export const router = createBrowserRouter([
+  {
+    path: "/",
+    lazy: () =>
+      import("./features/marketing/HomePage").then((m) => ({
+        Component: m.HomePage,
+      })),
+  },
+  {
+    path: "/login",
+    element: <LoginPage />,
+  },
+  {
+    path: "/mockup",
+    lazy: () =>
+      import("./features/mockup/ThemePreview").then((m) => ({
+        Component: m.ThemePreview,
+      })),
+  },
+  {
+    path: "/run/:jobId",
+    element: (
+      <AuthGuard>
+        <LazyLiveCrawl />
+      </AuthGuard>
+    ),
+  },
+  {
+    path: "/crawl/:jobId",
+    element: <LegacyCrawlRedirect />,
+  },
+  {
+    path: "/r/:jobId",
+    lazy: () =>
+      import("./features/report/PublicReportPage").then((m) => ({
+        Component: m.PublicReportPage,
+      })),
+  },
+  {
+    path: "/apply",
+    lazy: () =>
+      import("./features/apply/ApplyPage").then((m) => ({
+        Component: m.ApplyPage,
+      })),
+  },
+  {
+    path: "/pricing",
+    lazy: () =>
+      import("./features/pricing/PricingPage").then((m) => ({
+        Component: m.PricingPage,
+      })),
+  },
+  {
+    path: "/admin/partners",
+    lazy: () =>
+      Promise.all([
+        import("./features/admin/AdminGuard"),
+        import("./features/admin/AdminPartnersPage"),
+      ]).then(([guard, page]) => ({
+        Component: () => (
+          <guard.AdminGuard>
+            <page.AdminPartnersPage />
+          </guard.AdminGuard>
+        ),
+      })),
+  },
+  {
+    element: (
+      <AuthGuard>
+        <AppShell />
+      </AuthGuard>
+    ),
+    children: [
+      { path: "dashboard", element: <DashboardPage /> },
+      {
+        path: "upload",
+        lazy: () =>
+          import("./features/upload/UploadPage").then((m) => ({
+            Component: m.UploadPage,
+          })),
+      },
+      {
+        path: "report/:jobId",
+        lazy: () =>
+          import("./features/report/ReportPage").then((m) => ({
+            Component: m.ReportPage,
+          })),
+      },
+      {
+        path: "app-map/:jobId",
+        lazy: () =>
+          import("./features/appmap/AppMapPage").then((m) => ({
+            Component: m.AppMapPage,
+          })),
+      },
+      {
+        path: "history",
+        lazy: () =>
+          import("./features/history/HistoryPage").then((m) => ({
+            Component: m.HistoryPage,
+          })),
+      },
+      {
+        path: "settings",
+        lazy: () =>
+          import("./features/settings/SettingsPage").then((m) => ({
+            Component: m.SettingsPage,
+          })),
+      },
+    ],
+  },
+]);

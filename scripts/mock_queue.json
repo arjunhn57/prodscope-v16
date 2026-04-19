@@ -1,0 +1,12 @@
+[
+  {
+    "packageName": "com.example.mockapp1",
+    "apkUrl": "mock://example.com/app1.apk",
+    "goals": "Mock testing 1"
+  },
+  {
+    "packageName": "com.example.mockapp2",
+    "apkUrl": "mock://example.com/app2.apk",
+    "goals": "Mock testing 2"
+  }
+]

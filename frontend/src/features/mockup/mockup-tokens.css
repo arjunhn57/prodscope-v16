@@ -1,0 +1,65 @@
+/* ── Mockup Design Tokens (Scoped) ─────────────────────────────────────────
+   These tokens are scoped to .mockup-shell so they do NOT leak into
+   the production dark theme. They will be removed once the real pivot lands.
+   ──────────────────────────────────────────────────────────────────────────── */
+
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap');
+
+.mockup-shell {
+  /* ── Backgrounds ─────────────────────────────────────────────────────────── */
+  --m-bg:          #F8FAFC;
+  --m-bg-white:    #FFFFFF;
+  --m-bg-surface:  #FFFFFF;
+  --m-bg-muted:    #F1F5F9;
+  --m-bg-hover:    #F8FAFC;
+
+  /* ── Text ────────────────────────────────────────────────────────────────── */
+  --m-text:        #020617;
+  --m-text-secondary: #475569;
+  --m-text-muted:  #94A3B8;
+  --m-text-on-accent: #FFFFFF;
+
+  /* ── Accent ──────────────────────────────────────────────────────────────── */
+  --m-accent:      #0369A1;
+  --m-accent-hover:#0284C7;
+  --m-accent-light:#E0F2FE;
+  --m-accent-ring: rgba(3, 105, 161, 0.2);
+
+  /* ── Semantic ────────────────────────────────────────────────────────────── */
+  --m-success:     #16A34A;
+  --m-success-bg:  #F0FDF4;
+  --m-warning:     #D97706;
+  --m-warning-bg:  #FFFBEB;
+  --m-danger:      #DC2626;
+  --m-danger-bg:   #FEF2F2;
+  --m-info:        #2563EB;
+  --m-info-bg:     #EFF6FF;
+
+  /* ── Borders ─────────────────────────────────────────────────────────────── */
+  --m-border:      #E2E8F0;
+  --m-border-hover:#CBD5E1;
+
+  /* ── Shadows ─────────────────────────────────────────────────────────────── */
+  --m-shadow-sm:   0 1px 2px rgba(0, 0, 0, 0.04);
+  --m-shadow-md:   0 4px 12px rgba(0, 0, 0, 0.06);
+  --m-shadow-lg:   0 12px 32px rgba(0, 0, 0, 0.08);
+  --m-shadow-xl:   0 24px 48px rgba(0, 0, 0, 0.10);
+  --m-shadow-3d:   0 8px 24px rgba(0, 0, 0, 0.06), 0 2px 4px rgba(0, 0, 0, 0.04);
+
+  /* ── Radius ──────────────────────────────────────────────────────────────── */
+  --m-radius-sm:   6px;
+  --m-radius-md:   10px;
+  --m-radius-lg:   14px;
+  --m-radius-xl:   20px;
+
+  /* ── Typography ──────────────────────────────────────────────────────────── */
+  --m-font:        'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+
+  /* ── Apply base ──────────────────────────────────────────────────────────── */
+  font-family: var(--m-font);
+  background: var(--m-bg);
+  color: var(--m-text);
+  color-scheme: light;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}

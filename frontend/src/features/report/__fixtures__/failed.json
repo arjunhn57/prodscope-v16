@@ -1,0 +1,80 @@
+{
+  "jobId": "demo-failed-xyz11122",
+  "packageName": "com.example.banking",
+  "appName": "Solo Bank",
+  "completedAt": "2026-04-18T11:04:00.000Z",
+  "status": "failed",
+  "stopReason": "emulator_failure",
+  "crawlQuality": "minimal",
+  "engineVersion": "ProdScope v2.4.1",
+  "model": "claude-haiku-4-5",
+
+  "screens": [
+    { "index": 0, "step": 1, "path": "/demo/fail-01.png", "activity": "SplashActivity", "timestamp": 1710002000000, "screenType": "onboarding", "feature": "welcome", "fuzzyFp": "fp-c1" },
+    { "index": 1, "step": 2, "path": "/demo/fail-02.png", "activity": "LoginActivity", "timestamp": 1710002010000, "screenType": "auth", "feature": "signin", "fuzzyFp": "fp-c2" },
+    { "index": 2, "step": 3, "path": null, "activity": "LoginActivity", "timestamp": 1710002024000, "screenType": "auth", "feature": "signin", "fuzzyFp": "fp-c2" }
+  ],
+
+  "actionsTaken": [
+    { "step": 1, "type": "tap", "description": "Continue" },
+    { "step": 2, "type": "input", "description": "phone number" },
+    { "step": 3, "type": "tap", "description": "OTP field" }
+  ],
+
+  "graph": {
+    "nodes": [],
+    "transitions": [],
+    "totalSteps": 3,
+    "uniqueStates": 2,
+    "parentMap": {}
+  },
+
+  "stats": {
+    "totalSteps": 3,
+    "uniqueStates": 2,
+    "totalTransitions": 2,
+    "recoveryStats": {},
+    "tokenUsage": { "input_tokens": 8100, "output_tokens": 2100 }
+  },
+
+  "oracleFindings": [
+    {
+      "id": "f-crash-c1",
+      "type": "crash",
+      "severity": "critical",
+      "detail": "FATAL EXCEPTION on LoginActivity \u2014 NetworkOnMainThreadException during OTP dispatch. Likely infra or dev-mode config.",
+      "step": 3,
+      "element": "LoginActivity"
+    }
+  ],
+  "oracleFindingsByStep": {},
+
+  "coverage": {
+    "welcome": 40,
+    "signin": 20
+  },
+
+  "v2Coverage": {
+    "stepsUsed": 3,
+    "uniqueScreens": 2,
+    "uniquePerStep": 0.67,
+    "uniquePerMinute": 1.2,
+    "stepsWastedOnRecovery": 0,
+    "visionFirstMode": true,
+    "tokenUsage": { "inputTokens": 8100, "outputTokens": 2100, "cacheCreationInputTokens": 1200, "cacheReadInputTokens": 2400 },
+    "costUSD": 0.04,
+    "cacheHitRate": 0.67
+  },
+
+  "flows": [
+    { "name": "Sign-in", "status": "failed", "steps": 3 }
+  ],
+
+  "metrics": {
+    "stepTimings": { "avgMs": 4100, "medianMs": 3800, "p95Ms": 8200 },
+    "readinessWaits": { "total": 3, "avgMs": 1100 },
+    "actionOutcomes": { "advanced": 1, "no_change": 0, "recovery": 0 },
+    "recoveryEvents": 0,
+    "ineffectiveActionRate": 0.33
+  }
+}
