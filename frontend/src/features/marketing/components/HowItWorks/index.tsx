@@ -91,7 +91,7 @@ interface ZigRowProps {
 
 function ZigRow({ step, index, reverse }: ZigRowProps) {
   const textBlock = (
-    <div className={reverse ? "md:order-2" : ""}>
+    <div className={`text-center md:text-left ${reverse ? "md:order-2" : ""}`}>
       <div
         className="text-[44px] font-light leading-none"
         style={{ color: ACCENT, letterSpacing: "-0.04em" }}
@@ -105,7 +105,7 @@ function ZigRow({ step, index, reverse }: ZigRowProps) {
         {step.title}
       </h3>
       <p
-        className="mt-2 text-[15px] leading-[1.6] max-w-[420px]"
+        className="mt-2 text-[15px] leading-[1.6] max-w-[420px] mx-auto md:mx-0"
         style={{ color: TEXT_MUTED }}
       >
         {step.body}
