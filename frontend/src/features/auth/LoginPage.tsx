@@ -17,7 +17,7 @@ export function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const locationState = location.state as LocationState | null;
-  const redirectTo = locationState?.from?.pathname ?? "/dashboard";
+  const redirectTo = locationState?.from?.pathname ?? "/upload";
 
   const googleAuth = useGoogleAuth();
   const [googleErr, setGoogleErr] = useState<string | null>(null);
