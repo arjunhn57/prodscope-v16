@@ -26,58 +26,63 @@ const HEADLINE_GRADIENT =
 
 const SPOTLIGHT_CSS = `
 [data-spotlight] {
-  --x: 0; --y: 0; --xp: 0; --yp: 0;
-  --size: 250;
-  --border: 1.5;
-  --radius: 20;
-  --border-size: calc(var(--border) * 1px);
-  --spotlight-size: calc(var(--size) * 1px);
-  --hue: calc(var(--base) + (var(--xp) * var(--spread)));
-  background-image: radial-gradient(
-    var(--spotlight-size) var(--spotlight-size) at
-    calc(var(--x) * 1px) calc(var(--y) * 1px),
-    hsl(var(--hue) 80% 65% / 0.07), transparent
-  );
-  background-size: calc(100% + 2 * var(--border-size)) calc(100% + 2 * var(--border-size));
-  background-position: 50% 50%;
-  background-attachment: fixed;
-  border: var(--border-size) solid hsl(0 0% 85% / 0.5);
+  border: 1.5px solid hsl(0 0% 85% / 0.5);
   transition: border-color 0.3s;
 }
-[data-spotlight]:hover {
-  border-color: hsl(var(--hue) 60% 70% / 0.5);
-}
-[data-spotlight]::before,
-[data-spotlight]::after {
-  pointer-events: none;
-  content: "";
-  position: absolute;
-  inset: calc(var(--border-size) * -1);
-  border: var(--border-size) solid transparent;
-  border-radius: calc(var(--radius) * 1px);
-  background-attachment: fixed;
-  background-size: calc(100% + 2 * var(--border-size)) calc(100% + 2 * var(--border-size));
-  background-repeat: no-repeat;
-  background-position: 50% 50%;
-  mask: linear-gradient(transparent, transparent), linear-gradient(white, white);
-  mask-clip: padding-box, border-box;
-  mask-composite: intersect;
-  -webkit-mask-composite: source-in;
-}
-[data-spotlight]::before {
-  background-image: radial-gradient(
-    calc(var(--spotlight-size) * 0.75) calc(var(--spotlight-size) * 0.75) at
-    calc(var(--x) * 1px) calc(var(--y) * 1px),
-    hsl(var(--hue) 80% 55% / 0.8), transparent 100%
-  );
-  filter: brightness(1.5);
-}
-[data-spotlight]::after {
-  background-image: radial-gradient(
-    calc(var(--spotlight-size) * 0.5) calc(var(--spotlight-size) * 0.5) at
-    calc(var(--x) * 1px) calc(var(--y) * 1px),
-    hsl(0 0% 100% / 0.7), transparent 100%
-  );
+@media (hover: hover) and (pointer: fine) {
+  [data-spotlight] {
+    --x: 0; --y: 0; --xp: 0; --yp: 0;
+    --size: 250;
+    --border: 1.5;
+    --radius: 20;
+    --border-size: calc(var(--border) * 1px);
+    --spotlight-size: calc(var(--size) * 1px);
+    --hue: calc(var(--base) + (var(--xp) * var(--spread)));
+    background-image: radial-gradient(
+      var(--spotlight-size) var(--spotlight-size) at
+      calc(var(--x) * 1px) calc(var(--y) * 1px),
+      hsl(var(--hue) 80% 65% / 0.07), transparent
+    );
+    background-size: calc(100% + 2 * var(--border-size)) calc(100% + 2 * var(--border-size));
+    background-position: 50% 50%;
+    background-attachment: fixed;
+    backdrop-filter: blur(10px);
+  }
+  [data-spotlight]:hover {
+    border-color: hsl(var(--hue) 60% 70% / 0.5);
+  }
+  [data-spotlight]::before,
+  [data-spotlight]::after {
+    pointer-events: none;
+    content: "";
+    position: absolute;
+    inset: calc(var(--border-size) * -1);
+    border: var(--border-size) solid transparent;
+    border-radius: calc(var(--radius) * 1px);
+    background-attachment: fixed;
+    background-size: calc(100% + 2 * var(--border-size)) calc(100% + 2 * var(--border-size));
+    background-repeat: no-repeat;
+    background-position: 50% 50%;
+    mask: linear-gradient(transparent, transparent), linear-gradient(white, white);
+    mask-clip: padding-box, border-box;
+    mask-composite: intersect;
+    -webkit-mask-composite: source-in;
+  }
+  [data-spotlight]::before {
+    background-image: radial-gradient(
+      calc(var(--spotlight-size) * 0.75) calc(var(--spotlight-size) * 0.75) at
+      calc(var(--x) * 1px) calc(var(--y) * 1px),
+      hsl(var(--hue) 80% 55% / 0.8), transparent 100%
+    );
+    filter: brightness(1.5);
+  }
+  [data-spotlight]::after {
+    background-image: radial-gradient(
+      calc(var(--spotlight-size) * 0.5) calc(var(--spotlight-size) * 0.5) at
+      calc(var(--x) * 1px) calc(var(--y) * 1px),
+      hsl(0 0% 100% / 0.7), transparent 100%
+    );
+  }
 }
 `;
 
@@ -87,6 +92,8 @@ function useSpotlightPointer() {
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    const isFinePointer = window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+    if (!isFinePointer) return;
     const sync = (e: PointerEvent) => {
       el.style.setProperty("--x", e.clientX.toFixed(2));
       el.style.setProperty("--y", e.clientY.toFixed(2));
@@ -198,7 +205,6 @@ function SpotlightCard({
             "--spread": plan.glowSpread,
             background:
               "linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(250, 252, 255, 0.90))",
-            backdropFilter: "blur(10px)",
             boxShadow: plan.popular
               ? "0 28px 64px -12px rgba(76, 29, 149, 0.22), 0 8px 20px -4px rgba(124, 58, 237, 0.12), inset 0 1px 0 rgba(255, 255, 255, 1), inset 0 -1px 0 rgba(124, 58, 237, 0.08)"
               : "0 20px 48px -14px rgba(15, 23, 42, 0.10), 0 2px 6px rgba(15, 23, 42, 0.04), inset 0 1px 0 rgba(255, 255, 255, 1), inset 0 -1px 0 rgba(148, 163, 184, 0.08)",
@@ -314,10 +320,10 @@ function FaqAccordion({ reduceMotion }: { reduceMotion: boolean }) {
       </h3>
 
       <motion.div
-        className="rounded-2xl overflow-hidden backdrop-blur-sm"
+        className="rounded-2xl overflow-hidden"
         style={{
           border: "1px solid rgba(15, 23, 42, 0.08)",
-          background: "rgba(255, 255, 255, 0.6)",
+          background: "rgba(255, 255, 255, 0.85)",
         }}
         variants={{
           hidden: {},
