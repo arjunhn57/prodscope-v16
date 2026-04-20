@@ -29,13 +29,7 @@ const FIELDS: FieldConfig[] = [
     placeholder: "team@company.com",
     icon: Mail,
     type: "email",
-  },
-  {
-    key: "credentials",
-    label: "Sign-in credentials",
-    placeholder: '{"email": "you@example.com", "password": "yourpass"}',
-    icon: Key,
-    type: "text",
+    full: true,
   },
   {
     key: "goals",
@@ -52,6 +46,34 @@ const FIELDS: FieldConfig[] = [
     full: true,
   },
 ];
+
+// Credentials are transported as a JSON string (`credentials` in UploadMeta)
+// so the backend multipart contract is unchanged. The panel renders two real
+// inputs (email + password) and (de)serializes on every keystroke.
+function parseCredsJson(raw: string): { email: string; password: string } {
+  if (!raw) return { email: "", password: "" };
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      return {
+        email: typeof parsed.email === "string" ? parsed.email : "",
+        password: typeof parsed.password === "string" ? parsed.password : "",
+      };
+    }
+  } catch {
+    // Legacy free-text input — drop it; user will retype in the new fields.
+  }
+  return { email: "", password: "" };
+}
+
+function serializeCreds(email: string, password: string): string {
+  const payload: Record<string, string> = {};
+  const trimmedEmail = email.trim();
+  if (trimmedEmail) payload.email = trimmedEmail;
+  if (password) payload.password = password; // preserve as-typed
+  if (Object.keys(payload).length === 0) return "";
+  return JSON.stringify(payload);
+}
 
 interface StaticInputConfig {
   key: StaticInputKey;
@@ -131,6 +153,11 @@ export function MetadataPanel({ value, onChange, disabled = false }: MetadataPan
               }}
             >
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5">
+                <CredentialsFields
+                  value={value.credentials ?? ""}
+                  onChange={(next) => onChange({ ...value, credentials: next })}
+                  disabled={disabled}
+                />
                 {FIELDS.map((field) => (
                   <Field
                     key={field.key}
@@ -271,6 +298,70 @@ function StaticInputField({ config, value, onChange, disabled }: StaticInputFiel
           fontFamily: "var(--font-sans)",
         }}
       />
+    </div>
+  );
+}
+
+interface CredentialsFieldsProps {
+  value: string;
+  onChange: (next: string) => void;
+  disabled?: boolean;
+}
+
+function CredentialsFields({ value, onChange, disabled }: CredentialsFieldsProps) {
+  const emailId = useId();
+  const passwordId = useId();
+  const { email, password } = parseCredsJson(value);
+
+  const inputStyle = {
+    background: "#F8FAFC",
+    border: "1px solid #E2E8F0",
+    fontFamily: "var(--font-sans)",
+  } as const;
+  const inputClass =
+    "w-full rounded-xl px-3.5 py-2.5 text-[13px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] transition-colors disabled:opacity-60";
+
+  return (
+    <div className="md:col-span-2">
+      <div
+        className="flex items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-[0.2em] text-[var(--color-text-muted)] mb-2"
+        style={{ fontFamily: "var(--font-label)" }}
+      >
+        <Key className="w-3 h-3" />
+        <span>Sign-in credentials</span>
+        <span className="ml-1 text-[10px] font-normal normal-case tracking-normal text-[var(--color-text-muted)]">
+          (used to cross login walls; encrypted at rest, deleted with the APK)
+        </span>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
+        <input
+          id={emailId}
+          type="email"
+          autoComplete="username"
+          inputMode="email"
+          value={email}
+          onChange={(e) => onChange(serializeCreds(e.target.value, password))}
+          placeholder="Login email"
+          disabled={disabled}
+          maxLength={256}
+          className={inputClass}
+          style={inputStyle}
+          aria-label="Login email"
+        />
+        <input
+          id={passwordId}
+          type="password"
+          autoComplete="current-password"
+          value={password}
+          onChange={(e) => onChange(serializeCreds(email, e.target.value))}
+          placeholder="Password"
+          disabled={disabled}
+          maxLength={256}
+          className={inputClass}
+          style={inputStyle}
+          aria-label="Password"
+        />
+      </div>
     </div>
   );
 }
