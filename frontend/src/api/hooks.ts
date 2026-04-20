@@ -249,7 +249,7 @@ export function useHealth() {
   return useQuery({
     queryKey: ["health"],
     queryFn: async () => {
-      const res = await api.get<ApiResponse<HealthData>>("../health");
+      const res = await api.get<ApiResponse<HealthData>>("health");
       return res.data;
     },
     refetchInterval: POLL_INTERVALS.health,

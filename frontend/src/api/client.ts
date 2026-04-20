@@ -29,9 +29,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
 
-  const url = path.startsWith("../")
-    ? `${API_BASE}/${path}`
-    : `${API_BASE}/${path}`;
+  const url = `${API_BASE}/${path}`;
 
   const res = await fetch(url, { ...init, headers });
 
