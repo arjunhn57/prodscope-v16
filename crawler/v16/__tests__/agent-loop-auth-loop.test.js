@@ -8,12 +8,13 @@
  * burning the full step budget on a login wall (see biztoso 6f926f08).
  *
  * The contract:
- *   - Visiting the same fingerprint >= AUTH_LOOP_FP_THRESHOLD (3) times
+ *   - Visiting the same fingerprint >= AUTH_LOOP_FP_THRESHOLD (4) times
  *     forces actionToExecute to {type:"done", reason:"blocked_by_auth:fp_revisit_loop"}.
  *   - The override fires AFTER the agent has decided, so the agent gets fair
- *     attempts on the 1st and 2nd visits — only repeat offenders are overridden.
+ *     attempts on the 1st, 2nd, and 3rd visits — only repeat offenders are overridden.
  *   - The override is suppressed when the agent's chosen action is already
- *     done, type (mid-form-fill), or request_human_input.
+ *     done, type (mid-form-fill), request_human_input, press_back (modal
+ *     dismissal), or swipe (scroll-to-find escape).
  *   - The counter is driven by observation.fingerprint and survives non-no_change
  *     feedback (unlike stagnationStreak).
  */
@@ -117,11 +118,17 @@ function makeStaticAnthropic(actionOrFactory, opts = {}) {
   };
 }
 
-test("auth-loop: 3 consecutive visits of same fingerprint → forces done(blocked_by_auth:fp_revisit_loop)", async () => {
+test("auth-loop: 4 consecutive visits of same fingerprint → forces done(blocked_by_auth:fp_revisit_loop)", async () => {
   const dir = makeTmpScreenshotDir();
-  const adb = makeFpSequenceAdb(["login", "login", "login"]);
+  const adb = makeFpSequenceAdb(["login", "login", "login", "login"]);
   const readiness = makeMockReadiness();
-  const anthropic = makeStaticAnthropic({ type: "tap", x: 352, y: 1006 });
+  // Vary coordinates so the consecutive-identical safety net doesn't fire
+  // before the auth-loop override gets its chance at step 4.
+  const anthropic = makeStaticAnthropic((idx) => ({
+    type: "tap",
+    x: 352 + idx,
+    y: 1006 + idx,
+  }));
 
   const result = await runAgentLoop({
     jobId: "test-auth-loop",
@@ -138,22 +145,23 @@ test("auth-loop: 3 consecutive visits of same fingerprint → forces done(blocke
   );
   assert.equal(
     result.stepsUsed,
-    3,
-    "loop must stop on the 3rd visit, not orbit for 20 steps",
+    4,
+    "loop must stop on the 4th visit, not orbit for 20 steps",
   );
   // Agent was called once per step up to the override step.
   assert.equal(
     anthropic.calls.length,
-    3,
-    "agent must be called at most 3 times when the override fires on the 3rd visit",
+    4,
+    "agent must be called at most 4 times when the override fires on the 4th visit",
   );
-  // The action recorded at step 3 must be the override, not the agent's tap.
+  // The action recorded at step 4 must be the override, not the agent's tap.
   const lastAction = result.actionsTaken[result.actionsTaken.length - 1].action;
   assert.equal(lastAction.type, "done");
   assert.equal(lastAction.reason, "blocked_by_auth:fp_revisit_loop");
-  // The first two steps must still show the agent's original tap (not overridden).
+  // The first three steps must still show the agent's original tap (not overridden).
   assert.equal(result.actionsTaken[0].action.type, "tap");
   assert.equal(result.actionsTaken[1].action.type, "tap");
+  assert.equal(result.actionsTaken[2].action.type, "tap");
 });
 
 test("auth-loop: counter survives intervening non-login fingerprints (stagnation-reset insulation)", async () => {
@@ -168,9 +176,16 @@ test("auth-loop: counter survives intervening non-login fingerprints (stagnation
     "login",
     "launcher",
     "login",
+    "launcher",
+    "login",
   ]);
   const readiness = makeMockReadiness();
-  const anthropic = makeStaticAnthropic({ type: "tap", x: 352, y: 1006 });
+  // Vary coordinates to avoid consecutive-identical interference.
+  const anthropic = makeStaticAnthropic((idx) => ({
+    type: "tap",
+    x: 352 + idx,
+    y: 1006 + idx,
+  }));
 
   const result = await runAgentLoop({
     jobId: "test-auth-loop-interleaved",
@@ -187,19 +202,19 @@ test("auth-loop: counter survives intervening non-login fingerprints (stagnation
   );
   assert.equal(
     result.stepsUsed,
-    5,
-    "override fires on the 5th step (3rd login visit), not before or after",
+    7,
+    "override fires on the 7th step (4th login visit), not before or after",
   );
 });
 
 test("auth-loop: does NOT override when action is 'type' (mid-form-fill)", async () => {
-  // Legitimate flow: same auth-screen FP visited 3 times while agent fills
+  // Legitimate flow: same auth-screen FP visited 4 times while agent fills
   // email → password → submit. Must NOT force-exit. Vary text per step so
   // the consecutive-identical safety net doesn't interfere with the check.
   const dir = makeTmpScreenshotDir();
-  const adb = makeFpSequenceAdb(["login", "login", "login"]);
+  const adb = makeFpSequenceAdb(["login", "login", "login", "login"]);
   const readiness = makeMockReadiness();
-  const texts = ["user@example.com", "secret-pw", "something-else"];
+  const texts = ["user@example.com", "secret-pw", "something-else", "one-more"];
   const anthropic = makeStaticAnthropic((idx) => ({
     type: "type",
     text: texts[idx] || `text-${idx}`,
@@ -210,11 +225,11 @@ test("auth-loop: does NOT override when action is 'type' (mid-form-fill)", async
     targetPackage: "com.a",
     screenshotDir: dir,
     credentials: { email: "user@example.com", password: "pw" },
-    budgetConfig: { maxSteps: 3 },
+    budgetConfig: { maxSteps: 4 },
     deps: { adb, readiness, anthropic },
   });
 
-  // Auth-loop override must NOT have fired on the 3rd type action.
+  // Auth-loop override must NOT have fired on the 4th type action.
   assert.notEqual(
     result.stopReason,
     "agent_done:blocked_by_auth:fp_revisit_loop",
@@ -253,11 +268,11 @@ test("auth-loop: does NOT override when action is already 'done'", async () => {
   assert.equal(result.stepsUsed, 1);
 });
 
-test("auth-loop: 2 visits alone do NOT trigger override (threshold is 3)", async () => {
+test("auth-loop: 3 visits alone do NOT trigger override (threshold is 4)", async () => {
   // Vary tap coordinates so consecutive-identical doesn't fire — we want to
   // isolate the auth-loop override contract here.
   const dir = makeTmpScreenshotDir();
-  const adb = makeFpSequenceAdb(["login", "login", "other", "other"]);
+  const adb = makeFpSequenceAdb(["login", "login", "login", "other"]);
   const readiness = makeMockReadiness();
   const anthropic = makeStaticAnthropic((idx) => ({
     type: "tap",
@@ -273,11 +288,75 @@ test("auth-loop: 2 visits alone do NOT trigger override (threshold is 3)", async
     deps: { adb, readiness, anthropic },
   });
 
-  // Ran to max_steps because no FP hit 3 visits.
+  // Ran to max_steps because no FP hit 4 visits.
   assert.equal(result.stopReason, "max_steps_reached");
   assert.equal(result.stepsUsed, 4);
   // Auth-loop override never fired (every recorded action is still a tap).
   for (const entry of result.actionsTaken) {
     assert.equal(entry.action.type, "tap");
+  }
+});
+
+test("auth-loop: does NOT override when action is 'press_back' (modal dismissal)", async () => {
+  // A rate-now / permission modal can stack on top of the auth screen, keeping
+  // the FP pinned. The agent's correct recovery is press_back to dismiss the
+  // modal. Killing that attempt traps the agent behind the overlay forever.
+  // Consecutive-identical will fire at step 3 but re-forces press_back (same
+  // action, no change), so the recovery attempt still reaches step 4 intact.
+  const dir = makeTmpScreenshotDir();
+  const adb = makeFpSequenceAdb(["login", "login", "login", "login"]);
+  const readiness = makeMockReadiness();
+  const anthropic = makeStaticAnthropic({ type: "press_back" });
+
+  const result = await runAgentLoop({
+    jobId: "test-auth-loop-press-back-exception",
+    targetPackage: "com.a",
+    screenshotDir: dir,
+    budgetConfig: { maxSteps: 4 },
+    deps: { adb, readiness, anthropic },
+  });
+
+  assert.notEqual(
+    result.stopReason,
+    "agent_done:blocked_by_auth:fp_revisit_loop",
+    "override must not steal a recovery press_back",
+  );
+  for (const entry of result.actionsTaken) {
+    assert.equal(entry.action.type, "press_back");
+  }
+});
+
+test("auth-loop: does NOT override when action is 'swipe' (scroll-to-escape attempt)", async () => {
+  // The agent may try swiping to reveal an off-screen Skip / Guest button or
+  // to scroll past a sticky overlay. Killing that attempt is wrong.
+  const dir = makeTmpScreenshotDir();
+  const adb = makeFpSequenceAdb(["login", "login", "login", "login"]);
+  const readiness = makeMockReadiness();
+  // Vary swipe coordinates per step so consecutive-identical doesn't fire
+  // before the auth-loop check gets a chance to evaluate the swipe at step 4.
+  const anthropic = makeStaticAnthropic((idx) => ({
+    type: "swipe",
+    x1: 540,
+    y1: 1600 - idx * 10,
+    x2: 540,
+    y2: 600 + idx * 10,
+    duration_ms: 250,
+  }));
+
+  const result = await runAgentLoop({
+    jobId: "test-auth-loop-swipe-exception",
+    targetPackage: "com.a",
+    screenshotDir: dir,
+    budgetConfig: { maxSteps: 4 },
+    deps: { adb, readiness, anthropic },
+  });
+
+  assert.notEqual(
+    result.stopReason,
+    "agent_done:blocked_by_auth:fp_revisit_loop",
+    "override must not steal a recovery swipe",
+  );
+  for (const entry of result.actionsTaken) {
+    assert.equal(entry.action.type, "swipe");
   }
 });

@@ -65,7 +65,7 @@ const RECENT_FP_BUFFER = 10;
 // launcher-orbit), force-terminate with blocked_by_auth. Wider net than the
 // ORBIT_REPEATS window (5-in-8); catches cross-orbit loops stagnationStreak
 // resets through.
-const AUTH_LOOP_FP_THRESHOLD = 3;
+const AUTH_LOOP_FP_THRESHOLD = 4;
 
 /**
  * @typedef {Object} RunOptions
@@ -572,16 +572,20 @@ async function runAgentLoop(opts) {
     // Wider than the orbit detector (5-in-8) — catches biztoso-style
     // launcher-orbit loops where the agent keeps returning to the same auth
     // wall across press_home / launch_app transitions. Runs AFTER the model
-    // has decided so the agent gets fair attempts on the 1st and 2nd visits;
+    // has decided so the agent gets fair attempts on the 1st–3rd visits;
     // only repeat offenders get overridden. Exclusions:
     //   - type: a legitimate form-fill hits the same FP repeatedly
     //   - done: the agent already chose to exit
     //   - request_human_input: that path has its own exit via timeout
+    //   - press_back: dismissing a modal/popup that keeps the FP pinned
+    //   - swipe: scroll-to-find attempt (Skip / Guest off-screen)
     if (
       currentFpVisits >= AUTH_LOOP_FP_THRESHOLD &&
       actionToExecute?.type !== "done" &&
       actionToExecute?.type !== "type" &&
-      actionToExecute?.type !== "request_human_input"
+      actionToExecute?.type !== "request_human_input" &&
+      actionToExecute?.type !== "press_back" &&
+      actionToExecute?.type !== "swipe"
     ) {
       log.warn(
         {
