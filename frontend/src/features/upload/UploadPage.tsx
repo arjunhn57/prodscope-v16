@@ -50,6 +50,7 @@ export function UploadPage() {
 
   const handleLaunch = useCallback(() => {
     if (!file) return;
+    if (upload.state === "uploading" || submitting) return;
     if (upload.state === "idle" || upload.state === "error") {
       setSubmitting(true);
       upload.startUpload(file, meta);
@@ -66,7 +67,7 @@ export function UploadPage() {
         reduceMotion ? 0 : 180
       );
     }
-  }, [file, meta, upload, navigate, reduceMotion]);
+  }, [file, meta, upload, submitting, navigate, reduceMotion]);
 
   useEffect(() => {
     if (upload.state === "uploading" || upload.state === "idle") return;
@@ -210,8 +211,9 @@ export function UploadPage() {
             className="mt-10 md:mt-12 flex justify-center"
           >
             <LaunchCTA
-              ready={!!file && upload.state !== "uploading"}
-              submitting={submitting || upload.state === "uploading"}
+              ready={!!file && upload.state !== "uploading" && !submitting}
+              submitting={submitting && upload.state !== "uploading"}
+              uploading={upload.state === "uploading"}
               onClick={handleLaunch}
               hint={ctaHint}
             />
