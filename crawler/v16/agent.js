@@ -62,6 +62,7 @@ const DECISION_TOOL = {
               "launch_app",
               "wait",
               "done",
+              "request_human_input",
             ],
           },
           x: { type: "number" },
@@ -73,6 +74,15 @@ const DECISION_TOOL = {
           text: { type: "string", description: "Use ${EMAIL} / ${PASSWORD} for credentials." },
           ms: { type: "number", description: "Wait duration in ms (0..3000)." },
           reason: { type: "string", description: "For done: why the crawl ends." },
+          field: {
+            type: "string",
+            enum: ["otp", "email_code", "2fa", "captcha"],
+            description: "For request_human_input: which kind of code you need a human to provide.",
+          },
+          prompt: {
+            type: "string",
+            description: "For request_human_input: 1 short sentence explaining what the human should enter.",
+          },
         },
         required: ["type"],
       },

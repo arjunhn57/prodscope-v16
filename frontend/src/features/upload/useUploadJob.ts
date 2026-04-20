@@ -3,11 +3,16 @@ import { useQueryClient } from "@tanstack/react-query";
 import { API_BASE } from "../../lib/constants";
 import { useAuthStore } from "../../stores/auth";
 
+export type StaticInputKey = "otp" | "email_code" | "2fa" | "captcha";
+
+export type StaticInputs = Partial<Record<StaticInputKey, string>>;
+
 export interface UploadMeta {
   email?: string;
   credentials?: string;
   goals?: string;
   painPoints?: string;
+  staticInputs?: StaticInputs;
 }
 
 export interface UploadProgress {
@@ -120,6 +125,18 @@ export function useUploadJob(): UseUploadJobReturn {
       if (meta.credentials) formData.append("credentials", meta.credentials);
       if (meta.goals) formData.append("goals", meta.goals);
       if (meta.painPoints) formData.append("painPoints", meta.painPoints);
+
+      if (meta.staticInputs) {
+        const cleaned: Record<string, string> = {};
+        for (const [key, value] of Object.entries(meta.staticInputs)) {
+          if (typeof value === "string" && value.trim().length > 0) {
+            cleaned[key] = value.trim();
+          }
+        }
+        if (Object.keys(cleaned).length > 0) {
+          formData.append("staticInputs", JSON.stringify(cleaned));
+        }
+      }
 
       const xhr = new XMLHttpRequest();
       xhrRef.current = xhr;

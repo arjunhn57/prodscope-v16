@@ -251,6 +251,7 @@ async function processJob(jobId, apkPath, opts) {
         targetPackage: packageName,
         screenshotDir,
         credentials: opts.credentials,
+        staticInputs: opts.staticInputs || null,
         appContext: {
           goals: opts.goals,
           painPoints: opts.painPoints,
@@ -262,6 +263,32 @@ async function processJob(jobId, apkPath, opts) {
           maxSonnetEscalations: V16_MAX_SONNET_ESCALATIONS,
         },
         onProgress: (live) => {
+          // V16.1: human-input events are transient markers; merge with the
+          // last full live payload so rawStep/unique-count/action don't blank
+          // out while the modal is open. Normal progress payloads replace
+          // `live` wholesale as before.
+          if (live && live.type === "awaiting_human_input") {
+            const current = store.getJob(jobId);
+            const merged = {
+              ...(current && current.live ? current.live : {}),
+              awaitingHumanInput: {
+                field: live.field,
+                prompt: live.prompt,
+                timeoutMs: live.timeoutMs,
+              },
+            };
+            store.updateJob(jobId, { live: merged });
+            return;
+          }
+          if (live && live.type === "human_input_received") {
+            const current = store.getJob(jobId);
+            const merged = {
+              ...(current && current.live ? current.live : {}),
+              awaitingHumanInput: null,
+            };
+            store.updateJob(jobId, { live: merged });
+            return;
+          }
           store.updateJob(jobId, { live });
         },
       });

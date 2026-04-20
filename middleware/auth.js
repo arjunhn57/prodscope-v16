@@ -60,7 +60,11 @@ const PUBLIC_PREFIXES = [
  * Routes that accept API key via query parameter (for EventSource/img tags
  * which cannot set custom headers).
  */
-const QUERY_AUTH_PREFIXES = ["/api/v1/job-sse/", "/api/v1/job-screenshot/"];
+const QUERY_AUTH_PREFIXES = [
+  "/api/v1/job-sse/",
+  "/api/v1/job-screenshot/",
+  "/api/v1/job-live-stream/",
+];
 
 function isPublicRoute(path) {
   if (PUBLIC_ROUTES.has(path)) return true;
@@ -154,11 +158,18 @@ function createAuthMiddleware(config) {
       }
     }
 
-    // Try API key via query param for SSE/screenshot routes only
+    // Try JWT or API key via query param for SSE/screenshot/live-stream routes only
     // (EventSource and <img> tags cannot set custom headers)
     const queryKey = req.query?.api_key;
-    if (queryKey && apiKey && QUERY_AUTH_PREFIXES.some((p) => req.path.startsWith(p))) {
-      if (validateApiKey(queryKey, apiKey)) {
+    if (queryKey && QUERY_AUTH_PREFIXES.some((p) => req.path.startsWith(p))) {
+      if (jwtSecret) {
+        const result = validateJwt(queryKey, jwtSecret);
+        if (result.valid) {
+          req.user = result.payload;
+          return next();
+        }
+      }
+      if (apiKey && validateApiKey(queryKey, apiKey)) {
         req.user = { type: "api_key_query" };
         return next();
       }

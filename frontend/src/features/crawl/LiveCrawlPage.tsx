@@ -19,6 +19,7 @@ import { StepTimeline, type StepOutcome } from "./components/StepTimeline";
 import { TerminalOverlay } from "./components/TerminalOverlay";
 import { ConnectionBanner } from "./components/ConnectionBanner";
 import { TelemetryTilesSkeleton } from "./components/TileSkeleton";
+import { HumanInputModal, type HumanInputField } from "./components/HumanInputModal";
 import type { PerceptionBox, TapTarget } from "./components/OverlayCanvas";
 
 type TerminalStatus = "complete" | "degraded" | "failed";
@@ -64,7 +65,10 @@ export function LiveCrawlPage() {
   const { data: job } = useJobStatus(jobId);
   const connection = useJobSSE(jobId);
   const sseData = useSSEData(jobId);
-  const live = sseData?.live;
+  // Prefer SSE payload (fresher), fall back to REST poll (always works).
+  // The SSE cache can lag on first tick or during EventSource reconnect —
+  // we must not block the UI on it.
+  const live = sseData?.live ?? job?.live ?? undefined;
 
   const step = live?.rawStep ?? 0;
   const maxSteps = live?.maxRawSteps ?? 80;
@@ -73,7 +77,9 @@ export function LiveCrawlPage() {
   const terminalStatus = coerceTerminal(job?.status);
   const isTerminal = !!terminalStatus;
   const isLive = !!live && !isTerminal;
-  const isBooting = !live && !isTerminal;
+  // Only show the booting placeholder when we genuinely have no live data
+  // AND the SSE isn't in an error state — otherwise ConnectionBanner handles it.
+  const isBooting = !live && !isTerminal && connection.status !== "error";
 
   const streamUrl =
     jobId && token
@@ -97,6 +103,29 @@ export function LiveCrawlPage() {
 
   // ── Mobile reasoning drawer state ──────────────────────────────────────────
   const [mobileFeedOpen, setMobileFeedOpen] = useState(false);
+
+  // ── Human-input modal state (V16.1) ────────────────────────────────────────
+  const awaitingHumanInput = live?.awaitingHumanInput ?? null;
+  const humanInputSignature = awaitingHumanInput
+    ? `${awaitingHumanInput.field}|${awaitingHumanInput.prompt}|${awaitingHumanInput.timeoutMs}`
+    : null;
+  const dismissedSignatureRef = useRef<string | null>(null);
+  const [humanInputVisible, setHumanInputVisible] = useState(false);
+
+  useEffect(() => {
+    if (humanInputSignature && humanInputSignature !== dismissedSignatureRef.current) {
+      setHumanInputVisible(true);
+    }
+    if (!humanInputSignature) {
+      setHumanInputVisible(false);
+      dismissedSignatureRef.current = null;
+    }
+  }, [humanInputSignature]);
+
+  const closeHumanInputModal = () => {
+    if (humanInputSignature) dismissedSignatureRef.current = humanInputSignature;
+    setHumanInputVisible(false);
+  };
 
   useEffect(() => {
     if (!mobileFeedOpen) return;
@@ -290,7 +319,11 @@ export function LiveCrawlPage() {
                 fallbackCaption={fallbackCaption}
                 isTerminal={isTerminal}
                 placeholderLabel={
-                  job?.status === "queued" ? "Queued…" : "Booting emulator…"
+                  job?.status === "queued"
+                    ? "Queued…"
+                    : live?.phase === "booting"
+                      ? "Booting emulator…"
+                      : "Connecting to session…"
                 }
               />
               {isTerminal && terminalStatus && (
@@ -356,6 +389,16 @@ export function LiveCrawlPage() {
           {entries.length}
         </span>
       </button>
+
+      {humanInputVisible && awaitingHumanInput && jobId && (
+        <HumanInputModal
+          jobId={jobId}
+          field={awaitingHumanInput.field as HumanInputField}
+          prompt={awaitingHumanInput.prompt}
+          timeoutMs={awaitingHumanInput.timeoutMs}
+          onClose={closeHumanInputModal}
+        />
+      )}
 
       <AnimatePresence>
         {mobileFeedOpen && (

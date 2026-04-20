@@ -9,6 +9,85 @@ const { DB_PATH } = require("../config/defaults");
 const jobEvents = new EventEmitter();
 jobEvents.setMaxListeners(20);
 
+/**
+ * Per-job human-input waiters. V16.1 request_human_input flow:
+ * agent-loop.js calls awaitJobInput(jobId) when static credentials are missing
+ * or exhausted; the POST /jobs/:id/human-input HTTP handler calls
+ * resolveJobInput(jobId, value) to unblock the crawl. Single-slot per jobId —
+ * a second awaitJobInput call on the same jobId rejects the prior waiter with
+ * a "SUPERSEDED" error so we never hold orphaned promises.
+ *
+ * Waiters live in-memory only; a process restart drops them. Acceptable: the
+ * agent loop would have died too, so there is no-one to resume.
+ *
+ * @type {Map<string, { resolve: (value: string) => void, reject: (reason: Error) => void, timeoutId: NodeJS.Timeout }>}
+ */
+const inputWaiters = new Map();
+
+/**
+ * Block until the HTTP layer posts a human-input value for this job or the
+ * timeout fires. Resolves to the submitted string; rejects with INPUT_TIMEOUT
+ * on timeout, INPUT_CANCELLED if the caller explicitly cancelled, or
+ * INPUT_SUPERSEDED if another awaitJobInput replaced the waiter.
+ *
+ * @param {string} jobId
+ * @param {{ timeoutMs?: number }} [options]
+ * @returns {Promise<string>}
+ */
+function awaitJobInput(jobId, options) {
+  const timeoutMs = (options && options.timeoutMs) || 5 * 60 * 1000;
+  return new Promise((resolve, reject) => {
+    const prev = inputWaiters.get(jobId);
+    if (prev) {
+      clearTimeout(prev.timeoutId);
+      inputWaiters.delete(jobId);
+      prev.reject(new Error("INPUT_SUPERSEDED"));
+    }
+    const timeoutId = setTimeout(() => {
+      inputWaiters.delete(jobId);
+      reject(new Error("INPUT_TIMEOUT"));
+    }, timeoutMs);
+    inputWaiters.set(jobId, { resolve, reject, timeoutId });
+  });
+}
+
+/**
+ * Resolve the pending waiter for a job. Returns true if a waiter existed.
+ *
+ * @param {string} jobId
+ * @param {string} value
+ * @returns {boolean}
+ */
+function resolveJobInput(jobId, value) {
+  const entry = inputWaiters.get(jobId);
+  if (!entry) return false;
+  clearTimeout(entry.timeoutId);
+  inputWaiters.delete(jobId);
+  entry.resolve(value);
+  return true;
+}
+
+/**
+ * Reject the pending waiter for a job (used for explicit user cancel).
+ * Returns true if a waiter existed.
+ *
+ * @param {string} jobId
+ * @param {string} [reason="INPUT_CANCELLED"]
+ * @returns {boolean}
+ */
+function rejectJobInput(jobId, reason) {
+  const entry = inputWaiters.get(jobId);
+  if (!entry) return false;
+  clearTimeout(entry.timeoutId);
+  inputWaiters.delete(jobId);
+  entry.reject(new Error(reason || "INPUT_CANCELLED"));
+  return true;
+}
+
+function hasPendingInput(jobId) {
+  return inputWaiters.has(jobId);
+}
+
 // Ensure data directory exists
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
@@ -33,7 +112,6 @@ db.exec(`
     user_id TEXT,
     cost_usd REAL
   );
-  CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id);
 
   CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
@@ -141,12 +219,13 @@ db.exec(`
   const names = new Set(existing.map((c) => c.name));
   if (!names.has("user_id")) {
     db.exec("ALTER TABLE jobs ADD COLUMN user_id TEXT");
-    db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id)");
   }
   if (!names.has("cost_usd")) {
     db.exec("ALTER TABLE jobs ADD COLUMN cost_usd REAL");
   }
 })();
+
+db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id)");
 
 // ---------------------------------------------------------------------------
 // Prepared statements
@@ -685,4 +764,5 @@ module.exports = {
   createApplication, getApplicationsByEmail, listApplications,
   setApplicationStatus, setApplicationLoiStatus, getApplicationById,
   listUsersWithUsage, listJobsForUser, adminSummary,
+  awaitJobInput, resolveJobInput, rejectJobInput, hasPendingInput,
 };

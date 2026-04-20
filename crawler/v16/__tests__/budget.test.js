@@ -99,6 +99,84 @@ test("aggressively-compressed 80-step Haiku crawl fits in ₹10 ceiling", () => 
   assert.equal(s.haikuCallsUsed, 80);
 });
 
+test("pauseWallClock subtracts paused time from wallMsElapsed", async () => {
+  const b = createBudget();
+  await new Promise((r) => setTimeout(r, 30));
+  b.pauseWallClock();
+  await new Promise((r) => setTimeout(r, 80));
+  b.resumeWallClock();
+  await new Promise((r) => setTimeout(r, 30));
+  const s = b.snapshot();
+  // Total wall time ≈ 140ms, paused ≈ 80ms → elapsed should be ~60ms
+  assert.ok(s.wallMsElapsed < 120, `expected <120ms, got ${s.wallMsElapsed}`);
+  assert.ok(s.wallMsElapsed >= 40, `expected ≥40ms, got ${s.wallMsElapsed}`);
+  assert.ok(s.pausedMs >= 70, `expected pausedMs ≥70ms, got ${s.pausedMs}`);
+  assert.equal(s.paused, false);
+});
+
+test("wallMsElapsed excludes currently-paused interval", async () => {
+  const b = createBudget();
+  await new Promise((r) => setTimeout(r, 40));
+  b.pauseWallClock();
+  await new Promise((r) => setTimeout(r, 60));
+  const s = b.snapshot();
+  assert.equal(s.paused, true);
+  assert.ok(s.wallMsElapsed < 60, `expected <60ms while paused, got ${s.wallMsElapsed}`);
+});
+
+test("multiple pause/resume cycles accumulate pausedMs", async () => {
+  const b = createBudget();
+  for (let i = 0; i < 3; i++) {
+    b.pauseWallClock();
+    await new Promise((r) => setTimeout(r, 25));
+    b.resumeWallClock();
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  const s = b.snapshot();
+  assert.ok(s.pausedMs >= 60, `expected cumulative pause ≥60ms, got ${s.pausedMs}`);
+});
+
+test("double pauseWallClock is idempotent", () => {
+  const b = createBudget();
+  b.pauseWallClock();
+  b.pauseWallClock(); // should not reset pausedAt
+  const s1 = b.snapshot();
+  assert.equal(s1.paused, true);
+  b.resumeWallClock();
+  const s2 = b.snapshot();
+  assert.equal(s2.paused, false);
+});
+
+test("resume without pause is a no-op", () => {
+  const b = createBudget();
+  b.resumeWallClock(); // should not crash or flip state
+  const s = b.snapshot();
+  assert.equal(s.paused, false);
+  assert.equal(s.pausedMs, 0);
+});
+
+test("pause does NOT stop cost or step accumulation", () => {
+  const b = createBudget();
+  b.pauseWallClock();
+  b.step();
+  b.recordLlmCall("haiku", 1000, 200);
+  const s = b.snapshot();
+  assert.equal(s.stepsUsed, 1);
+  assert.ok(s.costUsd > 0);
+});
+
+test("wallclock timeout respects paused time", () => {
+  const b = createBudget({ maxWallMs: 50 });
+  b.pauseWallClock();
+  // Even after real time passes, timeout should not fire while paused
+  const start = Date.now();
+  while (Date.now() - start < 70) {
+    /* busy wait */
+  }
+  assert.equal(b.exhausted(), null, "should not be exhausted while paused");
+  b.resumeWallClock();
+});
+
 test("non-compressed 80-step crawl WOULD exceed ceiling (validates enforcement is needed)", () => {
   // Naïve: full image every step, no caching, big suffix, 200-token outputs.
   const b = createBudget();

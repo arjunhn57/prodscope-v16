@@ -202,6 +202,7 @@ describe("Auth middleware", () => {
 const {
   validateFile,
   parseCredentials,
+  parseStaticInputs,
   startJobSchema,
   ALLOWED_EXTENSIONS,
   MAX_FILE_SIZE_BYTES,
@@ -317,6 +318,54 @@ describe("Validation middleware", () => {
     it("rejects null JSON", () => {
       const result = parseCredentials("null");
       assert.strictEqual(result.valid, false);
+    });
+  });
+
+  describe("parseStaticInputs()", () => {
+    it("accepts empty string and empty object as no inputs", () => {
+      assert.deepStrictEqual(parseStaticInputs("").parsed, {});
+      assert.deepStrictEqual(parseStaticInputs("{}").parsed, {});
+    });
+
+    it("accepts valid shape with otp/email_code/2fa/captcha", () => {
+      const r = parseStaticInputs(
+        JSON.stringify({ otp: "123456", email_code: "ABCD", "2fa": "9876", captcha: "blue" })
+      );
+      assert.strictEqual(r.valid, true);
+      assert.deepStrictEqual(r.parsed, {
+        otp: "123456",
+        email_code: "ABCD",
+        "2fa": "9876",
+        captcha: "blue",
+      });
+    });
+
+    it("strips empty-string fields (treats '' as not supplied)", () => {
+      const r = parseStaticInputs(JSON.stringify({ otp: "123456", captcha: "" }));
+      assert.strictEqual(r.valid, true);
+      assert.deepStrictEqual(r.parsed, { otp: "123456" });
+    });
+
+    it("rejects unknown keys via .strict()", () => {
+      const r = parseStaticInputs(JSON.stringify({ otp: "1", face_id: "x" }));
+      assert.strictEqual(r.valid, false);
+      assert.match(r.error, /Invalid staticInputs/);
+    });
+
+    it("rejects invalid JSON", () => {
+      const r = parseStaticInputs("{not json");
+      assert.strictEqual(r.valid, false);
+    });
+
+    it("rejects non-object JSON (array)", () => {
+      const r = parseStaticInputs('["a","b"]');
+      assert.strictEqual(r.valid, false);
+      assert.match(r.error, /must be a JSON object/);
+    });
+
+    it("rejects values longer than 256 chars", () => {
+      const r = parseStaticInputs(JSON.stringify({ otp: "x".repeat(257) }));
+      assert.strictEqual(r.valid, false);
     });
   });
 });

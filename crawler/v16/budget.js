@@ -67,6 +67,25 @@ function createBudget(config) {
   let costUsd = 0;
   let sonnetEscalationsUsed = 0;
   let haikuCallsUsed = 0;
+  let pausedAt = null;
+  let pausedMs = 0;
+
+  function pauseWallClock() {
+    if (pausedAt === null) pausedAt = Date.now();
+  }
+
+  function resumeWallClock() {
+    if (pausedAt !== null) {
+      pausedMs += Date.now() - pausedAt;
+      pausedAt = null;
+    }
+  }
+
+  function wallMsElapsed() {
+    const rawElapsed = Date.now() - startMs;
+    const currentPause = pausedAt !== null ? Date.now() - pausedAt : 0;
+    return rawElapsed - pausedMs - currentPause;
+  }
 
   /**
    * @param {ModelId} model
@@ -104,7 +123,7 @@ function createBudget(config) {
 
   function exhausted() {
     if (stepsUsed >= cfg.maxSteps) return "max_steps_reached";
-    if (Date.now() - startMs >= cfg.maxWallMs) return "timeout";
+    if (wallMsElapsed() >= cfg.maxWallMs) return "timeout";
     if (costUsd >= cfg.maxCostUsd) return "budget_exhausted";
     return null;
   }
@@ -112,7 +131,7 @@ function createBudget(config) {
   function snapshot() {
     return {
       stepsUsed,
-      wallMsElapsed: Date.now() - startMs,
+      wallMsElapsed: wallMsElapsed(),
       costUsd,
       sonnetEscalationsUsed,
       haikuCallsUsed,
@@ -120,10 +139,20 @@ function createBudget(config) {
       maxSteps: cfg.maxSteps,
       maxCostUsd: cfg.maxCostUsd,
       maxSonnetEscalations: cfg.maxSonnetEscalations,
+      pausedMs,
+      paused: pausedAt !== null,
     };
   }
 
-  return { step, recordLlmCall, canEscalateToSonnet, exhausted, snapshot };
+  return {
+    step,
+    recordLlmCall,
+    canEscalateToSonnet,
+    exhausted,
+    snapshot,
+    pauseWallClock,
+    resumeWallClock,
+  };
 }
 
 module.exports = { createBudget, PRICING, DEFAULTS };

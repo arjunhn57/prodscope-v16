@@ -65,8 +65,8 @@ test("validateAction requires reason string for done", () => {
   assert.equal(validateAction({ type: "done", reason: "exhausted" }).valid, true);
 });
 
-test("VALID_TYPES has exactly the 9 documented action types", () => {
-  assert.equal(VALID_TYPES.size, 9);
+test("VALID_TYPES contains all 10 documented action types including request_human_input", () => {
+  assert.equal(VALID_TYPES.size, 10);
   for (const t of [
     "tap",
     "type",
@@ -77,9 +77,51 @@ test("VALID_TYPES has exactly the 9 documented action types", () => {
     "launch_app",
     "wait",
     "done",
+    "request_human_input",
   ]) {
     assert.ok(VALID_TYPES.has(t), `missing type: ${t}`);
   }
+});
+
+test("validateAction: request_human_input accepts valid shape for each field", () => {
+  for (const field of ["otp", "email_code", "2fa", "captcha"]) {
+    const r = validateAction({
+      type: "request_human_input",
+      field,
+      prompt: "Enter the code",
+    });
+    assert.equal(r.valid, true, `${field} should validate: ${JSON.stringify(r)}`);
+  }
+});
+
+test("validateAction: request_human_input rejects missing/invalid field", () => {
+  assert.equal(
+    validateAction({ type: "request_human_input", prompt: "x" }).valid,
+    false,
+  );
+  assert.equal(
+    validateAction({ type: "request_human_input", field: "", prompt: "x" }).valid,
+    false,
+  );
+  assert.equal(
+    validateAction({ type: "request_human_input", field: "face_id", prompt: "x" }).valid,
+    false,
+  );
+  assert.equal(
+    validateAction({ type: "request_human_input", field: 42, prompt: "x" }).valid,
+    false,
+  );
+});
+
+test("validateAction: request_human_input rejects missing/empty prompt", () => {
+  assert.equal(
+    validateAction({ type: "request_human_input", field: "otp" }).valid,
+    false,
+  );
+  assert.equal(
+    validateAction({ type: "request_human_input", field: "otp", prompt: "" }).valid,
+    false,
+  );
 });
 
 test("substituteCredentials replaces ${EMAIL} and ${PASSWORD}", () => {
@@ -144,4 +186,85 @@ test("executeAction: wait resolves after ms (bounded)", async () => {
   const elapsed = Date.now() - start;
   assert.equal(r.ok, true);
   assert.ok(elapsed >= 45, `wait too short: ${elapsed}ms`);
+});
+
+test("executeAction: request_human_input fails when no resolveHumanInput handler", async () => {
+  const adb = makeMockAdb();
+  const r = await executeAction(
+    { type: "request_human_input", field: "otp", prompt: "Enter OTP" },
+    { targetPackage: "com.a", adb },
+  );
+  assert.equal(r.ok, false);
+  assert.match(r.error, /resolveHumanInput/);
+});
+
+test("executeAction: request_human_input dispatches inputText with resolved value and tags source", async () => {
+  const adb = makeMockAdb();
+  const r = await executeAction(
+    { type: "request_human_input", field: "otp", prompt: "Enter OTP" },
+    {
+      targetPackage: "com.a",
+      adb,
+      resolveHumanInput: async ({ field, prompt }) => {
+        assert.equal(field, "otp");
+        assert.equal(prompt, "Enter OTP");
+        return { value: "987654", source: "static" };
+      },
+    },
+  );
+  assert.equal(r.ok, true);
+  assert.equal(r.terminal, false);
+  assert.deepEqual(r.humanInput, { field: "otp", source: "static" });
+  assert.deepEqual(adb.calls, [{ m: "inputText", t: "987654" }]);
+});
+
+test("executeAction: request_human_input returns error on empty resolved value", async () => {
+  const adb = makeMockAdb();
+  const r = await executeAction(
+    { type: "request_human_input", field: "otp", prompt: "Enter OTP" },
+    {
+      targetPackage: "com.a",
+      adb,
+      resolveHumanInput: async () => ({ value: "", source: "popup" }),
+    },
+  );
+  assert.equal(r.ok, false);
+  assert.match(r.error, /empty value/);
+  assert.equal(adb.calls.length, 0);
+});
+
+test("executeAction: request_human_input maps INPUT_TIMEOUT to blocked_by_auth:timeout terminal", async () => {
+  const adb = makeMockAdb();
+  const r = await executeAction(
+    { type: "request_human_input", field: "otp", prompt: "Enter OTP" },
+    {
+      targetPackage: "com.a",
+      adb,
+      resolveHumanInput: async () => {
+        throw new Error("INPUT_TIMEOUT");
+      },
+    },
+  );
+  assert.equal(r.ok, true);
+  assert.equal(r.terminal, true);
+  assert.equal(r.stopReason, "agent_done:blocked_by_auth:timeout");
+  assert.equal(r.humanInput.source, "timeout");
+});
+
+test("executeAction: request_human_input maps INPUT_CANCELLED to blocked_by_auth:user_cancelled terminal", async () => {
+  const adb = makeMockAdb();
+  const r = await executeAction(
+    { type: "request_human_input", field: "captcha", prompt: "What do you see?" },
+    {
+      targetPackage: "com.a",
+      adb,
+      resolveHumanInput: async () => {
+        throw new Error("INPUT_CANCELLED");
+      },
+    },
+  );
+  assert.equal(r.ok, true);
+  assert.equal(r.terminal, true);
+  assert.equal(r.stopReason, "agent_done:blocked_by_auth:user_cancelled");
+  assert.equal(r.humanInput.source, "cancel");
 });

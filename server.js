@@ -640,6 +640,16 @@ app.post(
     const ownerUserId =
       req.user && req.user.type === "user" ? req.user.sub : null;
 
+    // Non-PII trace: which staticInputs keys arrived (values omitted).
+    // Helps diagnose "config: null" in DB when frontend/backend disagree.
+    const staticKeys = validated.parsedStaticInputs
+      ? Object.keys(validated.parsedStaticInputs)
+      : [];
+    logger.info(
+      { jobId, traceId: req.traceId, staticInputKeys: staticKeys },
+      "start-job: staticInputs ingested"
+    );
+
     store.createJob(jobId, {
       status: "queued",
       step: 0,
@@ -671,6 +681,7 @@ app.post(
       goldenPath: validated.goldenPath,
       painPoints: validated.painPoints,
       goals: validated.goals,
+      staticInputs: validated.parsedStaticInputs || null,
       traceId: req.traceId,
     });
 
@@ -694,6 +705,8 @@ app.get("/api/v1/job-status/:jobId", statusLimiter, async (req, res) => {
 
   // Return only frontend-relevant fields — the full blob (crawlGraph,
   // triageLog, etc.) can exceed NGINX proxy buffers causing 502.
+  // `live` mirrors the SSE shape so the UI can fall back to REST when the
+  // SSE cache is empty (slow first tick, EventSource reconnect, stale bundle).
   res.json(wrapSuccess({
     status: job.status,
     step: job.step,
@@ -705,6 +718,7 @@ app.get("/api/v1/job-status/:jobId", statusLimiter, async (req, res) => {
     error: job.error,
     emailStatus: job.emailStatus,
     queuePosition: pos,
+    live: buildLivePayload(job),
   }));
 });
 
@@ -1027,32 +1041,39 @@ app.get("/api/v1/job-sse/:jobId", (req, res) => {
   req.on("close", cleanup);
 });
 
-function buildSSEPayload(job) {
+// Shared by /job-status poll and /job-sse stream — same `live` shape either way
+// so the frontend can transparently fall back when the SSE cache is empty.
+function buildLivePayload(job) {
   const live = job.live || {};
+  return {
+    phase: live.phase || job.status,
+    rawStep: live.rawStep,
+    maxRawSteps: live.maxRawSteps,
+    countedUniqueScreens: live.countedUniqueScreens,
+    targetUniqueScreens: live.targetUniqueScreens,
+    activity: live.activity,
+    packageName: live.packageName,
+    intentType: live.intentType,
+    latestAction: live.latestAction,
+    captureMode: live.captureMode,
+    screenshotUnavailable: live.screenshotUnavailable,
+    screenshotPath: live.path,
+    message: live.message,
+    reasoning: live.reasoning ?? null,
+    expectedOutcome: live.expectedOutcome ?? null,
+    perceptionBoxes: Array.isArray(live.perceptionBoxes) ? live.perceptionBoxes : [],
+    tapTarget: live.tapTarget ?? null,
+    navTabs: Array.isArray(live.navTabs) ? live.navTabs : [],
+    awaitingHumanInput: live.awaitingHumanInput || null,
+  };
+}
+
+function buildSSEPayload(job) {
   return {
     status: job.status,
     step: job.step,
     steps: job.steps,
-    live: {
-      phase: live.phase || job.status,
-      rawStep: live.rawStep,
-      maxRawSteps: live.maxRawSteps,
-      countedUniqueScreens: live.countedUniqueScreens,
-      targetUniqueScreens: live.targetUniqueScreens,
-      activity: live.activity,
-      packageName: live.packageName,
-      intentType: live.intentType,
-      latestAction: live.latestAction,
-      captureMode: live.captureMode,
-      screenshotUnavailable: live.screenshotUnavailable,
-      screenshotPath: live.path,
-      message: live.message,
-      reasoning: live.reasoning ?? null,
-      expectedOutcome: live.expectedOutcome ?? null,
-      perceptionBoxes: Array.isArray(live.perceptionBoxes) ? live.perceptionBoxes : [],
-      tapTarget: live.tapTarget ?? null,
-      navTabs: Array.isArray(live.navTabs) ? live.navTabs : [],
-    },
+    live: buildLivePayload(job),
     stopReason: job.stopReason,
     crawlQuality: job.crawlQuality,
     error: job.error,
@@ -1060,6 +1081,84 @@ function buildSSEPayload(job) {
     report: job.report,
   };
 }
+
+// ─── V16.1 Human-in-the-loop input ──────────────────────────────────────────
+//
+// When the agent encounters an OTP / verification-code / CAPTCHA field it
+// cannot fill from context, it emits `request_human_input`. agent-loop.js
+// calls `store.awaitJobInput(jobId)` which blocks until either:
+//   (a) the frontend POSTs a value to /human-input here,
+//   (b) the frontend POSTs a cancel to /human-input/cancel,
+//   (c) the 5-minute timeout fires inside the store.
+//
+// Rate limiting is per-jobId (not per-IP) because a single job with runaway
+// agent could spam inputs; cap at MAX_HUMAN_INPUT_PER_JOB to prevent abuse.
+
+const humanInputCounters = new Map();
+const MAX_HUMAN_INPUT_PER_JOB = 10;
+const MAX_HUMAN_INPUT_VALUE_LEN = 256;
+
+app.post(
+  "/api/v1/jobs/:jobId/human-input",
+  statusLimiter,
+  express.json(),
+  (req, res) => {
+    const { jobId } = req.params;
+    const job = store.getJob(jobId);
+    if (!job) return res.status(404).json(wrapError("Job not found"));
+
+    const value = req.body && req.body.value;
+    if (typeof value !== "string" || value.length === 0) {
+      return res.status(400).json(wrapError("`value` must be a non-empty string"));
+    }
+    if (value.length > MAX_HUMAN_INPUT_VALUE_LEN) {
+      return res.status(400).json(wrapError(
+        `\`value\` too long (max ${MAX_HUMAN_INPUT_VALUE_LEN} chars)`
+      ));
+    }
+
+    const count = humanInputCounters.get(jobId) || 0;
+    if (count >= MAX_HUMAN_INPUT_PER_JOB) {
+      return res.status(429).json(wrapError(
+        `Too many human-input submissions for this job (max ${MAX_HUMAN_INPUT_PER_JOB})`
+      ));
+    }
+    humanInputCounters.set(jobId, count + 1);
+
+    const ok = store.resolveJobInput(jobId, value);
+    if (!ok) {
+      return res.status(404).json(wrapError("No pending human-input request for this job"));
+    }
+
+    logger.info(
+      { jobId, valueLength: value.length, field: req.body.field || null, component: "human-input" },
+      "Human input submitted"
+    );
+    res.json(wrapSuccess({ submitted: true }));
+  }
+);
+
+app.post(
+  "/api/v1/jobs/:jobId/human-input/cancel",
+  statusLimiter,
+  express.json(),
+  (req, res) => {
+    const { jobId } = req.params;
+    const job = store.getJob(jobId);
+    if (!job) return res.status(404).json(wrapError("Job not found"));
+
+    const ok = store.rejectJobInput(jobId, "INPUT_CANCELLED");
+    if (!ok) {
+      return res.status(404).json(wrapError("No pending human-input request for this job"));
+    }
+
+    logger.info(
+      { jobId, component: "human-input" },
+      "Human input cancelled by user"
+    );
+    res.json(wrapSuccess({ cancelled: true }));
+  }
+);
 
 /**
  * GET /api/job-screenshot/:jobId/:filename — Serve a crawl screenshot by filename.

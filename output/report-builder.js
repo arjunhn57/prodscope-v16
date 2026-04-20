@@ -197,6 +197,46 @@ async function buildReport(params) {
     client,
   } = params;
 
+  // Hallucination guard: when the crawl was blocked before it could reach
+  // in-app screens, feeding launcher / auth screenshots to Sonnet produces
+  // fabricated P0 bugs ("Potential infinite loading state") that ruin
+  // design-partner credibility. Return a suppressed-analysis envelope
+  // instead of calling Sonnet at all.
+  const inAppScreens = crawlStats?.uniqueStates ?? 0;
+  const stopReason = crawlHealth?.stopReason ?? crawlStats?.stopReason;
+  const wasBlocked =
+    stopReason === "blocked_by_auth" ||
+    (stopReason === "budget_exhausted" && inAppScreens < 5);
+
+  if (wasBlocked) {
+    const suppressed = {
+      overall_score: null,
+      summary: `We couldn't reach the app's main flows — the crawl was blocked before exploration could complete (stopReason: ${stopReason}, in-app screens: ${inAppScreens}). We're not publishing findings for this run because they would be based on login/setup screens only.`,
+      critical_bugs: [],
+      ux_issues: [],
+      suggestions: [],
+      quick_wins: [],
+      recommended_next_steps: [
+        "Provide an OTP / verification code at upload (Known Inputs panel)",
+        "Or stay on the Live page to answer the human-input popup when it appears",
+        "Re-run once login succeeds to get real findings",
+      ],
+      coverage_assessment: `Incomplete — only ${inAppScreens} unique in-app screens explored.`,
+      coverage: {
+        summary: coverageSummary,
+        totalFlows: (flows || []).length,
+        completedFlows: (flows || []).filter((f) => f.outcome === "completed").length,
+      },
+      crawl_health: crawlHealth || {},
+      crawl_stats: crawlStats,
+      analysis_suppressed: true,
+    };
+    return {
+      report: JSON.stringify(suppressed, null, 2),
+      tokenUsage: { input_tokens: 0, output_tokens: 0 },
+    };
+  }
+
   const prompt = buildReportPrompt({
     packageName,
     coverageSummary,

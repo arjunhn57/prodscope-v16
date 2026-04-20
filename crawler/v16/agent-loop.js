@@ -32,6 +32,7 @@ const { createStateGraph } = require("./state");
 const { createBudget } = require("./budget");
 const { executeAction, validateAction } = require("./executor");
 const { decideNextAction } = require("./agent");
+const jobStore = require("../../jobs/store");
 
 const log = logger.child({ component: "v16-loop" });
 
@@ -128,6 +129,8 @@ function formatActionLabel(a) {
       return `wait(${a.ms})`;
     case "done":
       return `done(${a.reason || ""})`;
+    case "request_human_input":
+      return `request_human_input(${a.field || "?"})`;
     default:
       return a.type;
   }
@@ -144,12 +147,18 @@ function escapeRegex(s) {
 }
 
 /**
- * Strip any password/email literals that might slip into free-form agent text.
- * Agent is told to use ${EMAIL} / ${PASSWORD} tokens, but a model may quote
- * creds in its reasoning (e.g. "typing Prodscope@123…"). This is the last
- * line of defense before those strings reach the SSE stream / frontend.
+ * Strip any password/email/static-input literals that might slip into free-form
+ * agent text. Agent is told to use ${EMAIL} / ${PASSWORD} tokens, but a model
+ * may quote creds in its reasoning (e.g. "typing Prodscope@123…"). Also masks
+ * any staticInputs values (OTP codes, CAPTCHAs) the user supplied at upload
+ * time. This is the last line of defense before those strings reach the SSE
+ * stream / frontend.
+ *
+ * @param {string} text
+ * @param {{email?:string, password?:string}|null} creds
+ * @param {Record<string, string>|null} [staticInputs]
  */
-function maskSecrets(text, creds) {
+function maskSecrets(text, creds, staticInputs) {
   if (!text || typeof text !== "string") return text;
   const email = creds && creds.email;
   const password = creds && creds.password;
@@ -162,6 +171,13 @@ function maskSecrets(text, creds) {
   }
   out = out.replace(new RegExp(escapeRegex(DEFAULT_TEST_PASSWORD), "g"), "••••••••");
   out = out.replace(new RegExp(escapeRegex(DEFAULT_TEST_EMAIL), "g"), "•••@•••");
+  if (staticInputs && typeof staticInputs === "object") {
+    for (const value of Object.values(staticInputs)) {
+      if (typeof value === "string" && value.length >= 3) {
+        out = out.replace(new RegExp(escapeRegex(value), "g"), "••••••");
+      }
+    }
+  }
   return out;
 }
 
@@ -205,6 +221,7 @@ function buildLivePayload(args) {
     message,
     budgetSnap,
     credentials,
+    staticInputs,
   } = args;
   return {
     phase: "running",
@@ -215,12 +232,12 @@ function buildLivePayload(args) {
     activity: observation ? observation.activity : "",
     intentType: "",
     latestAction: formatActionLabel(action),
-    message: maskSecrets(message || `Step ${step}/${maxSteps}`, credentials),
+    message: maskSecrets(message || `Step ${step}/${maxSteps}`, credentials, staticInputs),
     captureMode: "screenshot",
     packageName,
     path: observation ? observation.screenshotPath : "",
-    reasoning: reasoning ? maskSecrets(reasoning, credentials) : null,
-    expectedOutcome: expectedOutcome ? maskSecrets(expectedOutcome, credentials) : null,
+    reasoning: reasoning ? maskSecrets(reasoning, credentials, staticInputs) : null,
+    expectedOutcome: expectedOutcome ? maskSecrets(expectedOutcome, credentials, staticInputs) : null,
     perceptionBoxes: [],
     tapTarget:
       action && (action.type === "tap" || action.type === "long_press")
@@ -245,6 +262,7 @@ function resolveDeps(opts) {
     adb: d.adb || adb,
     readiness: d.readiness || readiness,
     anthropic: d.anthropic, // may be undefined — agent.js uses default client then
+    store: d.store || jobStore,
   };
 }
 
@@ -266,6 +284,68 @@ async function runAgentLoop(opts) {
   const stateGraph = createStateGraph();
   const maxSteps = (opts.budgetConfig && opts.budgetConfig.maxSteps) || 80;
   const targetUniqueScreens = 25;
+
+  // V16.1: human-input resolution. staticInputs come from the upload form
+  // ({ otp, email_code, "2fa", captcha }) and are used once per field; if the
+  // agent re-emits request_human_input for the same field (static was wrong)
+  // we fall through to the live popup on the 2nd call.
+  const staticInputs = (opts.staticInputs && typeof opts.staticInputs === "object") ? opts.staticInputs : {};
+  const humanInputStaticUsed = new Set();
+  const HUMAN_INPUT_TIMEOUT_MS = 5 * 60 * 1000;
+
+  /**
+   * Resolver injected into executor.executeAction("request_human_input").
+   * Returns { value, source } — static first, live popup (via store waiter)
+   * otherwise. Pauses the wall-clock budget while waiting on the human so a
+   * 2-min popup does not kill the 30-min budget.
+   */
+  async function resolveHumanInput({ field, prompt }) {
+    const staticVal = staticInputs[field];
+    if (typeof staticVal === "string" && staticVal.length > 0 && !humanInputStaticUsed.has(field)) {
+      humanInputStaticUsed.add(field);
+      log.info({ jobId: opts.jobId, field }, "human-input: using static value");
+      return { value: staticVal, source: "static" };
+    }
+    if (!opts.jobId) {
+      throw new Error("request_human_input requires opts.jobId for popup fallback");
+    }
+    if (typeof budget.pauseWallClock === "function") budget.pauseWallClock();
+    if (opts.onProgress) {
+      try {
+        opts.onProgress({
+          phase: "running",
+          type: "awaiting_human_input",
+          field,
+          prompt,
+          timeoutMs: HUMAN_INPUT_TIMEOUT_MS,
+          engine: "v16",
+          jobId: opts.jobId,
+        });
+      } catch (err) {
+        log.warn({ err: err.message }, "onProgress threw during awaiting_human_input");
+      }
+    }
+    try {
+      const value = await deps.store.awaitJobInput(opts.jobId, { timeoutMs: HUMAN_INPUT_TIMEOUT_MS });
+      log.info({ jobId: opts.jobId, field }, "human-input: popup value received");
+      return { value, source: "popup" };
+    } finally {
+      if (typeof budget.resumeWallClock === "function") budget.resumeWallClock();
+      if (opts.onProgress) {
+        try {
+          opts.onProgress({
+            phase: "running",
+            type: "human_input_received",
+            field,
+            engine: "v16",
+            jobId: opts.jobId,
+          });
+        } catch (err) {
+          log.warn({ err: err.message }, "onProgress threw during human_input_received");
+        }
+      }
+    }
+  }
 
   /** @type {ScreenRecord[]} */
   const screens = [];
@@ -495,6 +575,7 @@ async function runAgentLoop(opts) {
             packageName: opts.targetPackage,
             budgetSnap: budget.snapshot(),
             credentials: opts.credentials,
+            staticInputs,
           }),
         );
       } catch (err) {
@@ -507,6 +588,7 @@ async function runAgentLoop(opts) {
       targetPackage: opts.targetPackage,
       credentials: opts.credentials || null,
       adb: deps.adb,
+      resolveHumanInput,
     };
     const v = validateAction(actionToExecute);
     if (!v.valid) {

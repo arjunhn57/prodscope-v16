@@ -33,7 +33,10 @@ const VALID_TYPES = new Set([
   "launch_app",
   "wait",
   "done",
+  "request_human_input",
 ]);
+
+const KNOWN_INPUT_FIELDS = new Set(["otp", "email_code", "2fa", "captcha"]);
 
 const MAX_WAIT_MS = 3000;
 const LONG_PRESS_MS = 800;
@@ -84,6 +87,18 @@ function validateAction(action) {
     case "done":
       if (typeof action.reason !== "string" || action.reason.length === 0) {
         return { valid: false, error: "done requires reason string" };
+      }
+      return { valid: true };
+
+    case "request_human_input":
+      if (typeof action.field !== "string" || action.field.length === 0) {
+        return { valid: false, error: "request_human_input requires field string" };
+      }
+      if (!KNOWN_INPUT_FIELDS.has(action.field)) {
+        return { valid: false, error: `request_human_input.field must be one of ${[...KNOWN_INPUT_FIELDS].join("|")}` };
+      }
+      if (typeof action.prompt !== "string" || action.prompt.length === 0) {
+        return { valid: false, error: "request_human_input requires prompt string" };
       }
       return { valid: true };
 
@@ -176,6 +191,52 @@ async function executeAction(action, ctx) {
         await sleep(action.ms);
         return { terminal: false, stopReason: null, ok: true, error: null };
 
+      case "request_human_input": {
+        if (typeof ctx.resolveHumanInput !== "function") {
+          return {
+            terminal: false,
+            stopReason: null,
+            ok: false,
+            error: "no resolveHumanInput handler wired",
+          };
+        }
+        try {
+          const resolved = await ctx.resolveHumanInput({
+            field: action.field,
+            prompt: action.prompt,
+          });
+          if (!resolved || typeof resolved.value !== "string" || resolved.value.length === 0) {
+            return {
+              terminal: false,
+              stopReason: null,
+              ok: false,
+              error: "resolveHumanInput returned empty value",
+            };
+          }
+          adb.inputText(resolved.value);
+          return {
+            terminal: false,
+            stopReason: null,
+            ok: true,
+            error: null,
+            humanInput: { field: action.field, source: resolved.source || "unknown" },
+          };
+        } catch (err) {
+          const isTimeout = err && err.message === "INPUT_TIMEOUT";
+          const isCancel = err && err.message === "INPUT_CANCELLED";
+          if (isTimeout || isCancel) {
+            return {
+              terminal: true,
+              stopReason: `agent_done:blocked_by_auth:${isTimeout ? "timeout" : "user_cancelled"}`,
+              ok: true,
+              error: null,
+              humanInput: { field: action.field, source: isTimeout ? "timeout" : "cancel" },
+            };
+          }
+          return { terminal: false, stopReason: null, ok: false, error: err.message };
+        }
+      }
+
       case "done":
         return {
           terminal: true,
@@ -198,5 +259,6 @@ module.exports = {
   executeAction,
   substituteCredentials,
   VALID_TYPES,
+  KNOWN_INPUT_FIELDS,
   MAX_WAIT_MS,
 };

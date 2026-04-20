@@ -17,6 +17,9 @@ export interface JobData {
   error: string | null;
   emailStatus: string | null;
   queuePosition: number;
+  // `live` mirrors SSEPayload["live"] so LiveCrawlPage can fall back to the
+  // REST poll when the SSE cache is empty (first tick / EventSource reconnect).
+  live?: SSEPayload["live"] | null;
 }
 
 export interface QueueStatus {
@@ -94,6 +97,11 @@ export interface SSEPayload {
     perceptionBoxes: Array<{ description: string; x: number; y: number; priority?: number }>;
     tapTarget: { x: number; y: number; element: string } | null;
     navTabs: Array<{ label: string; explored?: boolean; exhausted?: boolean }>;
+    awaitingHumanInput: {
+      field: "otp" | "email_code" | "2fa" | "captcha";
+      prompt: string;
+      timeoutMs: number;
+    } | null;
   };
   stopReason: string | null;
   crawlQuality: string | null;
@@ -246,4 +254,24 @@ export function useHealth() {
     },
     refetchInterval: POLL_INTERVALS.health,
   });
+}
+
+// ── Human Input (V16.1) ─────────────────────────────────────────────────────
+
+export async function postHumanInput(
+  jobId: string,
+  value: string,
+  field?: string
+): Promise<void> {
+  await api.post<ApiResponse<{ submitted: boolean }>>(
+    `jobs/${jobId}/human-input`,
+    { value, field }
+  );
+}
+
+export async function cancelHumanInput(jobId: string): Promise<void> {
+  await api.post<ApiResponse<{ cancelled: boolean }>>(
+    `jobs/${jobId}/human-input/cancel`,
+    {}
+  );
 }
