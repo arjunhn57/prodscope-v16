@@ -28,20 +28,30 @@ export function FilePreviewCard({
   const isError = state === "error";
   const isComplete = state === "complete";
   const isUploading = state === "uploading";
+  const isIdle = state === "idle";
 
   const ringTone = isError ? "error" : isComplete ? "success" : "progress";
-  const speedDisplay =
-    isUploading && progress.speedBps > 0
-      ? `${formatBytes(progress.speedBps)}/s`
-      : isComplete
-        ? "Upload complete"
-        : isError
-          ? "Failed"
+  const speedDisplay = isUploading && progress.speedBps > 0
+    ? `${formatBytes(progress.speedBps)}/s`
+    : isComplete
+      ? "Upload complete"
+      : isError
+        ? "Failed"
+        : isIdle
+          ? "Ready — add context below and click Launch"
           : "Preparing…";
   const etaDisplay =
     isUploading && progress.etaSec > 0 && progress.speedBps > 0
       ? `${formatEta(progress.etaSec)} remaining`
       : null;
+  const statusLabel = isError
+    ? "Upload failed"
+    : isComplete
+      ? "Ready to analyze"
+      : isIdle
+        ? "APK selected"
+        : "Uploading APK";
+  const showProgressBar = isUploading || isComplete || isError;
 
   const borderColor = isError
     ? "rgba(239,68,68,0.45)"
@@ -117,7 +127,7 @@ export function FilePreviewCard({
             className="text-[10.5px] font-semibold uppercase tracking-[0.22em] text-[var(--color-text-muted)]"
             style={{ fontFamily: "var(--font-label)" }}
           >
-            {isError ? "Upload failed" : isComplete ? "Ready to analyze" : "Uploading APK"}
+            {statusLabel}
           </div>
 
           <div
@@ -153,36 +163,38 @@ export function FilePreviewCard({
             )}
           </div>
 
-          <div className="mt-3 flex items-center gap-3">
-            <div
-              className="flex-1 h-1.5 rounded-full overflow-hidden"
-              style={{ background: "rgba(226,232,240,0.9)" }}
-            >
-              <motion.div
-                className="h-full rounded-full"
-                style={{
-                  background: isError
-                    ? "linear-gradient(90deg, #EF4444, #F59E0B)"
-                    : isComplete
-                      ? "linear-gradient(90deg, #10B981, #14B8A6)"
-                      : REPORT_GRADIENTS.scoreTrack,
-                }}
-                initial={{ width: 0 }}
-                animate={{ width: `${progress.percent}%` }}
-                transition={
-                  reduceMotion
-                    ? { duration: 0 }
-                    : { duration: 0.3, ease: EDITORIAL_EASE }
-                }
-              />
+          {showProgressBar && (
+            <div className="mt-3 flex items-center gap-3">
+              <div
+                className="flex-1 h-1.5 rounded-full overflow-hidden"
+                style={{ background: "rgba(226,232,240,0.9)" }}
+              >
+                <motion.div
+                  className="h-full rounded-full"
+                  style={{
+                    background: isError
+                      ? "linear-gradient(90deg, #EF4444, #F59E0B)"
+                      : isComplete
+                        ? "linear-gradient(90deg, #10B981, #14B8A6)"
+                        : REPORT_GRADIENTS.scoreTrack,
+                  }}
+                  initial={{ width: 0 }}
+                  animate={{ width: `${progress.percent}%` }}
+                  transition={
+                    reduceMotion
+                      ? { duration: 0 }
+                      : { duration: 0.3, ease: EDITORIAL_EASE }
+                  }
+                />
+              </div>
+              <div
+                className="text-[12.5px] font-semibold text-[var(--color-text-primary)] tabular-nums min-w-[44px] text-right"
+                style={{ fontFamily: "var(--font-mono)" }}
+              >
+                {Math.round(progress.percent)}%
+              </div>
             </div>
-            <div
-              className="text-[12.5px] font-semibold text-[var(--color-text-primary)] tabular-nums min-w-[44px] text-right"
-              style={{ fontFamily: "var(--font-mono)" }}
-            >
-              {Math.round(progress.percent)}%
-            </div>
-          </div>
+          )}
 
           {isError && error && (
             <div className="mt-4 flex flex-wrap items-center gap-3">
