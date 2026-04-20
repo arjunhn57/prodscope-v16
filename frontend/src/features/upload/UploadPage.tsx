@@ -54,25 +54,28 @@ export function UploadPage() {
     if (upload.state === "idle" || upload.state === "error") {
       setSubmitting(true);
       upload.startUpload(file, meta);
-      return;
     }
-    if (upload.state === "complete" && upload.result?.jobId) {
-      setSubmitting(true);
-      const jobId = upload.result.jobId;
-      setTimeout(
-        () => {
-          setFadingOut(true);
-          setTimeout(() => navigate(`/run/${jobId}`), reduceMotion ? 0 : 320);
-        },
-        reduceMotion ? 0 : 180
-      );
-    }
-  }, [file, meta, upload, submitting, navigate, reduceMotion]);
+  }, [file, meta, upload, submitting]);
 
   useEffect(() => {
-    if (upload.state === "uploading" || upload.state === "idle") return;
-    if (upload.state === "error") setSubmitting(false);
-  }, [upload.state]);
+    if (upload.state === "error") {
+      setSubmitting(false);
+      return;
+    }
+    if (upload.state !== "complete" || !upload.result?.jobId) return;
+    const jobId = upload.result.jobId;
+    const fadeDelay = reduceMotion ? 0 : 180;
+    const navDelay = reduceMotion ? 0 : 320;
+    let navTimer: ReturnType<typeof setTimeout> | undefined;
+    const fadeTimer = setTimeout(() => {
+      setFadingOut(true);
+      navTimer = setTimeout(() => navigate(`/run/${jobId}`), navDelay);
+    }, fadeDelay);
+    return () => {
+      clearTimeout(fadeTimer);
+      if (navTimer) clearTimeout(navTimer);
+    };
+  }, [upload.state, upload.result, navigate, reduceMotion]);
 
   const ctaHint = (() => {
     if (upload.state === "complete") return "Your analysis is queued and ready to start.";
