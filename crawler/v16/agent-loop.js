@@ -32,6 +32,7 @@ const { createStateGraph } = require("./state");
 const { createBudget } = require("./budget");
 const { executeAction, validateAction } = require("./executor");
 const { decideNextAction } = require("./agent");
+const { findAuthEscapeButton } = require("./auth-escape");
 const jobStore = require("../../jobs/store");
 
 const log = logger.child({ component: "v16-loop" });
@@ -143,12 +144,6 @@ function formatActionLabel(a) {
   }
 }
 
-// Generic test-account creds baked into the agent prompt. Kept in sync with
-// crawler/v16/prompts.js so the live SSE stream never echoes them back to the
-// frontend even if the model quotes them verbatim in reasoning/expectedOutcome.
-const DEFAULT_TEST_EMAIL = "flowarjun21@gmail.com";
-const DEFAULT_TEST_PASSWORD = "Prodscope@123";
-
 function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -156,10 +151,9 @@ function escapeRegex(s) {
 /**
  * Strip any password/email/static-input literals that might slip into free-form
  * agent text. Agent is told to use ${EMAIL} / ${PASSWORD} tokens, but a model
- * may quote creds in its reasoning (e.g. "typing Prodscope@123…"). Also masks
- * any staticInputs values (OTP codes, CAPTCHAs) the user supplied at upload
- * time. This is the last line of defense before those strings reach the SSE
- * stream / frontend.
+ * may quote creds in its reasoning. Also masks any staticInputs values (OTP
+ * codes, CAPTCHAs) the user supplied at upload time. Last line of defense
+ * before those strings reach the SSE stream / frontend.
  *
  * @param {string} text
  * @param {{email?:string, password?:string}|null} creds
@@ -176,8 +170,6 @@ function maskSecrets(text, creds, staticInputs) {
   if (email) {
     out = out.replace(new RegExp(escapeRegex(email), "g"), "•••@•••");
   }
-  out = out.replace(new RegExp(escapeRegex(DEFAULT_TEST_PASSWORD), "g"), "••••••••");
-  out = out.replace(new RegExp(escapeRegex(DEFAULT_TEST_EMAIL), "g"), "•••@•••");
   if (staticInputs && typeof staticInputs === "object") {
     for (const value of Object.values(staticInputs)) {
       if (typeof value === "string" && value.length >= 3) {
@@ -520,6 +512,7 @@ async function runAgentLoop(opts) {
           stagnationStreak,
           discoveryDelta5,
           recentFingerprints: recentFingerprints.slice(),
+          authEscape: findAuthEscapeButton(observation),
         },
         { anthropic: deps.anthropic },
       );

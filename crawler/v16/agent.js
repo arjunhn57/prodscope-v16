@@ -204,6 +204,7 @@ function buildRequest(ctx, modelKind) {
     stagnationStreak: ctx.stagnationStreak,
     discoveryDelta5: ctx.discoveryDelta5,
     recentFingerprints: ctx.recentFingerprints,
+    authEscape: ctx.authEscape || null,
   });
 
   const contentParts = [];

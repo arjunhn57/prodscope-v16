@@ -94,29 +94,35 @@ const CACHEABLE_PREFIX = [
   "    not tried, drawer/hamburger icons, overflow menus (⋮).",
   "  * AUTH HANDLING — strict priority order when you hit a login wall:",
   "      1. USER-PROVIDED CREDENTIALS (highest priority). If the Credentials:",
-  "         line below shows a real email and password, USE THEM via the literal",
-  "         tokens ${EMAIL} and ${PASSWORD} in your type() actions (the executor",
-  "         substitutes at runtime). This is the crawl owner's own account —",
-  "         they explicitly want THEIR data exercised. IGNORE any Google",
-  "         sign-in button. IGNORE the default test account below. This rule",
-  "         takes precedence over any visual cue the app offers.",
-  "      2. GOOGLE SIGN-IN (only if Credentials: (none provided)). If you see",
-  "         \"Sign in with Google\" / \"Continue with Google\", tap it — the",
-  "         device has a pre-configured Google account wired up.",
-  "      3. DEFAULT TEST ACCOUNT (only if Credentials: (none provided) AND no",
-  "         Google option visible). The device has a generic test account:",
-  "           Email: 'flowarjun21@gmail.com', Password: 'Prodscope@123'.",
-  "         Type these literals into the email and password fields.",
-  "      4. DISMISS the login wall via \"Skip\", \"Browse as guest\", X/close",
-  "         icon, or press_back so you can keep exploring unauthenticated —",
-  "         only if none of 1–3 are usable.",
-  "    PHONE-OTP / VERIFICATION CODE / 2FA / CAPTCHA: these codes are NEVER in the prompt.",
-  "      If you identify such a field and already tapped it (cursor is in the field), emit",
+  "         line shows a real email and password, navigate to the email/password",
+  "         form and type them via the literal tokens ${EMAIL} and ${PASSWORD}",
+  "         (the executor substitutes at runtime — plaintext never enters the",
+  "         prompt). On an auth-choice screen with method buttons, that means",
+  "         tapping the email path (\"Continue with email\" / \"Sign in with email\"),",
+  "         NOT Google/Apple/Facebook SSO — we have email creds, not SSO creds.",
+  "      2. STATIC CODE MATCH. If the user pre-supplied otp / email_code / 2fa /",
+  "         captcha AND the visible screen has a matching code-entry field, tap",
+  "         the field first (to focus the cursor) THEN emit request_human_input",
+  "         on the next step. The resolver auto-fills from the static value.",
+  "      3. ESCAPE BUTTON. If the Context shows an `AuthEscape:` line below",
+  "         OR you can visually identify a Skip / Browse as guest / Not now /",
+  "         Later / X / close button on the screen, TAP that button — it",
+  "         bypasses the login wall so exploration can continue unauthenticated.",
+  "         Prefer the coordinates from the AuthEscape line when present (it",
+  "         snaps to pixel-perfect XML bounds).",
+  "      4. BLOCKED. If none of 1–3 apply (no creds, no static code, no escape",
+  "         button visible), emit done(\"blocked_by_auth\") immediately. Do NOT",
+  "         guess credentials. Do NOT tap random UI hoping to bypass. Do NOT",
+  "         tap an SSO button (Google/Apple/Facebook) — the device has no",
+  "         account configured, so it will fail and waste budget. The report",
+  "         will correctly note \"blocked by login\" as the outcome.",
+  "    PHONE-OTP / VERIFICATION CODE / 2FA / CAPTCHA (inside step 2): the codes",
+  "      are NEVER in the prompt. After tapping the code-entry field, emit",
   "        { \"type\": \"request_human_input\", \"field\": \"otp\", \"prompt\": \"Enter the OTP sent to your phone\" }",
-  "      The resolver fills the code from the user's pre-supplied static value OR asks the",
-  "      user live. Do NOT guess codes. Do NOT emit request_human_input more than once per",
-  "      auth screen — if the same field reappears, it means the prior value was wrong and",
-  "      the resolver will automatically fall through to live-popup on the next attempt.",
+  "      The resolver fills from the user's pre-supplied static value OR asks",
+  "      the user live. Do NOT guess. Do NOT emit request_human_input more than",
+  "      once per auth screen — if the same field reappears, the prior value was",
+  "      wrong and the resolver auto-falls through to a live popup on retry.",
   "  * If the screen looks identical to the last step (feedback=no_change), your last tap",
   "    missed. Pick a DIFFERENT target — do not re-tap the same coords. Scroll, try a",
   "    neighbor, or press_back to try a different path.",
@@ -173,6 +179,7 @@ function buildCacheablePrefix() {
  * @property {number} [stagnationStreak]    // consecutive no_change count
  * @property {number} [discoveryDelta5]     // new unique screens in last 5 steps
  * @property {string[]} [recentFingerprints] // unique FPs seen in last ~10 steps
+ * @property {{label:string, source:'xml'|'perception', x:number, y:number}|null} [authEscape]
  */
 
 /**
@@ -211,6 +218,14 @@ function buildStepSuffix(ctx) {
   if (Array.isArray(ctx.recentFingerprints) && ctx.recentFingerprints.length > 0) {
     const fps = ctx.recentFingerprints.slice(-10).map((fp) => fp.slice(0, 8)).join(" ");
     lines.push(`RecentFP: ${fps}`);
+  }
+
+  if (ctx.authEscape && typeof ctx.authEscape === "object" && ctx.authEscape.label) {
+    // Injected when auth-escape.js finds a Skip/Guest button on the current screen.
+    // Giving pixel-perfect coords lets the agent tap without a vision round-trip.
+    lines.push(
+      `AuthEscape: "${ctx.authEscape.label}" at (${ctx.authEscape.x},${ctx.authEscape.y}) [${ctx.authEscape.source}]`,
+    );
   }
 
   const lastStr = ctx.lastAction ? formatHistoryLine({
