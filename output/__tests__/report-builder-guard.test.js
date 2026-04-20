@@ -141,3 +141,22 @@ test("guard: reads stopReason from crawlStats when crawlHealth missing", async (
   const report = JSON.parse(result.report);
   assert.equal(report.analysis_suppressed, true);
 });
+
+test("guard: suppresses on agent_done:blocked_by_auth:* compound stopReason", async () => {
+  const client = makeFakeClient();
+  const result = await buildReport({
+    packageName: "com.example.app",
+    coverageSummary: {},
+    deterministicFindings: [],
+    aiAnalyses: [],
+    flows: [],
+    crawlStats: { uniqueStates: 7 }, // above the 5-screen threshold
+    opts: {},
+    crawlHealth: { stopReason: "agent_done:blocked_by_auth:fp_revisit_loop" },
+    client,
+  });
+
+  assert.equal(client.calls.length, 0, "Sonnet must NOT be called on fp-revisit auth exit");
+  const report = JSON.parse(result.report);
+  assert.equal(report.analysis_suppressed, true);
+});

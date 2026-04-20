@@ -115,14 +115,22 @@ function validateAction(action) {
 /**
  * Substitute credential placeholders in typed text.
  * Replaces ${EMAIL} and ${PASSWORD} with actual values from ctx.credentials.
+ * ${EMAIL} prefers credentials.email, falling back to credentials.username —
+ * the upload UI accepts both, and some users paste { "username": "...", ... }.
  * @param {string} text
- * @param {{email?:string, password?:string}|null} credentials
+ * @param {{email?:string, username?:string, password?:string}|null} credentials
  * @returns {string}
  */
 function substituteCredentials(text, credentials) {
   let out = text;
-  if (credentials && typeof credentials.email === "string") {
-    out = out.split("${EMAIL}").join(credentials.email);
+  const emailLike =
+    credentials && typeof credentials.email === "string" && credentials.email
+      ? credentials.email
+      : credentials && typeof credentials.username === "string" && credentials.username
+        ? credentials.username
+        : null;
+  if (emailLike) {
+    out = out.split("${EMAIL}").join(emailLike);
   }
   if (credentials && typeof credentials.password === "string") {
     out = out.split("${PASSWORD}").join(credentials.password);

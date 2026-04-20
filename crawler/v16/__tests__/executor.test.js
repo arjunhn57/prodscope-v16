@@ -140,6 +140,29 @@ test("substituteCredentials handles missing fields", () => {
   assert.equal(substituteCredentials("x ${PASSWORD}", { email: "e" }), "x ${PASSWORD}");
 });
 
+test("substituteCredentials falls back to credentials.username when email missing", () => {
+  // Users copying the frontend placeholder type {"username":"...","password":"..."}.
+  // Without this fallback, ${EMAIL} stays literal and the agent can't type the login.
+  assert.equal(
+    substituteCredentials("${EMAIL}", { username: "arjun@example.com", password: "p" }),
+    "arjun@example.com",
+  );
+  assert.equal(
+    substituteCredentials("user=${EMAIL}&pw=${PASSWORD}", {
+      username: "arjun@example.com",
+      password: "p@ss",
+    }),
+    "user=arjun@example.com&pw=p@ss",
+  );
+});
+
+test("substituteCredentials prefers email over username when both are present", () => {
+  assert.equal(
+    substituteCredentials("${EMAIL}", { email: "primary@x.com", username: "fallback@x.com" }),
+    "primary@x.com",
+  );
+});
+
 test("substituteCredentials does not alter text without placeholders", () => {
   assert.equal(substituteCredentials("plain text", { email: "a", password: "b" }), "plain text");
 });

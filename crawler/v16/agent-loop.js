@@ -58,6 +58,13 @@ const DISCOVERY_WINDOW_STEPS = 5;
 // Recent-fingerprint buffer length — shown to the agent so it knows which
 // fingerprints to avoid revisiting.
 const RECENT_FP_BUFFER = 10;
+// Auth-loop exit — if the SAME fingerprint has been observed this many times
+// total and the agent is still not choosing to exit (e.g. biztoso 6f926f08:
+// tapped (352,1006) at steps #09/#16/#22/#29 on the same login FP across a
+// launcher-orbit), force-terminate with blocked_by_auth. Wider net than the
+// ORBIT_REPEATS window (5-in-8); catches cross-orbit loops stagnationStreak
+// resets through.
+const AUTH_LOOP_FP_THRESHOLD = 3;
 
 /**
  * @typedef {Object} RunOptions
@@ -367,6 +374,9 @@ async function runAgentLoop(opts) {
   const recentFingerprints = []; // rolling buffer (FP-change only), most-recent last
   /** rolling buffer of fingerprints from every step (last ORBIT_WINDOW) */
   const orbitWindow = [];
+  /** total visit count per fingerprint across the whole run — drives the
+   *  auth-loop hard-exit when the agent orbits the same auth wall. */
+  const fingerprintVisits = new Map();
   const uniqueCountByStep = [0]; // index == step; value == uniqueScreens AFTER that step (step 0 = 0)
 
   // ── Launch app ──
@@ -438,6 +448,12 @@ async function runAgentLoop(opts) {
     ).length;
     const isOrbiting =
       orbitWindow.length >= ORBIT_WINDOW && orbitRepeats >= ORBIT_REPEATS;
+    // Auth-loop visit counter — unbounded-window companion to orbitWindow.
+    // Increments on every observation, not just fp-change, so hitting the
+    // same auth wall across launcher-orbit cycles still counts.
+    const currentFpVisits =
+      (fingerprintVisits.get(observation.fingerprint) ?? 0) + 1;
+    fingerprintVisits.set(observation.fingerprint, currentFpVisits);
 
     // ── Record visit ──
     try {
@@ -557,6 +573,36 @@ async function runAgentLoop(opts) {
       actionToExecute = { type: "press_back" };
       consecutiveIdenticalCount = 0;
       lastActionForConsecutive = actionToExecute;
+    }
+
+    // ── Auth-loop hard exit ──
+    // Wider than the orbit detector (5-in-8) — catches biztoso-style
+    // launcher-orbit loops where the agent keeps returning to the same auth
+    // wall across press_home / launch_app transitions. Runs AFTER the model
+    // has decided so the agent gets fair attempts on the 1st and 2nd visits;
+    // only repeat offenders get overridden. Exclusions:
+    //   - type: a legitimate form-fill hits the same FP repeatedly
+    //   - done: the agent already chose to exit
+    //   - request_human_input: that path has its own exit via timeout
+    if (
+      currentFpVisits >= AUTH_LOOP_FP_THRESHOLD &&
+      actionToExecute?.type !== "done" &&
+      actionToExecute?.type !== "type" &&
+      actionToExecute?.type !== "request_human_input"
+    ) {
+      log.warn(
+        {
+          step,
+          fingerprint: observation.fingerprint,
+          visits: currentFpVisits,
+          overriddenAction: actionToExecute?.type,
+        },
+        "auth-loop: fingerprint revisited — forcing done(blocked_by_auth)",
+      );
+      actionToExecute = {
+        type: "done",
+        reason: "blocked_by_auth:fp_revisit_loop",
+      };
     }
 
     // ── Emit SSE progress ──

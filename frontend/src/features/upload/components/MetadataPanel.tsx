@@ -33,7 +33,7 @@ const FIELDS: FieldConfig[] = [
   {
     key: "credentials",
     label: "Sign-in credentials",
-    placeholder: '{"username": "demo", "password": "demo123"}',
+    placeholder: '{"email": "you@example.com", "password": "yourpass"}',
     icon: Key,
     type: "text",
   },

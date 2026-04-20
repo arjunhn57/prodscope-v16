@@ -205,7 +205,7 @@ async function buildReport(params) {
   const inAppScreens = crawlStats?.uniqueStates ?? 0;
   const stopReason = crawlHealth?.stopReason ?? crawlStats?.stopReason;
   const wasBlocked =
-    stopReason === "blocked_by_auth" ||
+    String(stopReason || "").includes("blocked_by_auth") ||
     (stopReason === "budget_exhausted" && inAppScreens < 5);
 
   if (wasBlocked) {

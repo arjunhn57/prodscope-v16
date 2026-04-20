@@ -645,9 +645,24 @@ app.post(
     const staticKeys = validated.parsedStaticInputs
       ? Object.keys(validated.parsedStaticInputs)
       : [];
+    // Non-PII trace: which credential fields arrived (values omitted). Answers
+    // "the user said they gave creds — did we actually receive them?" from logs.
+    const credFields = validated.parsedCredentials
+      ? Object.keys(validated.parsedCredentials).filter(
+          (k) =>
+            typeof validated.parsedCredentials[k] === "string" &&
+            validated.parsedCredentials[k].length > 0,
+        )
+      : [];
     logger.info(
-      { jobId, traceId: req.traceId, staticInputKeys: staticKeys },
-      "start-job: staticInputs ingested"
+      {
+        jobId,
+        traceId: req.traceId,
+        staticInputKeys: staticKeys,
+        credentialsPresent: credFields.length > 0,
+        credentialFields: credFields,
+      },
+      "start-job: inputs ingested"
     );
 
     store.createJob(jobId, {
