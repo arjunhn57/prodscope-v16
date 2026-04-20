@@ -25,13 +25,6 @@ export function UploadPage() {
 
   const upload = useUploadJob();
 
-  useEffect(() => {
-    if (file && upload.state === "idle") {
-      upload.startUpload(file, meta);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [file]);
-
   const handleFileAccepted = useCallback(
     (accepted: File) => {
       upload.reset();
@@ -56,22 +49,35 @@ export function UploadPage() {
   }, [file, meta, upload]);
 
   const handleLaunch = useCallback(() => {
-    if (upload.state !== "complete" || !upload.result?.jobId) return;
-    setSubmitting(true);
-    const jobId = upload.result.jobId;
-    setTimeout(
-      () => {
-        setFadingOut(true);
-        setTimeout(() => navigate(`/run/${jobId}`), reduceMotion ? 0 : 320);
-      },
-      reduceMotion ? 0 : 180
-    );
-  }, [upload.state, upload.result, navigate, reduceMotion]);
+    if (!file) return;
+    if (upload.state === "idle" || upload.state === "error") {
+      setSubmitting(true);
+      upload.startUpload(file, meta);
+      return;
+    }
+    if (upload.state === "complete" && upload.result?.jobId) {
+      setSubmitting(true);
+      const jobId = upload.result.jobId;
+      setTimeout(
+        () => {
+          setFadingOut(true);
+          setTimeout(() => navigate(`/run/${jobId}`), reduceMotion ? 0 : 320);
+        },
+        reduceMotion ? 0 : 180
+      );
+    }
+  }, [file, meta, upload, navigate, reduceMotion]);
+
+  useEffect(() => {
+    if (upload.state === "uploading" || upload.state === "idle") return;
+    if (upload.state === "error") setSubmitting(false);
+  }, [upload.state]);
 
   const ctaHint = (() => {
     if (upload.state === "complete") return "Your analysis is queued and ready to start.";
-    if (upload.state === "uploading") return "We'll enable launch when the upload completes.";
+    if (upload.state === "uploading") return "Uploading your APK — hang tight.";
     if (upload.state === "error") return "Resolve the upload error before launching.";
+    if (file) return "Add context below if needed, then launch when you're ready.";
     return "Drop an APK above to enable launch.";
   })();
 
@@ -204,8 +210,8 @@ export function UploadPage() {
             className="mt-10 md:mt-12 flex justify-center"
           >
             <LaunchCTA
-              ready={upload.state === "complete"}
-              submitting={submitting}
+              ready={!!file && upload.state !== "uploading"}
+              submitting={submitting || upload.state === "uploading"}
               onClick={handleLaunch}
               hint={ctaHint}
             />
