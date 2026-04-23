@@ -26,7 +26,10 @@ const metrics = require("../lib/metrics");
 const { alertJobFailed, alertConsecutiveFailures, alertDiskCritical } = require("../lib/alerts");
 const { logger, createJobLogger } = require("../lib/logger");
 
-const { runAgentLoop } = require("../crawler/v16/agent-loop");
+// Engine selection happens at job runtime below — both v16 and v17 are loaded
+// so a run can be steered via CRAWL_ENGINE env var without restarting.
+const { runAgentLoop: runAgentLoopV16 } = require("../crawler/v16/agent-loop");
+const { runAgentLoop: runAgentLoopV17 } = require("../crawler/v17/agent-loop");
 const { parseApk } = require("../ingestion/manifest-parser");
 const { assessCompatibility } = require("../lib/app-compatibility");
 const adb = require("../crawler/adb");
@@ -221,6 +224,24 @@ async function processJob(jobId, apkPath, opts) {
         }
       }
 
+      // Clear prior-run user data so every crawl sees a cold-start session.
+      // pm install -r preserves the app's data dir, so a prior run's login
+      // cookies / session tokens survive into the next run and AuthDriver never
+      // sees an auth screen to claim. Mirrors scripts/golden-suite-run.js
+      // resetForApp() — keeps the API path equivalent to the regression harness.
+      if (packageName) {
+        try {
+          require("child_process").execFileSync(
+            "adb",
+            ["shell", "pm", "clear", packageName],
+            { timeout: 30000, stdio: "pipe" },
+          );
+          log.info({ pkg: packageName }, "app data cleared pre-launch");
+        } catch (e) {
+          log.warn({ err: e, pkg: packageName }, "pm clear failed — continuing with stale data");
+        }
+      }
+
       // Launch app using launcher activity from manifest, or monkey fallback
       try {
         if (appProfile.launcherActivity) {
@@ -240,12 +261,14 @@ async function processJob(jobId, apkPath, opts) {
 
       await sleep(3000);
 
-      if (CRAWL_ENGINE !== "v16") {
+      if (CRAWL_ENGINE !== "v16" && CRAWL_ENGINE !== "v17") {
         throw new Error(
-          `V15 engine has been archived. Set CRAWL_ENGINE=v16 (current: ${CRAWL_ENGINE}). ` +
+          `Unknown CRAWL_ENGINE "${CRAWL_ENGINE}". Supported: "v16" (default) or "v17" (driver-first). ` +
             `V15 sources are preserved at crawler/_v15-archive/ for rollback.`,
         );
       }
+      const runAgentLoop = CRAWL_ENGINE === "v17" ? runAgentLoopV17 : runAgentLoopV16;
+      log.info({ engine: CRAWL_ENGINE }, "crawl: selected agent loop engine");
       const crawlPromise = runAgentLoop({
         jobId,
         targetPackage: packageName,
