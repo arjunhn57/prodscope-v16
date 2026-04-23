@@ -1,0 +1,18 @@
+[
+  {
+    "label": "biztoso",
+    "pkg": "com.biztoso.app",
+    "description": "auth-walled; AuthDriver email flow",
+    "credentials": {
+      "email": "a6zev@dollicons.com",
+      "password": "Test@123"
+    },
+    "maxSteps": 30
+  },
+  {
+    "label": "wikipedia",
+    "pkg": "org.wikipedia",
+    "description": "no-auth content; coverage regression target",
+    "maxSteps": 30
+  }
+]
