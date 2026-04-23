@@ -18,6 +18,10 @@ HEALTH_RETRY_DELAY=3
 
 log() { echo "[deploy] $(date '+%H:%M:%S') $*"; }
 
+# Log the incoming SHA so rollbacks have a paper trail.
+DEPLOY_SHA="$(git -C "$APP_DIR" rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
+log "Deploying SHA=$DEPLOY_SHA"
+
 # ── 1. Backup current ────────────────────────────────────────────────────────
 log "Backing up current deployment..."
 mkdir -p "$BACKUP_DIR"
@@ -62,12 +66,26 @@ for i in $(seq 1 $MAX_HEALTH_RETRIES); do
 done
 
 # ── 5. Rollback on failure ───────────────────────────────────────────────────
-log "ERROR: Health check failed after $MAX_HEALTH_RETRIES attempts!"
+log "ERROR: Health check failed after $MAX_HEALTH_RETRIES attempts (SHA=$DEPLOY_SHA)"
 log "Rolling back to $BACKUP_NAME..."
 cd "$HOME"
 tar -xzf "$BACKUP_DIR/$BACKUP_NAME"
 cd "$APP_DIR"
 npm ci --omit=dev --ignore-scripts 2>&1 | tail -1
 npx pm2 reload ecosystem.config.js || npx pm2 start ecosystem.config.js
-log "Rolled back. Investigate logs: npx pm2 logs backend"
-exit 1
+
+# Verify the rollback itself is healthy. If THIS fails too, we're in an
+# outage — log loudly and exit with a distinct code so alerting can tell
+# "bad deploy, rolled back" from "total loss of service".
+log "Verifying rollback health..."
+for i in $(seq 1 $MAX_HEALTH_RETRIES); do
+  if curl -sf "$HEALTH_URL" > /dev/null 2>&1; then
+    log "Rollback healthy (attempt $i/$MAX_HEALTH_RETRIES). SHA=$DEPLOY_SHA was reverted."
+    exit 1
+  fi
+  log "Rollback health check $i/$MAX_HEALTH_RETRIES failed, retrying in ${HEALTH_RETRY_DELAY}s..."
+  sleep "$HEALTH_RETRY_DELAY"
+done
+
+log "CRITICAL: Rollback itself is unhealthy. Production is down. Investigate immediately: npx pm2 logs backend"
+exit 2

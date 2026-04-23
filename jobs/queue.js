@@ -63,7 +63,11 @@ async function init() {
     jobQueue = new Queue("crawl-jobs", {
       connection,
       defaultJobOptions: {
-        attempts: 1,
+        // One free retry on transient emulator / adb / network failure. A
+        // second failure is actually broken — don't keep retrying in a
+        // loop and burn the user's credits.
+        attempts: 2,
+        backoff: { type: "fixed", delay: 10000 },
         removeOnComplete: { count: 100 },
         removeOnFail: { count: 50 },
       },

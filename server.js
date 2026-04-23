@@ -150,6 +150,18 @@ const applyLimiter = rateLimit({
 });
 
 // ─── Multer with file size limit ─────────────────────────────────────────────
+// Ensure the upload scratch directory exists at startup. Without this a VM
+// disk-cleanup (or a fresh box) that removes /tmp/uploads leaves multer in a
+// state where every POST /api/v1/start-job 500s with ENOENT. The recursive
+// flag is safe on existing dirs and creates parents if needed.
+
+try {
+  fs.mkdirSync(UPLOAD_DEST, { recursive: true });
+} catch (err) {
+  // eslint-disable-next-line no-console -- logger not ready this early
+  console.error(`[startup] failed to ensure UPLOAD_DEST ${UPLOAD_DEST}:`, err.message);
+  process.exit(1);
+}
 
 const upload = multer({
   dest: UPLOAD_DEST,

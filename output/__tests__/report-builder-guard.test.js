@@ -160,3 +160,94 @@ test("guard: suppresses on agent_done:blocked_by_auth:* compound stopReason", as
   const report = JSON.parse(result.report);
   assert.equal(report.analysis_suppressed, true);
 });
+
+test("guard: suppresses when AI oracle analyzed fewer than 3 screens (absolute floor)", async () => {
+  // Real case from job 3631ab85 — 26 unique screens crawled but only 2 fed to
+  // Sonnet, which then hallucinated "app stuck on loading screen".
+  const client = makeFakeClient();
+  const result = await buildReport({
+    packageName: "com.example.app",
+    coverageSummary: {},
+    deterministicFindings: [],
+    aiAnalyses: [],
+    flows: [],
+    crawlStats: { uniqueStates: 26 },
+    opts: {},
+    crawlHealth: {
+      stopReason: "agent_done:press_back_blocked",
+      aiScreensAnalyzed: 2,
+      aiScreensSkipped: 24,
+    },
+    client,
+  });
+
+  assert.equal(client.calls.length, 0, "Sonnet must NOT be called on thin AI coverage");
+  const report = JSON.parse(result.report);
+  assert.equal(report.analysis_suppressed, true);
+  assert.equal(report.suppression_trigger, "thin_ai_coverage");
+  assert.match(report.summary, /2 of 26/);
+});
+
+test("guard: suppresses when AI oracle ratio < 20% of unique screens", async () => {
+  const client = makeFakeClient();
+  const result = await buildReport({
+    packageName: "com.example.app",
+    coverageSummary: {},
+    deterministicFindings: [],
+    aiAnalyses: [],
+    flows: [],
+    crawlStats: { uniqueStates: 50 },
+    opts: {},
+    crawlHealth: {
+      stopReason: "target_reached",
+      aiScreensAnalyzed: 5, // 10% — above absolute floor, below ratio floor
+    },
+    client,
+  });
+
+  assert.equal(client.calls.length, 0, "Sonnet must NOT be called when < 20% of screens triaged");
+  const report = JSON.parse(result.report);
+  assert.equal(report.analysis_suppressed, true);
+  assert.equal(report.suppression_trigger, "thin_ai_coverage");
+});
+
+test("guard: allows Sonnet when aiScreensAnalyzed is healthy", async () => {
+  const client = makeFakeClient();
+  const result = await buildReport({
+    packageName: "com.example.app",
+    coverageSummary: {},
+    deterministicFindings: [],
+    aiAnalyses: [],
+    flows: [],
+    crawlStats: { uniqueStates: 20 },
+    opts: {},
+    crawlHealth: {
+      stopReason: "target_reached",
+      aiScreensAnalyzed: 8, // 40% — above both floors
+    },
+    client,
+  });
+
+  assert.equal(client.calls.length, 1, "Sonnet should be called when AI coverage is adequate");
+  const report = JSON.parse(result.report);
+  assert.notEqual(report.analysis_suppressed, true);
+});
+
+test("guard: does NOT suppress when aiScreensAnalyzed is not reported at all", async () => {
+  // Back-compat: legacy callers / test fixtures that don't thread the field
+  // should continue to hit the Sonnet path. Thin-AI-coverage check is opt-in.
+  const client = makeFakeClient();
+  const result = await buildReport({
+    packageName: "com.example.app",
+    coverageSummary: {},
+    deterministicFindings: [],
+    aiAnalyses: [],
+    flows: [],
+    crawlStats: { uniqueStates: 12 },
+    opts: {},
+    crawlHealth: { stopReason: "target_reached" }, // no aiScreensAnalyzed field
+    client,
+  });
+
+  assert.equal(client.calls.length, 1, "missing aiScreensAnalyzed should not trigger suppression");
+});

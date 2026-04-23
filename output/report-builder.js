@@ -197,31 +197,89 @@ async function buildReport(params) {
     client,
   } = params;
 
-  // Hallucination guard: when the crawl was blocked before it could reach
-  // in-app screens, feeding launcher / auth screenshots to Sonnet produces
-  // fabricated P0 bugs ("Potential infinite loading state") that ruin
-  // design-partner credibility. Return a suppressed-analysis envelope
-  // instead of calling Sonnet at all.
+  // Hallucination guard: suppress the Sonnet analysis pass when the crawl
+  // coverage is too thin to produce honest findings. Three independent
+  // triggers:
+  //
+  //   A) stopReason indicates the crawl was blocked at auth — common case
+  //      from the legacy `blocked_by_auth:*` prefix that V17 dropped but
+  //      V16 still emits; we also catch bare `press_back_blocked` /
+  //      `fp_revisit_loop` at low screen counts.
+  //   B) budget exhausted with fewer than 5 in-app screens.
+  //   C) the AI oracle triage ended up analyzing fewer than 3 absolute
+  //      screens, OR fewer than 20% of the unique screens reached. This
+  //      is the "20 screens crawled but only 2 analyzed" case that
+  //      caused Sonnet to hallucinate "app stuck on loading screen" on a
+  //      working biztoso run (2026-04-23, job 3631ab85).
+  //
+  // In any of these cases we return a structured, honest envelope with
+  // `analysis_suppressed: true` instead of paying Sonnet to invent P0 bugs.
   const inAppScreens = crawlStats?.uniqueStates ?? 0;
   const stopReason = crawlHealth?.stopReason ?? crawlStats?.stopReason;
-  const wasBlocked =
-    String(stopReason || "").includes("blocked_by_auth") ||
-    (stopReason === "budget_exhausted" && inAppScreens < 5);
+  const aiScreensAnalyzedRaw = crawlHealth?.aiScreensAnalyzed;
+  const aiScreensAnalyzed = aiScreensAnalyzedRaw ?? 0;
+  const MIN_AI_SCREENS_ABSOLUTE = 3;
+  const MIN_AI_SCREENS_RATIO = 0.2;
 
-  if (wasBlocked) {
+  const blockedByAuth = String(stopReason || "").includes("blocked_by_auth");
+  const budgetExhaustedEarly =
+    stopReason === "budget_exhausted" && inAppScreens < 5;
+  // Thin-AI-coverage check only applies when the runner actually reports
+  // aiScreensAnalyzed — otherwise we'd suppress every legacy test fixture
+  // that doesn't thread the field. The production code path (jobs/runner.js:465)
+  // always sets it, so this only affects unit test scaffolding.
+  const thinAiCoverage =
+    typeof aiScreensAnalyzedRaw === "number" &&
+    inAppScreens > 0 &&
+    (aiScreensAnalyzed < MIN_AI_SCREENS_ABSOLUTE ||
+      aiScreensAnalyzed / inAppScreens < MIN_AI_SCREENS_RATIO);
+
+  if (blockedByAuth || budgetExhaustedEarly || thinAiCoverage) {
+    let suppressionReason;
+    let recommendedNextSteps;
+
+    if (blockedByAuth) {
+      suppressionReason =
+        `we couldn't reach the app's main flows — the crawl was blocked before exploration could complete ` +
+        `(stopReason: ${stopReason}, in-app screens: ${inAppScreens}). ` +
+        `We're not publishing findings for this run because they would be based on login/setup screens only.`;
+      recommendedNextSteps = [
+        "Provide an OTP / verification code at upload (Known Inputs panel)",
+        "Or stay on the Live page to answer the human-input popup when it appears",
+        "Re-run once login succeeds to get real findings",
+      ];
+    } else if (budgetExhaustedEarly) {
+      suppressionReason =
+        `the crawl stopped after only ${inAppScreens} unique screens — not enough coverage to publish findings. ` +
+        `Re-run with a larger step budget or check the crawl logs for navigation issues.`;
+      recommendedNextSteps = [
+        "Check the crawl logs for repeated press_back / fp_revisit_loop",
+        "Re-run with a larger step budget",
+        "Verify the app's launcher activity is reachable",
+      ];
+    } else {
+      // thin AI coverage
+      suppressionReason =
+        `the AI analysis pass only triaged ${aiScreensAnalyzed} of ${inAppScreens} unique screens ` +
+        `(${Math.round((aiScreensAnalyzed / inAppScreens) * 100)}%). That's below our threshold for publishing ` +
+        `findings — at this coverage the Sonnet pass tends to extrapolate from splash / loading frames. ` +
+        `Re-run with a deeper budget or a more permissive triage to get honest findings.`;
+      recommendedNextSteps = [
+        "Re-run the crawl with a higher MAX_CRAWL_STEPS",
+        "Review the oracle triage filters in oracle/triage.js — they may be over-aggressively skipping",
+        "Inspect the screenshots directly to see what the crawler actually reached",
+      ];
+    }
+
     const suppressed = {
       overall_score: null,
-      summary: `We couldn't reach the app's main flows — the crawl was blocked before exploration could complete (stopReason: ${stopReason}, in-app screens: ${inAppScreens}). We're not publishing findings for this run because they would be based on login/setup screens only.`,
+      summary: `Analysis suppressed: ${suppressionReason}`,
       critical_bugs: [],
       ux_issues: [],
       suggestions: [],
       quick_wins: [],
-      recommended_next_steps: [
-        "Provide an OTP / verification code at upload (Known Inputs panel)",
-        "Or stay on the Live page to answer the human-input popup when it appears",
-        "Re-run once login succeeds to get real findings",
-      ],
-      coverage_assessment: `Incomplete — only ${inAppScreens} unique in-app screens explored.`,
+      recommended_next_steps: recommendedNextSteps,
+      coverage_assessment: `Incomplete — only ${inAppScreens} unique in-app screens explored, ${aiScreensAnalyzed} analyzed by AI.`,
       coverage: {
         summary: coverageSummary,
         totalFlows: (flows || []).length,
@@ -230,6 +288,11 @@ async function buildReport(params) {
       crawl_health: crawlHealth || {},
       crawl_stats: crawlStats,
       analysis_suppressed: true,
+      suppression_trigger: blockedByAuth
+        ? "blocked_by_auth"
+        : budgetExhaustedEarly
+        ? "budget_exhausted_early"
+        : "thin_ai_coverage",
     };
     return {
       report: JSON.stringify(suppressed, null, 2),

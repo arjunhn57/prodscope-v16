@@ -24,6 +24,10 @@ test-results/
 audit-*.png
 frontend/audit-*.png
 
+# Debug screenshots — never belong in the repo. Frontend assets under
+# frontend/public/*.png are explicit paths, not root-level globs.
+/*.png
+
 # Editor
 .vscode/*
 !.vscode/extensions.json

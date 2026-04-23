@@ -263,8 +263,7 @@ async function processJob(jobId, apkPath, opts) {
 
       if (CRAWL_ENGINE !== "v16" && CRAWL_ENGINE !== "v17") {
         throw new Error(
-          `Unknown CRAWL_ENGINE "${CRAWL_ENGINE}". Supported: "v16" (default) or "v17" (driver-first). ` +
-            `V15 sources are preserved at crawler/_v15-archive/ for rollback.`,
+          `Unknown CRAWL_ENGINE "${CRAWL_ENGINE}". Supported: "v16" (legacy fallback) or "v17" (driver-first, default).`,
         );
       }
       const runAgentLoop = CRAWL_ENGINE === "v17" ? runAgentLoopV17 : runAgentLoopV16;
