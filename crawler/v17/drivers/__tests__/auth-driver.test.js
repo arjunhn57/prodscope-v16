@@ -3,17 +3,30 @@
 /**
  * Tests for v17/drivers/auth-driver.js.
  *
- * 8 cases per plan nifty-nibbling-widget.md A.2 — all use mocked classifier
- * output (deps.classify is injected), fixtures drawn from ≥3 apps:
+ * 8 core cases (A.2) + F4 regression cases (2026-04-23 coverage fix).
+ * All use mocked classifier output (deps.classify injected); fixtures
+ * drawn from ≥3 apps so no single-app overfitting can sneak in.
  *
- *   1. Auth-choice + creds → taps node with role='auth_option_email' (biztoso).
- *   2. Email form, initial → taps email input, sets authStep='email_focused' (biztoso).
- *   3. Email form, post-focus → types ${EMAIL} (gmail).
- *   4. Full 5-step happy path (biztoso).
- *   5. Auth-choice, no creds, dismiss present → taps dismiss (linkedin).
- *   6. Auth-choice, no creds, no dismiss → done('blocked_by_auth:no_known_path') (duckduckgo).
- *   7. OTP-only screen → done('blocked_by_auth:otp_required') (telegram).
- *   8. Unknown auth layout → returns null (cryptic.app → LLMFallback).
+ * Core (per plan A.2):
+ *   1. claim: password input + creds → true (biztoso).
+ *   2. claim: ≥2 auth-option CTAs + creds → true (biztoso).
+ *   3. claim: home screen with stray "Not now" → false.
+ *   4. claim: lone "Sign out" in profile menu → false.
+ *   5. decide: auth-choice + creds → taps auth_option_email (biztoso).
+ *   6. decide: email form initial → taps email input (biztoso).
+ *   7. decide: email form post-focus → types ${EMAIL} (gmail).
+ *   8. decide: full 5-step happy path (biztoso).
+ *   9. decide: auth-choice no creds + Skip → taps dismiss (linkedin).
+ *  10. decide: auth-choice no creds, no dismiss → null + fp blocked (duckduckgo).
+ *  11. decide: OTP-only → null + fp blocked (telegram).
+ *  12. decide: unknown layout → null.
+ *
+ * F4 regression (coverage fix 2026-04-23):
+ *  13. claim: no creds → false (gate closes AuthDriver on no-auth apps).
+ *  14. claim: credentials missing email-only → false.
+ *  15. claim: fp in authBlockedFingerprints → false (no re-claim loop).
+ *  16. markFingerprintBlocked: adds structural fp to state Set, returns null.
+ *  17. Wikipedia-style upsell: decide then re-claim → second claim is false.
  */
 
 const test = require("node:test");
@@ -148,26 +161,39 @@ const crypticUnknownXml = wrap(
   node({ text: "Tap to begin", bounds: "[80,1400][1000,1520]", pkg: "com.cryptic.app" }),
 );
 
-// ── claim() — tightened to require structural auth signals ────────────
+// Shared credentials state for claim tests that should reach structural signals.
+// AuthDriver's F2 gate (2026-04-23) makes claim a no-op unless both email+password
+// are present, so every test that wants to exercise Signal 1 / Signal 2 MUST pass
+// a creds-bearing state. Tests that want to verify the F2 gate itself pass no creds.
+function credsState(extra) {
+  return {
+    credentials: { email: "u@test.com", password: "pw" },
+    dispatchCount: 1,
+    ...(extra || {}),
+  };
+}
 
-test("claim: true when XML has a password input (biztoso email form)", () => {
-  assert.equal(authDriver.claim({ xml: biztosoEmailFormXml }), true);
+// ── claim() — tightened to require structural auth signals + F2 creds gate ───
+
+test("claim: true when XML has a password input + creds (biztoso email form)", () => {
+  assert.equal(authDriver.claim({ xml: biztosoEmailFormXml }, credsState()), true);
 });
 
-test("claim: true when XML has ≥2 auth-option CTAs (biztoso auth-choice)", () => {
-  assert.equal(authDriver.claim({ xml: biztosoAuthChoiceXml }), true);
+test("claim: true when XML has ≥2 auth-option CTAs + creds (biztoso auth-choice)", () => {
+  assert.equal(authDriver.claim({ xml: biztosoAuthChoiceXml }, credsState()), true);
 });
 
 test("claim: FALSE on a home screen whose only auth-shaped signal is a Skip button", () => {
   // Post-login feed with a promotional "Not now" modal — this is exactly the
-  // pattern that burned 8 steps on biztoso. AuthDriver must NOT claim.
+  // pattern that burned 8 steps on biztoso. AuthDriver must NOT claim even
+  // when credentials are available.
   const postLoginWithModalXml = wrap(
     node({ text: "Welcome back, Arjun", clickable: false, bounds: "[0,200][1080,320]" }),
     node({ text: "Rate this app", clickable: false, bounds: "[80,1200][1000,1320]" }),
     node({ text: "Not now", bounds: "[80,1400][520,1520]" }),
     node({ text: "Rate", bounds: "[560,1400][1000,1520]" }),
   );
-  assert.equal(authDriver.claim({ xml: postLoginWithModalXml }), false);
+  assert.equal(authDriver.claim({ xml: postLoginWithModalXml }, credsState()), false);
 });
 
 test("claim: FALSE when only a single 'Sign out' link exists (profile menu)", () => {
@@ -176,7 +202,7 @@ test("claim: FALSE when only a single 'Sign out' link exists (profile menu)", ()
     node({ text: "Notification settings", bounds: "[40,540][1040,660]" }),
     node({ text: "Sign out", bounds: "[40,1400][1040,1520]" }),
   );
-  assert.equal(authDriver.claim({ xml: profileMenuXml }), false);
+  assert.equal(authDriver.claim({ xml: profileMenuXml }, credsState()), false);
 });
 
 // ── 1. Auth-choice + creds → taps auth_option_email ────────────────────
@@ -333,9 +359,14 @@ test("decide: auth-choice no creds + Skip → taps dismiss (linkedin)", async ()
   assert.equal(action.y, 1660);
 });
 
-// ── 6. Auth-choice, no creds, no dismiss → done(no_known_path) ─────────
+// ── 6. Auth-choice, no creds, no dismiss → null + fp blocked ───────────
+// Behavior change (2026-04-23 coverage fix): AuthDriver used to emit
+// done('blocked_by_auth:no_known_path') here, which killed the whole run.
+// It now yields null and adds the screen's fingerprint to
+// state.authBlockedFingerprints so the next claim() on the same screen
+// returns false and the dispatcher falls through to ExplorationDriver.
 
-test("decide: auth-choice no creds and no dismiss → done('blocked_by_auth:no_known_path') (duckduckgo)", async () => {
+test("decide: auth-choice no creds and no dismiss → null + fp blocked (duckduckgo)", async () => {
   const classifier = makeClassifier((c) => {
     if (c.label === "Log in") return "auth_option_email";
     if (c.label === "Sign up") return "auth_option_other";
@@ -347,24 +378,38 @@ test("decide: auth-choice no creds and no dismiss → done('blocked_by_auth:no_k
     state,
     { classify: classifier.fn },
   );
-  assert.ok(action);
-  assert.equal(action.type, "done");
-  assert.equal(action.reason, "blocked_by_auth:no_known_path");
+  assert.equal(action, null, "must yield, not terminate the run");
+  assert.ok(
+    state.authBlockedFingerprints instanceof Set,
+    "authBlockedFingerprints must be lazily initialized",
+  );
+  assert.equal(
+    state.authBlockedFingerprints.size,
+    1,
+    "screen fp must be recorded so re-claim is suppressed",
+  );
 });
 
-// ── 7. OTP-only screen → done(otp_required) ────────────────────────────
+// ── 7. OTP-only screen → null + fp blocked ─────────────────────────────
+// Same coverage fix: OTP screens can't be auto-driven without user input,
+// but killing the run with terminal done() robs the rest of the app of
+// crawl coverage. Yield, record the fp, let other drivers try press_back
+// or alternate paths.
 
-test("decide: OTP-only screen → done('blocked_by_auth:otp_required') (telegram)", async () => {
+test("decide: OTP-only screen → null + fp blocked (telegram)", async () => {
   const classifier = makeClassifier(() => "otp_input");
-  const state = { dispatchCount: 1 };
+  const state = {
+    credentials: { email: "u@test.com", password: "pw" },
+    dispatchCount: 1,
+  };
   const action = await authDriver.decide(
     { xml: telegramOtpXml, packageName: "org.telegram.messenger" },
     state,
     { classify: classifier.fn },
   );
-  assert.ok(action);
-  assert.equal(action.type, "done");
-  assert.equal(action.reason, "blocked_by_auth:otp_required");
+  assert.equal(action, null, "OTP yield must not terminate the run");
+  assert.ok(state.authBlockedFingerprints instanceof Set);
+  assert.equal(state.authBlockedFingerprints.size, 1);
 });
 
 // ── 8. Unknown auth layout → null (LLMFallback) ────────────────────────
@@ -378,4 +423,105 @@ test("decide: unknown auth layout → returns null (lets LLMFallback take over)"
     { classify: classifier.fn },
   );
   assert.equal(action, null, "unknown layout must yield to LLMFallback");
+});
+
+// ── F4 regression cases (2026-04-23 coverage fix) ──────────────────────
+//
+// These exist because Phase D.1 regressed Wikipedia from 26 → 10 unique
+// screens: AuthDriver claimed the "Sign in to sync" optional upsell
+// (which has 2+ AUTH_OPTION_REGEX-matching CTAs) and then emitted
+// terminal done('blocked_by_auth:no_credentials') on a no-auth app. The
+// F2 credentials gate + F3 fp-blocked set are the structural fix, and
+// these tests lock them in so future edits can't re-introduce the regression.
+
+test("claim: no credentials → false (F2 gate disables driver on no-auth apps)", () => {
+  // Even on an XML that looks like a password form, no credentials means
+  // AuthDriver has nothing to do. This is how Wikipedia, DuckDuckGo,
+  // Firefox, Files, Forecast, and Opera-Mini get AuthDriver out of their way.
+  assert.equal(authDriver.claim({ xml: biztosoEmailFormXml }, { dispatchCount: 1 }), false);
+  assert.equal(authDriver.claim({ xml: biztosoEmailFormXml }, {}), false);
+  assert.equal(authDriver.claim({ xml: biztosoEmailFormXml }, null), false);
+  assert.equal(authDriver.claim({ xml: biztosoEmailFormXml }), false);
+});
+
+test("claim: partial credentials (email only, password only) → false", () => {
+  assert.equal(
+    authDriver.claim(
+      { xml: biztosoEmailFormXml },
+      { credentials: { email: "u@test.com" }, dispatchCount: 1 },
+    ),
+    false,
+  );
+  assert.equal(
+    authDriver.claim(
+      { xml: biztosoEmailFormXml },
+      { credentials: { password: "pw" }, dispatchCount: 1 },
+    ),
+    false,
+  );
+});
+
+test("claim: fp in authBlockedFingerprints → false (no re-claim loop)", async () => {
+  // Drive the DuckDuckGo no-known-path flow once so the fp is blocked,
+  // then re-claim the same screen — it must NOT re-enter AuthDriver.
+  const classifier = makeClassifier((c) => {
+    if (c.label === "Log in") return "auth_option_email";
+    if (c.label === "Sign up") return "auth_option_other";
+    return "unknown";
+  });
+  // Creds present so claim would otherwise succeed via Signal 2 (≥2 CTAs).
+  const state = credsState();
+  const observation = {
+    xml: duckduckgoAuthChoiceXml,
+    packageName: "com.duckduckgo.mobile.android",
+    activity: "com.duckduckgo.mobile.android/.MainActivity",
+  };
+
+  // First pass: decide yields null and marks fp.
+  // With creds present + email auth_option, the driver taps email — so to
+  // force the "no known path" branch we temporarily clear creds before decide.
+  const noCreds = { ...state, credentials: null };
+  const action = await authDriver.decide(observation, noCreds, { classify: classifier.fn });
+  assert.equal(action, null);
+  assert.ok(noCreds.authBlockedFingerprints instanceof Set);
+  assert.equal(noCreds.authBlockedFingerprints.size, 1);
+
+  // Second pass: reinstate creds and re-claim — must be false (fp is blocked).
+  const reclaimState = {
+    ...credsState(),
+    authBlockedFingerprints: noCreds.authBlockedFingerprints,
+  };
+  assert.equal(authDriver.claim(observation, reclaimState), false);
+});
+
+test("markFingerprintBlocked: adds structural fp to state Set, returns null", () => {
+  const state = {};
+  const observation = {
+    xml: duckduckgoAuthChoiceXml,
+    packageName: "com.duckduckgo.mobile.android",
+    activity: ".MainActivity",
+  };
+  const ret = authDriver.markFingerprintBlocked(state, observation, "test-reason");
+  assert.equal(ret, null, "must return null so call sites `return markBlocked(...)`");
+  assert.ok(state.authBlockedFingerprints instanceof Set);
+  assert.equal(state.authBlockedFingerprints.size, 1);
+  // Second call with same fp is idempotent.
+  authDriver.markFingerprintBlocked(state, observation, "test-reason");
+  assert.equal(state.authBlockedFingerprints.size, 1, "duplicate fp must not grow the Set");
+});
+
+test("Wikipedia-upsell scenario: upsell XML → claim false when no creds, no terminal done() on crawl", async () => {
+  // Simulates Wikipedia's "Sign in to sync" upsell: two auth-option CTAs
+  // ("Sign in", "Create account") plus some article content, no password
+  // input. Phase D.1 claimed this screen on Signal 2 and killed the run.
+  const wikipediaUpsellXml = wrap(
+    node({ text: "Featured article", clickable: false, bounds: "[0,100][1080,200]" }),
+    node({ text: "Read more", bounds: "[80,300][1000,420]", pkg: "org.wikipedia" }),
+    node({ text: "Sign in", bounds: "[80,1400][500,1520]", pkg: "org.wikipedia" }),
+    node({ text: "Create account", bounds: "[540,1400][1000,1520]", pkg: "org.wikipedia" }),
+  );
+
+  // No credentials (Wikipedia golden-suite config) → claim must be false.
+  assert.equal(authDriver.claim({ xml: wikipediaUpsellXml }, { dispatchCount: 1 }), false);
+  assert.equal(authDriver.claim({ xml: wikipediaUpsellXml }), false);
 });

@@ -43,7 +43,11 @@ const jobStore = require("../../jobs/store");
 
 // V17 additions: driver dispatcher + per-run classifier cache + LLMFallback wrapper.
 const { dispatch } = require("./dispatcher");
-const { createCache: createClassifierCache } = require("./node-classifier");
+const {
+  createCache: createClassifierCache,
+  computeStructuralFingerprint,
+} = require("./node-classifier");
+const { parseClickableGraph } = require("./drivers/clickable-graph");
 const { createLlmFallback } = require("./drivers/llm-fallback");
 
 const log = logger.child({ component: "v17-loop" });
@@ -439,6 +443,29 @@ async function runAgentLoop(opts) {
     const { observation, feedback, fingerprintChanged } = capture;
     lastFeedback = feedback;
 
+    // Structural fingerprint — derived from XML layout (resource-ids, class
+    // names, input types, bucketed bounds) rather than pixel bytes. Identifies
+    // the same logical screen across dynamic-text changes (timestamps,
+    // notification counts, usernames). The pixel fingerprint on
+    // `observation.fingerprint` stays authoritative for per-step `no_change`
+    // feedback — that comparison genuinely needs "did the pixels move?".
+    // Structural fp is what we count for uniqueness and use for revisit
+    // detection so an animated banner does not explode the counter.
+    let structuralFp = "";
+    try {
+      if (observation.xml) {
+        const graph = parseClickableGraph(observation.xml);
+        structuralFp = computeStructuralFingerprint(
+          graph,
+          observation.packageName,
+          observation.activity,
+        );
+      }
+    } catch (err) {
+      log.warn({ err: err.message, step }, "structural fp failed — falling back to pixel fp");
+    }
+    observation.structuralFingerprint = structuralFp || observation.fingerprint;
+
     // ── Stagnation / discovery counters ──
     if (feedback === "no_change") {
       stagnationStreak += 1;
@@ -447,17 +474,17 @@ async function runAgentLoop(opts) {
     }
     if (fingerprintChanged) {
       fpChangesSinceImage += 1;
-      recentFingerprints.push(observation.fingerprint);
+      recentFingerprints.push(observation.structuralFingerprint);
       if (recentFingerprints.length > RECENT_FP_BUFFER) {
         recentFingerprints.shift();
       }
     }
     // Orbit buffer: always push current fingerprint so we can detect bouncing
     // between a small set of screens (signal independent of feedback labels).
-    orbitWindow.push(observation.fingerprint);
+    orbitWindow.push(observation.structuralFingerprint);
     if (orbitWindow.length > ORBIT_WINDOW) orbitWindow.shift();
     const orbitRepeats = orbitWindow.filter(
-      (fp) => fp === observation.fingerprint,
+      (fp) => fp === observation.structuralFingerprint,
     ).length;
     const isOrbiting =
       orbitWindow.length >= ORBIT_WINDOW && orbitRepeats >= ORBIT_REPEATS;
@@ -465,12 +492,14 @@ async function runAgentLoop(opts) {
     // Increments on every observation, not just fp-change, so hitting the
     // same auth wall across launcher-orbit cycles still counts.
     const currentFpVisits =
-      (fingerprintVisits.get(observation.fingerprint) ?? 0) + 1;
-    fingerprintVisits.set(observation.fingerprint, currentFpVisits);
+      (fingerprintVisits.get(observation.structuralFingerprint) ?? 0) + 1;
+    fingerprintVisits.set(observation.structuralFingerprint, currentFpVisits);
 
     // ── Record visit ──
+    // Keyed by STRUCTURAL fingerprint so one logical screen with dynamic text
+    // (clocks, counts, usernames) counts exactly once, not N times.
     try {
-      stateGraph.recordVisit(observation.fingerprint, {
+      stateGraph.recordVisit(observation.structuralFingerprint, {
         activity: observation.activity,
         packageName: observation.packageName,
         step,
@@ -483,6 +512,7 @@ async function runAgentLoop(opts) {
       xml: observation.xml,
       index: step,
       fingerprint: observation.fingerprint,
+      structuralFingerprint: observation.structuralFingerprint,
       activity: observation.activity,
     });
 
@@ -708,15 +738,15 @@ async function runAgentLoop(opts) {
       log.warn(
         {
           step,
-          fingerprint: observation.fingerprint,
+          fingerprint: observation.structuralFingerprint,
           visits: currentFpVisits,
           overriddenAction: actionToExecute?.type,
         },
-        "auth-loop: fingerprint revisited — forcing done(blocked_by_auth)",
+        "fp_revisit_loop: structural fingerprint revisited — forcing done",
       );
       actionToExecute = {
         type: "done",
-        reason: "blocked_by_auth:fp_revisit_loop",
+        reason: "fp_revisit_loop",
       };
     }
 

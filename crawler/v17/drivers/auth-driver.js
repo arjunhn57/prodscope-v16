@@ -415,5 +415,6 @@ module.exports = {
   executeEmailFlow,
   executeAuthChoice,
   pickSubmitButton,
+  markFingerprintBlocked,
   STUCK_DISPATCH_LIMIT,
 };
