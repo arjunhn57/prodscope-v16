@@ -443,14 +443,13 @@ async function runAgentLoop(opts) {
     const { observation, feedback, fingerprintChanged } = capture;
     lastFeedback = feedback;
 
-    // Structural fingerprint — derived from XML layout (resource-ids, class
-    // names, input types, bucketed bounds) rather than pixel bytes. Identifies
-    // the same logical screen across dynamic-text changes (timestamps,
-    // notification counts, usernames). The pixel fingerprint on
-    // `observation.fingerprint` stays authoritative for per-step `no_change`
-    // feedback — that comparison genuinely needs "did the pixels move?".
-    // Structural fp is what we count for uniqueness and use for revisit
-    // detection so an animated banner does not explode the counter.
+    // Also compute a structural fingerprint (layout-only). It is attached to
+    // the observation for logging + downstream debugging, but we DO NOT use
+    // it for unique-screen counting: structural fp collapses articles /
+    // content-pages that share a template (Wikipedia: one "article" fp for
+    // every article), which tanks coverage numbers. The pixel fingerprint on
+    // `observation.fingerprint` is what V16's Phase C used to reach 26
+    // Wikipedia screens, and what the counter uses here.
     let structuralFp = "";
     try {
       if (observation.xml) {
@@ -462,7 +461,7 @@ async function runAgentLoop(opts) {
         );
       }
     } catch (err) {
-      log.warn({ err: err.message, step }, "structural fp failed — falling back to pixel fp");
+      log.warn({ err: err.message, step }, "structural fp compute failed");
     }
     observation.structuralFingerprint = structuralFp || observation.fingerprint;
 
@@ -474,17 +473,17 @@ async function runAgentLoop(opts) {
     }
     if (fingerprintChanged) {
       fpChangesSinceImage += 1;
-      recentFingerprints.push(observation.structuralFingerprint);
+      recentFingerprints.push(observation.fingerprint);
       if (recentFingerprints.length > RECENT_FP_BUFFER) {
         recentFingerprints.shift();
       }
     }
     // Orbit buffer: always push current fingerprint so we can detect bouncing
     // between a small set of screens (signal independent of feedback labels).
-    orbitWindow.push(observation.structuralFingerprint);
+    orbitWindow.push(observation.fingerprint);
     if (orbitWindow.length > ORBIT_WINDOW) orbitWindow.shift();
     const orbitRepeats = orbitWindow.filter(
-      (fp) => fp === observation.structuralFingerprint,
+      (fp) => fp === observation.fingerprint,
     ).length;
     const isOrbiting =
       orbitWindow.length >= ORBIT_WINDOW && orbitRepeats >= ORBIT_REPEATS;
@@ -492,14 +491,15 @@ async function runAgentLoop(opts) {
     // Increments on every observation, not just fp-change, so hitting the
     // same auth wall across launcher-orbit cycles still counts.
     const currentFpVisits =
-      (fingerprintVisits.get(observation.structuralFingerprint) ?? 0) + 1;
-    fingerprintVisits.set(observation.structuralFingerprint, currentFpVisits);
+      (fingerprintVisits.get(observation.fingerprint) ?? 0) + 1;
+    fingerprintVisits.set(observation.fingerprint, currentFpVisits);
 
     // ── Record visit ──
-    // Keyed by STRUCTURAL fingerprint so one logical screen with dynamic text
-    // (clocks, counts, usernames) counts exactly once, not N times.
+    // Keyed by pixel fingerprint. Map-based: counts.size == unique screens;
+    // revisits increment the value for that key without adding a new key, so
+    // the counter is guaranteed single-count per unique fp.
     try {
-      stateGraph.recordVisit(observation.structuralFingerprint, {
+      stateGraph.recordVisit(observation.fingerprint, {
         activity: observation.activity,
         packageName: observation.packageName,
         step,
@@ -677,24 +677,27 @@ async function runAgentLoop(opts) {
       );
     }
 
-    // ── press_back guardrail on auth screens ──
-    // Drivers never emit press_back (AuthDriver concedes via
-    // done('blocked_by_auth:*') instead). This guardrail therefore only
-    // fires against a rogue LLMFallback action; when it does, we don't
-    // re-ask (drivers will re-produce the same output) — we concede.
+    // ── press_back guardrail on auth-looking screens ──
+    // Drivers never emit press_back; this guardrail only fires against a
+    // rogue LLMFallback action. When it does, we don't re-ask (drivers
+    // would re-produce the same output) — we concede. The stopReason is
+    // `press_back_blocked` without an auth prefix because isAuthScreen is
+    // a structural check that can trip on upsell modals inside non-auth
+    // apps (e.g. Files' "Turn on backup" panel) — labeling those as
+    // blocked_by_auth would misrepresent the run.
     if (
       decision.action?.type === "press_back" &&
       isAuthScreen(observation)
     ) {
       log.warn(
         { step },
-        "press_back blocked on auth screen — conceding blocked_by_auth",
+        "press_back blocked on auth-looking screen — conceding press_back_blocked",
       );
       decision = {
         ...decision,
         action: {
           type: "done",
-          reason: "blocked_by_auth:press_back_blocked",
+          reason: "press_back_blocked",
         },
       };
     }
@@ -738,11 +741,11 @@ async function runAgentLoop(opts) {
       log.warn(
         {
           step,
-          fingerprint: observation.structuralFingerprint,
+          fingerprint: observation.fingerprint,
           visits: currentFpVisits,
           overriddenAction: actionToExecute?.type,
         },
-        "fp_revisit_loop: structural fingerprint revisited — forcing done",
+        "fp_revisit_loop: fingerprint revisited — forcing done",
       );
       actionToExecute = {
         type: "done",

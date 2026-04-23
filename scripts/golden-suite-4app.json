@@ -1,0 +1,30 @@
+[
+  {
+    "label": "biztoso",
+    "pkg": "com.biztoso.app",
+    "description": "auth-walled; AuthDriver email flow",
+    "credentials": {
+      "email": "aetdummyaccount@gmail.com",
+      "password": "Test@1234"
+    },
+    "maxSteps": 25
+  },
+  {
+    "label": "wikipedia",
+    "pkg": "org.wikipedia",
+    "description": "no-auth content; coverage regression target",
+    "maxSteps": 25
+  },
+  {
+    "label": "files",
+    "pkg": "com.google.android.apps.nbu.files",
+    "description": "no-auth; BottomNav + permission",
+    "maxSteps": 20
+  },
+  {
+    "label": "spotify",
+    "pkg": "com.spotify.music",
+    "description": "auth + media UI",
+    "maxSteps": 20
+  }
+]
