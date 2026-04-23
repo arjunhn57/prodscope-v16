@@ -1,0 +1,434 @@
+"use strict";
+
+/**
+ * Tests for v17/drivers/exploration-driver.js.
+ *
+ * 12 cases per Phase C.2 plan:
+ *   1. claim: true on BottomNavigationView XML.
+ *   2. claim: true on TabLayout XML.
+ *   3. claim: true on NavigationMenuItemView (drawer) XML.
+ *   4. claim: true on homogeneous list (≥3 same-class siblings, aligned).
+ *   5. claim: false on plain content screen.
+ *   6. decide: first call taps the first unvisited nav tab and records key.
+ *   7. decide: second call on same screen taps a DIFFERENT nav tab (state memory).
+ *   8. decide: all tabs tapped + list items present → taps list item.
+ *   9. decide: scroll-exhaustion — after a scroll with identical fingerprint on
+ *      next call, the fingerprint is marked exhausted and decide returns null.
+ *  10. decide: plain content with nav but no unvisited targets + no scrollable
+ *      container → returns null (yields to LLMFallback).
+ *  11. claim: true on Compose-style bottom nav (generic android.view.View cluster
+ *      in bottom band, no recognisable nav className).
+ *  12. decide: structural bottom-bar path taps the leftmost candidate when
+ *      className-based nav detection finds nothing.
+ */
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+
+const explorationDriver = require("../exploration-driver");
+
+// ── XML fixture helpers ─────────────────────────────────────────────────
+
+function wrap(...nodes) {
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<hierarchy rotation="0">\n${nodes.join("\n")}\n</hierarchy>`;
+}
+
+function node({
+  text = "",
+  desc = "",
+  resourceId = "",
+  cls = "android.widget.FrameLayout",
+  pkg = "com.example",
+  clickable = true,
+  bounds = "[0,0][100,100]",
+}) {
+  return (
+    `<node text="${text}" resource-id="${resourceId}" class="${cls}" ` +
+    `package="${pkg}" content-desc="${desc}" clickable="${clickable}" ` +
+    `bounds="${bounds}" />`
+  );
+}
+
+// ── Fixtures — wikipedia-style bottom nav, news-app tabs, file-explorer drawer ─
+
+// Wikipedia bottom nav — 4 BottomNavigationItemView children at y ~ 2300.
+const wikipediaBottomNavXml = wrap(
+  node({
+    resourceId: "org.wikipedia:id/nav_tab_explore",
+    cls: "com.google.android.material.bottomnavigation.BottomNavigationItemView",
+    pkg: "org.wikipedia",
+    text: "Explore",
+    bounds: "[0,2280][270,2400]",
+  }),
+  node({
+    resourceId: "org.wikipedia:id/nav_tab_saved",
+    cls: "com.google.android.material.bottomnavigation.BottomNavigationItemView",
+    pkg: "org.wikipedia",
+    text: "Saved",
+    bounds: "[270,2280][540,2400]",
+  }),
+  node({
+    resourceId: "org.wikipedia:id/nav_tab_search",
+    cls: "com.google.android.material.bottomnavigation.BottomNavigationItemView",
+    pkg: "org.wikipedia",
+    text: "Search",
+    bounds: "[540,2280][810,2400]",
+  }),
+  node({
+    resourceId: "org.wikipedia:id/nav_tab_edits",
+    cls: "com.google.android.material.bottomnavigation.BottomNavigationItemView",
+    pkg: "org.wikipedia",
+    text: "Edits",
+    bounds: "[810,2280][1080,2400]",
+  }),
+);
+
+// Twitter-style top TabLayout — 3 TabView children at top.
+const topTabsXml = wrap(
+  node({
+    resourceId: "com.twitter.android:id/tab_for_you",
+    cls: "com.google.android.material.tabs.TabLayout$TabView",
+    pkg: "com.twitter.android",
+    text: "For You",
+    bounds: "[0,140][360,260]",
+  }),
+  node({
+    resourceId: "com.twitter.android:id/tab_following",
+    cls: "com.google.android.material.tabs.TabLayout$TabView",
+    pkg: "com.twitter.android",
+    text: "Following",
+    bounds: "[360,140][720,260]",
+  }),
+  node({
+    resourceId: "com.twitter.android:id/tab_subscribe",
+    cls: "com.google.android.material.tabs.TabLayout$TabView",
+    pkg: "com.twitter.android",
+    text: "Subscribe",
+    bounds: "[720,140][1080,260]",
+  }),
+);
+
+// File-manager drawer — 3 NavigationMenuItemView rows.
+const drawerXml = wrap(
+  node({
+    resourceId: "com.files.app:id/drawer_internal",
+    cls: "com.google.android.material.internal.NavigationMenuItemView",
+    pkg: "com.files.app",
+    text: "Internal storage",
+    bounds: "[0,400][900,520]",
+  }),
+  node({
+    resourceId: "com.files.app:id/drawer_sd",
+    cls: "com.google.android.material.internal.NavigationMenuItemView",
+    pkg: "com.files.app",
+    text: "SD Card",
+    bounds: "[0,520][900,640]",
+  }),
+  node({
+    resourceId: "com.files.app:id/drawer_downloads",
+    cls: "com.google.android.material.internal.NavigationMenuItemView",
+    pkg: "com.files.app",
+    text: "Downloads",
+    bounds: "[0,640][900,760]",
+  }),
+);
+
+// Homogeneous list — 4 same-class clickable cards, aligned at x=40.
+const listXml = wrap(
+  node({
+    resourceId: "com.news.app:id/article_1",
+    cls: "com.news.app.ArticleCardView",
+    pkg: "com.news.app",
+    text: "Article 1",
+    bounds: "[40,400][1040,560]",
+  }),
+  node({
+    resourceId: "com.news.app:id/article_2",
+    cls: "com.news.app.ArticleCardView",
+    pkg: "com.news.app",
+    text: "Article 2",
+    bounds: "[40,580][1040,740]",
+  }),
+  node({
+    resourceId: "com.news.app:id/article_3",
+    cls: "com.news.app.ArticleCardView",
+    pkg: "com.news.app",
+    text: "Article 3",
+    bounds: "[40,760][1040,920]",
+  }),
+  node({
+    resourceId: "com.news.app:id/article_4",
+    cls: "com.news.app.ArticleCardView",
+    pkg: "com.news.app",
+    text: "Article 4",
+    bounds: "[40,940][1040,1100]",
+  }),
+);
+
+// Wikipedia article body inside a NestedScrollView — scrollable content,
+// no nav (so claim() falls to the list-item secondary check and finds none).
+const articleBodyXml = wrap(
+  node({
+    cls: "androidx.core.widget.NestedScrollView",
+    pkg: "org.wikipedia",
+    clickable: false,
+    bounds: "[0,200][1080,2200]",
+  }),
+  node({
+    cls: "android.widget.TextView",
+    pkg: "org.wikipedia",
+    text: "Android is a mobile operating system...",
+    clickable: false,
+    bounds: "[40,260][1040,1800]",
+  }),
+);
+
+// Settings screen — no nav widget class, no homogeneous list.
+const plainContentXml = wrap(
+  node({
+    resourceId: "com.app:id/setting_title",
+    cls: "android.widget.TextView",
+    pkg: "com.app",
+    text: "Account settings",
+    clickable: false,
+    bounds: "[0,100][1080,200]",
+  }),
+  node({
+    resourceId: "com.app:id/save_button",
+    cls: "android.widget.Button",
+    pkg: "com.app",
+    text: "Save",
+    bounds: "[800,2200][1040,2360]",
+  }),
+);
+
+// Compose-style bottom navigation — 4 plain `android.view.View` children at
+// y ~ 2340. Real Jetpack Compose NavigationBar items are rendered this way:
+// no BottomNavigationItemView className, no resource-id, often just a
+// content-desc. The structural-bottom-bar fallback is the only detector that
+// can claim this screen.
+const composeBottomNavXml = wrap(
+  node({
+    cls: "android.view.View",
+    pkg: "com.example.compose",
+    desc: "Home",
+    bounds: "[0,2280][270,2400]",
+  }),
+  node({
+    cls: "android.view.View",
+    pkg: "com.example.compose",
+    desc: "Search",
+    bounds: "[270,2280][540,2400]",
+  }),
+  node({
+    cls: "android.view.View",
+    pkg: "com.example.compose",
+    desc: "Library",
+    bounds: "[540,2280][810,2400]",
+  }),
+  node({
+    cls: "android.view.View",
+    pkg: "com.example.compose",
+    desc: "Profile",
+    bounds: "[810,2280][1080,2400]",
+  }),
+);
+
+// Bottom nav + a list of articles on the Explore tab (combined screen).
+const wikipediaExploreTabXml = wrap(
+  // Two article cards (homogeneous list under the nav bar)
+  node({
+    resourceId: "org.wikipedia:id/explore_article_1",
+    cls: "org.wikipedia.explore.ArticleFeedCard",
+    pkg: "org.wikipedia",
+    text: "Featured article",
+    bounds: "[40,400][1040,800]",
+  }),
+  node({
+    resourceId: "org.wikipedia:id/explore_article_2",
+    cls: "org.wikipedia.explore.ArticleFeedCard",
+    pkg: "org.wikipedia",
+    text: "Top read",
+    bounds: "[40,820][1040,1220]",
+  }),
+  node({
+    resourceId: "org.wikipedia:id/explore_article_3",
+    cls: "org.wikipedia.explore.ArticleFeedCard",
+    pkg: "org.wikipedia",
+    text: "On this day",
+    bounds: "[40,1240][1040,1640]",
+  }),
+  // The 4 bottom nav tabs
+  node({
+    resourceId: "org.wikipedia:id/nav_tab_explore",
+    cls: "com.google.android.material.bottomnavigation.BottomNavigationItemView",
+    pkg: "org.wikipedia",
+    text: "Explore",
+    bounds: "[0,2280][270,2400]",
+  }),
+  node({
+    resourceId: "org.wikipedia:id/nav_tab_saved",
+    cls: "com.google.android.material.bottomnavigation.BottomNavigationItemView",
+    pkg: "org.wikipedia",
+    text: "Saved",
+    bounds: "[270,2280][540,2400]",
+  }),
+);
+
+// ── Tests ──────────────────────────────────────────────────────────────
+
+test("ExplorationDriver.claim: true on BottomNavigationView XML (wikipedia)", () => {
+  assert.equal(explorationDriver.claim({ xml: wikipediaBottomNavXml }), true);
+});
+
+test("ExplorationDriver.claim: true on TabLayout XML (twitter)", () => {
+  assert.equal(explorationDriver.claim({ xml: topTabsXml }), true);
+});
+
+test("ExplorationDriver.claim: true on NavigationMenuItemView drawer XML (files)", () => {
+  assert.equal(explorationDriver.claim({ xml: drawerXml }), true);
+});
+
+test("ExplorationDriver.claim: true on homogeneous list (≥3 same-class aligned siblings)", () => {
+  assert.equal(explorationDriver.claim({ xml: listXml }), true);
+});
+
+test("ExplorationDriver.claim: false on plain content with no nav/list", () => {
+  assert.equal(explorationDriver.claim({ xml: plainContentXml }), false);
+});
+
+test("ExplorationDriver.claim: true on Compose-style bottom nav (generic android.view.View cluster)", () => {
+  assert.equal(explorationDriver.claim({ xml: composeBottomNavXml }), true);
+});
+
+test("ExplorationDriver.decide: first call taps first unvisited nav tab and records key", async () => {
+  const state = {};
+  const action = await explorationDriver.decide(
+    { xml: wikipediaBottomNavXml, packageName: "org.wikipedia" },
+    state,
+  );
+  assert.ok(action, "should produce an action");
+  assert.equal(action.type, "tap");
+  // First tab = Explore at cy=(2280+2400)/2 = 2340, cx=(0+270)/2=135
+  assert.equal(action.y, 2340);
+  assert.equal(action.x, 135);
+  // State memory should contain the tapped nav's key
+  assert.ok(state.explorationMemory);
+  assert.equal(state.explorationMemory.tabsTapped.size, 1);
+  assert.ok(
+    state.explorationMemory.tabsTapped.has("rid:org.wikipedia:id/nav_tab_explore"),
+  );
+});
+
+test("ExplorationDriver.decide: second call on same screen taps a DIFFERENT nav tab (state memory)", async () => {
+  const state = {};
+  // First call taps Explore
+  const a1 = await explorationDriver.decide(
+    { xml: wikipediaBottomNavXml, packageName: "org.wikipedia" },
+    state,
+  );
+  // Second call — same XML, same state → must pick the next unvisited tab (Saved)
+  const a2 = await explorationDriver.decide(
+    { xml: wikipediaBottomNavXml, packageName: "org.wikipedia" },
+    state,
+  );
+  assert.notEqual(a1.x, a2.x, "must tap a different x coord on second call");
+  // Saved tab cx = (270+540)/2 = 405
+  assert.equal(a2.x, 405);
+  assert.equal(state.explorationMemory.tabsTapped.size, 2);
+});
+
+test("ExplorationDriver.decide: after all nav tabs tapped → picks an unvisited list item", async () => {
+  const state = {};
+  // Pre-populate memory with all 2 nav tabs visited
+  explorationDriver.initMemory(state);
+  state.explorationMemory.tabsTapped.add("rid:org.wikipedia:id/nav_tab_explore");
+  state.explorationMemory.tabsTapped.add("rid:org.wikipedia:id/nav_tab_saved");
+
+  const action = await explorationDriver.decide(
+    { xml: wikipediaExploreTabXml, packageName: "org.wikipedia" },
+    state,
+  );
+  assert.ok(action, "should produce an action");
+  assert.equal(action.type, "tap");
+  // The first article card cy = (400+800)/2 = 600
+  assert.equal(action.y, 600);
+});
+
+test("ExplorationDriver.decide: scroll-exhaustion — unchanged fingerprint after scroll → null on next call", async () => {
+  const state = {};
+  // Pre-populate memory so nav + list are "visited", forcing scroll path.
+  explorationDriver.initMemory(state);
+  const obs = { xml: articleBodyXml, packageName: "org.wikipedia" };
+
+  // Directly simulate: last action was scroll on this same fingerprint.
+  const { computeStructuralFingerprint } = require("../../node-classifier");
+  const { parseClickableGraph } = require("../clickable-graph");
+  const graph = parseClickableGraph(articleBodyXml);
+  const fp = computeStructuralFingerprint(graph, "org.wikipedia", undefined);
+  state.explorationMemory.lastActionKind = "scroll";
+  state.explorationMemory.lastFingerprint = fp;
+
+  // First decide() after a stale scroll: detects unchanged fp → marks exhausted.
+  const firstAction = await explorationDriver.decide(obs, state);
+  // Since there are no nav items and no homogeneous list in articleBodyXml,
+  // and scroll is now exhausted for this fp, decide must return null.
+  assert.equal(firstAction, null);
+  assert.ok(state.explorationMemory.scrollExhausted.has(fp));
+});
+
+test("ExplorationDriver.decide: plain content with no nav/list/scroll → returns null", async () => {
+  const state = {};
+  const action = await explorationDriver.decide(
+    { xml: plainContentXml, packageName: "com.app" },
+    state,
+  );
+  assert.equal(action, null);
+});
+
+test("ExplorationDriver.decide: structural bottom-bar path taps leftmost Compose nav candidate", async () => {
+  const state = {};
+  const action = await explorationDriver.decide(
+    { xml: composeBottomNavXml, packageName: "com.example.compose" },
+    state,
+  );
+  assert.ok(action, "should produce a tap action from structural bottom-bar");
+  assert.equal(action.type, "tap");
+  // Leftmost tab: cx = (0+270)/2 = 135, cy = (2280+2400)/2 = 2340
+  assert.equal(action.x, 135);
+  assert.equal(action.y, 2340);
+  // Memory must record the tapped key so subsequent calls pick the next tab
+  assert.ok(state.explorationMemory);
+  assert.equal(state.explorationMemory.tabsTapped.size, 1);
+  assert.equal(state.explorationMemory.lastActionKind, "tap_nav");
+});
+
+test("ExplorationDriver.decide: second call on Compose bottom-bar picks next candidate (left-to-right)", async () => {
+  const state = {};
+  const a1 = await explorationDriver.decide(
+    { xml: composeBottomNavXml, packageName: "com.example.compose" },
+    state,
+  );
+  const a2 = await explorationDriver.decide(
+    { xml: composeBottomNavXml, packageName: "com.example.compose" },
+    state,
+  );
+  assert.notEqual(a1.x, a2.x, "must advance to a different x on second call");
+  // Second tab cx = (270+540)/2 = 405
+  assert.equal(a2.x, 405);
+  assert.equal(state.explorationMemory.tabsTapped.size, 2);
+});
+
+test("ExplorationDriver.decide: emits scroll on scrollable content when nothing unvisited remains", async () => {
+  const state = {};
+  // No nav, no list items in articleBodyXml — but it has a NestedScrollView.
+  const action = await explorationDriver.decide(
+    { xml: articleBodyXml, packageName: "org.wikipedia" },
+    state,
+  );
+  assert.ok(action, "should emit scroll on a scrollable-only screen");
+  assert.equal(action.type, "swipe");
+  assert.ok(action.y1 > action.y2, "scroll-down swipe goes from lower y to upper y");
+  // State memory updated to track this scroll
+  assert.equal(state.explorationMemory.lastActionKind, "scroll");
+});
