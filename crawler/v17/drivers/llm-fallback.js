@@ -32,6 +32,21 @@ const log = logger.child({ component: "v17-llm-fallback" });
 const MAX_CLASS_BUCKETS = 8;
 
 /**
+ * Phase 2b (2026-04-24): screen types where press_back is safe. On feed /
+ * profile / settings / search / detail / compose / auth / permission, the
+ * LLM's press_back emission means "exit the app" — which causes drift loops.
+ * Only these screen types may receive a press_back from LLMFallback:
+ */
+const PRESS_BACK_SAFE_SCREEN_TYPES = new Set([
+  "error",    // genuine dead-end
+  "dialog",   // overlay on top of a real screen — dismiss is fine
+  "other",    // uncategorised, give the LLM benefit of the doubt
+]);
+
+/** Phase 2b: intents LLMFallback may tap. Mirror of EXPLORATION_INTENTS. */
+const FALLBACK_ALLOWED_INTENTS = new Set(["navigate", "read_only"]);
+
+/**
  * Derive a compact screen signature from the XML. The returned object is
  * log-friendly (small, no free-text user content) and is the primary artefact
  * we use after the run to diagnose what forced the escalation.
@@ -105,6 +120,99 @@ function shortClassName(cls) {
 }
 
 /**
+ * Find the clickable whose bounds contain the tap coordinates.
+ *
+ * @param {Array<{bounds?:{x1:number,y1:number,x2:number,y2:number}}>} clickables
+ * @param {number} x
+ * @param {number} y
+ * @returns {object|null}
+ */
+function findClickableAt(clickables, x, y) {
+  if (!Array.isArray(clickables) || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+  for (const c of clickables) {
+    const b = c && c.bounds;
+    if (!b) continue;
+    if (x >= b.x1 && x <= b.x2 && y >= b.y1 && y <= b.y2) return c;
+  }
+  return null;
+}
+
+/**
+ * Pick the safest alternative action for this screen when the LLM's choice
+ * violates the plan. Preference order:
+ *   1. Highest-priority navigate/read_only clickable → tap it.
+ *   2. Otherwise → wait (lets the next classifier pass re-plan).
+ *
+ * @param {Array<object>} classifiedClickables
+ * @returns {{type:string, x?:number, y?:number, targetText?:string, ms?:number}}
+ */
+function pickSafeAlternative(classifiedClickables) {
+  if (!Array.isArray(classifiedClickables) || classifiedClickables.length === 0) {
+    return { type: "wait", ms: 1500 };
+  }
+  const alternatives = classifiedClickables
+    .filter((c) => c && FALLBACK_ALLOWED_INTENTS.has(c.intent))
+    .slice()
+    .sort((a, b) => (b.priority || 0) - (a.priority || 0));
+  if (alternatives.length === 0) return { type: "wait", ms: 1500 };
+  const safe = alternatives[0];
+  const action = { type: "tap", x: safe.cx, y: safe.cy };
+  if (safe.label) action.targetText = safe.label;
+  return action;
+}
+
+/**
+ * Phase 2b validation. If the inner LLM picked an action that would break
+ * out of the target app (tap on write/destructive intent, or press_back
+ * on a non-dead-end screen), swap for a safer action. Returns
+ * { action, overridden: bool, reason: string|null }.
+ *
+ * @param {object} action
+ * @param {{plan?:object, classifiedClickables?:object[]}} deps
+ */
+function validateAgainstPlan(action, deps) {
+  if (!action || !deps || !deps.plan) {
+    return { action, overridden: false, reason: null };
+  }
+  const plan = deps.plan;
+  const classifiedClickables = Array.isArray(deps.classifiedClickables)
+    ? deps.classifiedClickables
+    : [];
+
+  // Rule 1: tap on a write/destructive-intent clickable → override.
+  if (action.type === "tap") {
+    const hit = findClickableAt(classifiedClickables, action.x, action.y);
+    if (hit && hit.intent && !FALLBACK_ALLOWED_INTENTS.has(hit.intent)) {
+      const safe = pickSafeAlternative(classifiedClickables);
+      return {
+        action: safe,
+        overridden: true,
+        reason: `tap_on_${hit.intent}_intent:${hit.label || hit.resourceId || "unknown"}`,
+      };
+    }
+  }
+
+  // Rule 2: press_back on a non-dead-end screen — press_back exits the
+  // target app from feed/profile/settings/etc. Only safe on error/dialog/
+  // other screen types. Exception: if Haiku itself said engine_action=
+  // press_back, trust the strategist.
+  if (
+    action.type === "press_back" &&
+    plan.engineAction !== "press_back" &&
+    !PRESS_BACK_SAFE_SCREEN_TYPES.has(plan.screenType)
+  ) {
+    const safe = pickSafeAlternative(classifiedClickables);
+    return {
+      action: safe,
+      overridden: true,
+      reason: `press_back_on_${plan.screenType}_screen`,
+    };
+  }
+
+  return { action, overridden: false, reason: null };
+}
+
+/**
  * Build the wrapped LLMFallback the dispatcher will call.
  *
  * @param {(obs:any, state:any, deps:any) => Promise<any>} inner
@@ -141,12 +249,31 @@ function createLlmFallback(inner) {
       "llm-fallback: escalating",
     );
 
-    const action = await inner(obs, state, deps);
+    const rawAction = await inner(obs, state, deps);
+
+    // Phase 2b: validate against the v18 plan if the dispatcher threaded one
+    // through. This catches the v16 agent's write-intent taps (e.g. "Camera"
+    // on a compose screen) and press_back on non-dead-end screens that
+    // previously caused drift loops.
+    const { action, overridden, reason: overrideReason } = validateAgainstPlan(rawAction, deps);
+    if (overridden) {
+      log.warn(
+        {
+          overrideReason,
+          originalAction: rawAction && rawAction.type,
+          originalTarget: rawAction && rawAction.targetText,
+          newAction: action && action.type,
+          screenType: deps && deps.plan && deps.plan.screenType,
+        },
+        "llm-fallback: intent/screen validation overrode LLM action",
+      );
+    }
 
     log.info(
       {
         action: action && action.type,
         reason,
+        overridden,
       },
       "llm-fallback: produced action",
     );
@@ -184,4 +311,10 @@ module.exports = {
   createLlmFallback,
   buildScreenSignature,
   deriveReason,
+  // Phase 2b exports for direct testing.
+  validateAgainstPlan,
+  findClickableAt,
+  pickSafeAlternative,
+  PRESS_BACK_SAFE_SCREEN_TYPES,
+  FALLBACK_ALLOWED_INTENTS,
 };

@@ -106,3 +106,130 @@ test("createLlmFallback: annotates deps.lastLlmFallbackReason + signature", asyn
   assert.equal(deps.lastLlmFallbackReason, "no_driver_claimed:webview");
   assert.equal(deps.lastLlmFallbackSignature.hasWebViewHint, true);
 });
+
+// ── Phase 2b (2026-04-24): intent validation against v18 plan ──────────
+//
+// Run 03feb797 showed LLMFallback tapping "Camera" on a compose screen,
+// firing ACTION_IMAGE_CAPTURE → com.android.camera2 → drift loop → run
+// terminated with 22 unique screens. These tests pin the validator that
+// swaps such actions for a safer alternative.
+
+const {
+  validateAgainstPlan,
+  findClickableAt,
+  pickSafeAlternative,
+} = require("../llm-fallback");
+
+function makeClickable({ x1, y1, x2, y2, intent, role = "content", priority = 5, label = "", resourceId = "" }) {
+  return {
+    bounds: { x1, y1, x2, y2 },
+    cx: Math.floor((x1 + x2) / 2),
+    cy: Math.floor((y1 + y2) / 2),
+    intent,
+    role,
+    priority,
+    label,
+    resourceId,
+  };
+}
+
+test("validateAgainstPlan: no plan → action passes through unchanged (backward compat)", () => {
+  const action = { type: "tap", x: 100, y: 200 };
+  const r = validateAgainstPlan(action, {});
+  assert.equal(r.overridden, false);
+  assert.deepEqual(r.action, action);
+});
+
+test("validateAgainstPlan: tap on write-intent clickable → overridden to safer alternative", () => {
+  // This is the step 29 scenario from run 03feb797 — tap on "Camera" (write).
+  const classifiedClickables = [
+    makeClickable({ x1: 40, y1: 400, x2: 240, y2: 680, intent: "write", role: "content", label: "Camera" }),
+    makeClickable({ x1: 40, y1: 2280, x2: 270, y2: 2400, intent: "navigate", role: "nav_tab", label: "Home", priority: 9 }),
+  ];
+  const plan = { screenType: "compose", allowedIntents: ["navigate"], engineAction: "proceed" };
+  const r = validateAgainstPlan(
+    { type: "tap", x: 130, y: 540, targetText: "Camera" },
+    { plan, classifiedClickables },
+  );
+  assert.equal(r.overridden, true);
+  assert.ok(r.reason && r.reason.includes("Camera"));
+  // Safer alternative is the Home nav tab.
+  assert.equal(r.action.type, "tap");
+  assert.equal(r.action.targetText, "Home");
+});
+
+test("validateAgainstPlan: press_back on feed screen → overridden (caused launcher drift)", () => {
+  // Step 16 of cf973bc5 — press_back from biztoso home screen dropped to
+  // the launcher and triggered the drift storm. Fix: only allow press_back
+  // on genuine dead-end screen types.
+  const classifiedClickables = [
+    makeClickable({ x1: 40, y1: 2280, x2: 270, y2: 2400, intent: "navigate", role: "nav_tab", label: "Home", priority: 9 }),
+    makeClickable({ x1: 270, y1: 2280, x2: 540, y2: 2400, intent: "navigate", role: "nav_tab", label: "Search", priority: 9 }),
+  ];
+  const plan = { screenType: "feed", allowedIntents: ["navigate", "read_only"], engineAction: "proceed" };
+  const r = validateAgainstPlan({ type: "press_back" }, { plan, classifiedClickables });
+  assert.equal(r.overridden, true);
+  assert.equal(r.reason, "press_back_on_feed_screen");
+  assert.equal(r.action.type, "tap");
+  assert.ok(["Home", "Search"].includes(r.action.targetText));
+});
+
+test("validateAgainstPlan: press_back on error screen → passes (valid dead-end)", () => {
+  const plan = { screenType: "error", allowedIntents: ["navigate"], engineAction: "proceed" };
+  const r = validateAgainstPlan({ type: "press_back" }, { plan, classifiedClickables: [] });
+  assert.equal(r.overridden, false);
+});
+
+test("validateAgainstPlan: press_back when engine_action=press_back → passes (Haiku authorized it)", () => {
+  const plan = { screenType: "feed", allowedIntents: ["navigate"], engineAction: "press_back" };
+  const r = validateAgainstPlan({ type: "press_back" }, { plan, classifiedClickables: [] });
+  assert.equal(r.overridden, false);
+});
+
+test("validateAgainstPlan: no safe alternative → falls back to wait action", () => {
+  // Only write-intent clickables on screen.
+  const classifiedClickables = [
+    makeClickable({ x1: 40, y1: 400, x2: 240, y2: 680, intent: "write", label: "Post" }),
+    makeClickable({ x1: 300, y1: 400, x2: 500, y2: 680, intent: "write", label: "Like" }),
+  ];
+  const plan = { screenType: "compose", allowedIntents: ["navigate"], engineAction: "proceed" };
+  const r = validateAgainstPlan(
+    { type: "tap", x: 140, y: 540, targetText: "Post" },
+    { plan, classifiedClickables },
+  );
+  assert.equal(r.overridden, true);
+  assert.equal(r.action.type, "wait");
+});
+
+test("validateAgainstPlan: tap on navigate-intent clickable → passes", () => {
+  const classifiedClickables = [
+    makeClickable({ x1: 40, y1: 2280, x2: 270, y2: 2400, intent: "navigate", label: "Home" }),
+  ];
+  const plan = { screenType: "feed", allowedIntents: ["navigate"], engineAction: "proceed" };
+  const r = validateAgainstPlan(
+    { type: "tap", x: 155, y: 2340, targetText: "Home" },
+    { plan, classifiedClickables },
+  );
+  assert.equal(r.overridden, false);
+});
+
+test("findClickableAt: locates clickable by bounds containment", () => {
+  const list = [
+    makeClickable({ x1: 0, y1: 0, x2: 100, y2: 100, intent: "navigate" }),
+    makeClickable({ x1: 200, y1: 200, x2: 400, y2: 400, intent: "write" }),
+  ];
+  assert.equal(findClickableAt(list, 50, 50).intent, "navigate");
+  assert.equal(findClickableAt(list, 300, 300).intent, "write");
+  assert.equal(findClickableAt(list, 500, 500), null);
+});
+
+test("pickSafeAlternative: picks highest-priority navigate/read_only clickable", () => {
+  const list = [
+    makeClickable({ x1: 0, y1: 0, x2: 100, y2: 100, intent: "write", priority: 10, label: "Send" }),
+    makeClickable({ x1: 0, y1: 200, x2: 100, y2: 300, intent: "navigate", priority: 5, label: "Home" }),
+    makeClickable({ x1: 0, y1: 400, x2: 100, y2: 500, intent: "read_only", priority: 8, label: "Expand" }),
+  ];
+  const r = pickSafeAlternative(list);
+  assert.equal(r.type, "tap");
+  assert.equal(r.targetText, "Expand"); // highest priority among navigate/read_only
+});
