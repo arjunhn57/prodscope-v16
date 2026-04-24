@@ -1,0 +1,27 @@
+{
+  "description": "Per-app baselines for scripts/golden-suite-run.js. A run scoring below any of these thresholds is a regression that should block deploy. Numbers derived from V17 Phase D.2 proof runs (2026-04-23/24).",
+  "updatedAt": "2026-04-24",
+  "source": "feat/v17-driver-engine commits 381bae6 (engine flip) + 037e61f (pm clear)",
+  "apps": {
+    "biztoso": {
+      "minUniqueScreens": 14,
+      "maxCostUsd": 0.04,
+      "maxLlmFallbackRate": 0.30,
+      "mustCrossBoundary": true,
+      "notes": "V17 direct-require harness: 25-28 unique screens, 6 AuthDriver hits, login crossed. Real-API path (job 23e93fbc): 16 screens, $0.0199, AuthDriver hits=6. Baseline floor is 80% of 17-screen V16 baseline = 14."
+    },
+    "wikipedia": {
+      "minUniqueScreens": 20,
+      "maxCostUsd": 0.04,
+      "maxLlmFallbackRate": 0.30,
+      "mustCrossBoundary": true,
+      "notes": "V16 historical baseline: 26 unique screens on no-auth content. V17 must hit ≥80% (20). ExplorationDriver pin — no AuthDriver activity expected."
+    }
+  },
+  "aggregate": {
+    "maxMeanCostUsd": 0.04,
+    "maxOverallLlmFallbackRate": 0.30,
+    "minCrossedBoundaryRatio": 0.80,
+    "notes": "Gates from the V17 plan. crossedBoundaryRatio: fraction of included apps that either saw a non-LLMFallback driver act OR reached >4 unique screens."
+  }
+}

@@ -15,6 +15,7 @@
  *
  * Usage:
  *   node scripts/golden-suite-run.js [--config=path/to/suite.json]
+ *                                    [--baselines=path/to/baselines.json]
  *
  * Default suite is embedded below. Each entry:
  *   { label, pkg, credentials?, maxSteps?, description }
@@ -23,6 +24,10 @@
  *   - ≥ 9/11 apps cross their first decision boundary
  *   - mean cost / run ≤ $0.04
  *   - LLMFallback rate < 30% across the suite
+ *
+ * With --baselines=..., the harness additionally checks every included app
+ * against proven per-app thresholds (minUniqueScreens, maxCostUsd, etc.) and
+ * exits with code 2 on any regression. This is what CI should run.
  */
 
 const { spawnSync, spawn } = require("child_process");
@@ -31,6 +36,7 @@ const os = require("os");
 const fs = require("fs");
 
 const { runAgentLoop } = require("../crawler/v17/agent-loop");
+const { compareToBaselines } = require("./baselines");
 
 function parseArgs(argv) {
   const out = {};
@@ -376,10 +382,47 @@ async function main() {
   }
   console.log("\n== Aggregate ==");
   console.log(JSON.stringify(aggregate, null, 2));
-  console.log("\nGOLDEN_SUITE_RESULT: " + JSON.stringify({ aggregate, perApp }));
+
+  // ── Baseline comparison (optional) ───────────────────────────────────
+  // If --baselines=path is provided, compare every included app against its
+  // proven thresholds and exit non-zero on any regression. CI should always
+  // pass this flag so a bad merge fails fast.
+  let regressions = [];
+  if (args.baselines) {
+    const baselinePath = path.resolve(args.baselines);
+    let baselines;
+    try {
+      baselines = JSON.parse(fs.readFileSync(baselinePath, "utf8"));
+    } catch (err) {
+      console.error(`[suite] failed to load baselines ${baselinePath}: ${err.message}`);
+      process.exit(1);
+    }
+    regressions = compareToBaselines(perApp, aggregate, baselines);
+    console.log("\n== Baseline check ==");
+    if (regressions.length === 0) {
+      console.log(`OK — all ${included.length} included apps within baselines.`);
+    } else {
+      console.log(`REGRESSION — ${regressions.length} violation(s) against ${baselinePath}:`);
+      for (const r of regressions) {
+        console.log(`  - ${r}`);
+      }
+    }
+  }
+
+  console.log("\nGOLDEN_SUITE_RESULT: " + JSON.stringify({ aggregate, perApp, regressions }));
+
+  if (regressions.length > 0) {
+    process.exit(2);
+  }
 }
 
-main().catch((err) => {
-  console.error("[suite] top-level failure:", err);
-  process.exit(1);
-});
+module.exports = { compareToBaselines };
+
+// Only run the suite when invoked as a script, so tests can require this
+// module for compareToBaselines() without triggering an adb-driven crawl.
+if (require.main === module) {
+  main().catch((err) => {
+    console.error("[suite] top-level failure:", err);
+    process.exit(1);
+  });
+}
