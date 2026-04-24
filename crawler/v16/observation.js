@@ -52,6 +52,51 @@ function parsePackageFromActivity(activity) {
 }
 
 /**
+ * Regex for valid dotted Android package names in `package="..."` attrs.
+ * Requires at least one dot so we don't match system glue like "android".
+ */
+const XML_PACKAGE_ATTR_REGEX = /package="([a-z][a-z0-9_]+(?:\.[a-z0-9_]+)+)"/gi;
+
+/**
+ * Fallback package derivation for when adb's activity resolver returns
+ * "unknown" or the empty string. Every UIAutomator XML element carries a
+ * `package=` attribute; the majority across non-"android" packages is the
+ * foreground app.
+ *
+ * Production case (run c78c5bdb, 2026-04-24): biztoso's activity resolver
+ * returned "unknown" for the entire run. The drift guard skipped (per
+ * hotfix 28128af to avoid relaunch storms). The crawl silently drifted
+ * into the Android home launcher and then Google Discover, wasting 8
+ * steps before conceding. Deriving package from XML catches this case —
+ * the launcher elements all have package="com.google.android.apps.nexuslauncher"
+ * so the majority wins and drift detection fires correctly.
+ *
+ * @param {string} xml
+ * @returns {string|null}
+ */
+function derivePackageFromXml(xml) {
+  if (!xml || typeof xml !== "string") return null;
+  const counts = new Map();
+  const re = new RegExp(XML_PACKAGE_ATTR_REGEX.source, "gi");
+  let m;
+  while ((m = re.exec(xml)) !== null) {
+    const pkg = m[1];
+    if (pkg === "android") continue;
+    counts.set(pkg, (counts.get(pkg) || 0) + 1);
+  }
+  if (counts.size === 0) return null;
+  let bestPkg = null;
+  let bestCount = 0;
+  for (const [pkg, count] of counts.entries()) {
+    if (count > bestCount) {
+      bestPkg = pkg;
+      bestCount = count;
+    }
+  }
+  return bestPkg;
+}
+
+/**
  * Capture a single observation and compute feedback vs. the previous one.
  *
  * Dependencies on `adb` and `screenshotFp` are the default but can be
@@ -72,7 +117,14 @@ async function captureObservation(ctx, deps) {
   const screenshotOk = await _adb.screencapAsync(ctx.screenshotPath);
   const xml = await _adb.dumpXmlAsync();
   const activity = await _adb.getCurrentActivityAsync();
-  const packageName = parsePackageFromActivity(activity);
+  let packageName = parsePackageFromActivity(activity);
+  // Fallback: adb sometimes returns "unknown" mid-crawl even when the app is
+  // foreground. Derive package from the XML majority in that case so drift
+  // detection (agent-loop.js) doesn't lose track of where we are.
+  if ((packageName === "unknown" || !packageName) && xml) {
+    const derived = derivePackageFromXml(xml);
+    if (derived) packageName = derived;
+  }
   const fingerprint = screenshotOk
     ? _fp.computeExactHash(ctx.screenshotPath)
     : "no_screenshot";
@@ -133,4 +185,5 @@ module.exports = {
   captureObservation,
   computeFeedback,
   parsePackageFromActivity,
+  derivePackageFromXml,
 };

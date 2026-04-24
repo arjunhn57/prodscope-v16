@@ -6,6 +6,7 @@ const {
   captureObservation,
   computeFeedback,
   parsePackageFromActivity,
+  derivePackageFromXml,
 } = require("../observation");
 
 test("parsePackageFromActivity extracts package before slash", () => {
@@ -14,6 +15,48 @@ test("parsePackageFromActivity extracts package before slash", () => {
   assert.equal(parsePackageFromActivity("unknown"), "unknown");
   assert.equal(parsePackageFromActivity(""), "unknown");
   assert.equal(parsePackageFromActivity(null), "unknown");
+});
+
+// ── derivePackageFromXml — fallback when adb returns "unknown" ───────
+//
+// Production case (run c78c5bdb, 2026-04-24): adb.getCurrentActivityAsync
+// returned "unknown" for every step, masking a real drift into the
+// Android home launcher + Google Discover. XML still had the correct
+// package on every element — majority wins.
+
+test("derivePackageFromXml: picks the majority package", () => {
+  const xml = `<?xml version="1.0"?>\n<hierarchy>` +
+    `<node package="com.biztoso.app" />` +
+    `<node package="com.biztoso.app" />` +
+    `<node package="com.biztoso.app" />` +
+    `<node package="android" />` +
+    `</hierarchy>`;
+  assert.equal(derivePackageFromXml(xml), "com.biztoso.app");
+});
+
+test("derivePackageFromXml: catches launcher drift (all nexuslauncher)", () => {
+  const xml = `<?xml version="1.0"?>\n<hierarchy>` +
+    `<node package="com.google.android.apps.nexuslauncher" />` +
+    `<node package="com.google.android.apps.nexuslauncher" />` +
+    `<node package="com.google.android.apps.nexuslauncher" />` +
+    `</hierarchy>`;
+  assert.equal(derivePackageFromXml(xml), "com.google.android.apps.nexuslauncher");
+});
+
+test("derivePackageFromXml: skips bare 'android' system glue", () => {
+  const xml = `<?xml version="1.0"?>\n<hierarchy>` +
+    `<node package="android" />` +
+    `<node package="android" />` +
+    `<node package="com.foo.bar" />` +
+    `</hierarchy>`;
+  // "com.foo.bar" is the only real package; "android" is glue and ignored.
+  assert.equal(derivePackageFromXml(xml), "com.foo.bar");
+});
+
+test("derivePackageFromXml: returns null on empty/invalid input", () => {
+  assert.equal(derivePackageFromXml(""), null);
+  assert.equal(derivePackageFromXml(null), null);
+  assert.equal(derivePackageFromXml("<hierarchy/>"), null);
 });
 
 test("computeFeedback returns 'none' when no previous observation", () => {
