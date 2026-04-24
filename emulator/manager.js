@@ -142,17 +142,39 @@ async function saveSnapshot() {
 /**
  * Install an APK onto the running emulator.
  * Large APKs (80MB+) can take 60-90s on emulator — allow up to 120s with one retry.
+ *
+ * Flags used:
+ *   -r  replace existing install
+ *   -d  allow version-code downgrade — fixes INSTALL_FAILED_VERSION_DOWNGRADE
+ *       when a newer build of the same package is already on the emulator
+ *       from a prior test. Data loss is expected and intentional; we pm-clear
+ *       immediately after install anyway.
+ *   -t  allow test-only APKs (some debug builds set android:testOnly="true")
+ *
+ * Also uses execFileSync with an args array instead of shell-concatenated
+ * strings — eliminates a latent shell-injection surface on apkPath.
  */
 function installApk(apkPath) {
   log.info({ apkPath }, "Installing APK (this may take up to 2 minutes for large apps)...");
+  const args = ["install", "-r", "-d", "-t", apkPath];
   try {
-    execSync('adb install -r "' + apkPath + '"', { timeout: 120000 });
+    execFileSync("adb", args, { timeout: 120000 });
   } catch (err) {
     log.warn({ errCode: err.code, errMsg: err.message }, "First install attempt failed — retrying after adb reconnect");
     try {
-      execSync('adb wait-for-device', { timeout: 15000 });
+      execFileSync("adb", ["wait-for-device"], { timeout: 15000 });
     } catch (_) {}
-    execSync('adb install -r "' + apkPath + '"', { timeout: 120000 });
+    // Second attempt: if it's still failing, try an explicit uninstall of
+    // the target package first to defeat stubborn signature / test-only /
+    // profile-owner collisions that -r -d alone can't resolve.
+    const pkgMatch = err && err.message && err.message.match(/INSTALL_FAILED[^/]*\b([a-z][a-z0-9_.]+)\b/i);
+    if (pkgMatch) {
+      try {
+        execFileSync("adb", ["uninstall", pkgMatch[1]], { timeout: 15000, stdio: "ignore" });
+        log.info({ package: pkgMatch[1] }, "Force-uninstalled blocking package before retry");
+      } catch (_) {}
+    }
+    execFileSync("adb", args, { timeout: 120000 });
   }
   log.info("APK installed successfully");
 }
