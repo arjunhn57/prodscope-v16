@@ -47,9 +47,26 @@ test("detectPackageDrift: permission controller is allowlisted", () => {
   assert.equal(detectPackageDrift(obs, "com.biztoso.app"), false);
 });
 
-test("detectPackageDrift: pixel launcher is allowlisted (home-screen bounce is valid transit)", () => {
+test("detectPackageDrift: pixel launcher IS drift (was bug — cf973bc5 loop, 2026-04-24)", () => {
+  // Run cf973bc5: press_back from biztoso home screen dropped us to the
+  // launcher, allowlist suppressed drift, structural-bottom-bar detector
+  // tapped "Google app" on the launcher dock, bounce into Google Discover
+  // → real drift → relaunch. 5 cycles → package_drift_unrecoverable.
+  // Every observation of the launcher means we're parked there, not in
+  // transit. Drift must fire so the crawler never tapps launcher icons.
   const obs = { packageName: "com.google.android.apps.nexuslauncher" };
-  assert.equal(detectPackageDrift(obs, "com.biztoso.app"), false);
+  assert.equal(detectPackageDrift(obs, "com.biztoso.app"), true);
+});
+
+test("detectPackageDrift: com.android.launcher / launcher3 also fire drift", () => {
+  assert.equal(
+    detectPackageDrift({ packageName: "com.android.launcher" }, "com.biztoso.app"),
+    true,
+  );
+  assert.equal(
+    detectPackageDrift({ packageName: "com.android.launcher3" }, "com.biztoso.app"),
+    true,
+  );
 });
 
 test("detectPackageDrift: IME (Gboard) is allowlisted", () => {
@@ -90,23 +107,34 @@ test("DRIFT_ALLOWLIST: includes every package a real crawl can legitimately hit"
   // Minimum set that must never trigger drift — mapped to real intents:
   //   permissioncontroller: runtime permission dialogs (PermissionDriver)
   //   packageinstaller:     install prompts (rare in crawl, but seen)
-  //   nexuslauncher/launcher: home-screen bounce during app switch
   //   inputmethod.latin:    Gboard popping up on EditText focus
   //   systemui:             status-bar / notification-panel transients
+  //
+  // Note: launchers (nexuslauncher / launcher / launcher3) used to be
+  // allowlisted but were REMOVED after run cf973bc5 (2026-04-24). Every
+  // observation of the launcher means we're parked, not passing through
+  // — keeping them allowlisted let the crawler tap dock icons and bounce
+  // into Google Discover.
   const required = [
     "com.google.android.permissioncontroller",
     "com.android.permissioncontroller",
     "com.google.android.packageinstaller",
     "com.android.packageinstaller",
-    "com.google.android.apps.nexuslauncher",
-    "com.android.launcher",
-    "com.android.launcher3",
     "com.google.android.inputmethod.latin",
     "com.android.inputmethod.latin",
     "com.android.systemui",
   ];
   for (const pkg of required) {
     assert.ok(DRIFT_ALLOWLIST.has(pkg), `${pkg} must be in DRIFT_ALLOWLIST`);
+  }
+  // Launchers must NOT be allowlisted (regression guard for cf973bc5).
+  const launcherPackages = [
+    "com.google.android.apps.nexuslauncher",
+    "com.android.launcher",
+    "com.android.launcher3",
+  ];
+  for (const pkg of launcherPackages) {
+    assert.ok(!DRIFT_ALLOWLIST.has(pkg), `${pkg} must NOT be in DRIFT_ALLOWLIST — launchers mean drift`);
   }
 });
 
