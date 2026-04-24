@@ -32,7 +32,7 @@ const { createStateGraph } = require("./state");
 const { createBudget } = require("./budget");
 const { executeAction, validateAction } = require("./executor");
 const { decideNextAction } = require("./agent");
-const { findAuthEscapeButton } = require("./auth-escape");
+const { findAuthEscapeButton, isAuthScreen, listAuthOptionLabels } = require("./auth-escape");
 const jobStore = require("../../jobs/store");
 
 const log = logger.child({ component: "v16-loop" });
@@ -550,6 +550,88 @@ async function runAgentLoop(opts) {
       // agent.splitUsage aggregation, so we don't double-count here.
     }
 
+    // ── press_back guardrail on auth screens ──
+    // Biztoso 0ad30600: model pressed back on the login screen (clearly showing
+    // "Continue with Email" / "Continue with Google"), dropped to launcher, and
+    // the run flatlined. The prompt already forbids this but Haiku ignored it.
+    // Deterministic guard: if we're on an auth screen and the action is
+    // press_back, re-ask once with an explicit hint. If still press_back,
+    // concede with blocked_by_auth rather than fleeing the app.
+    if (
+      decision.action?.type === "press_back" &&
+      isAuthScreen(observation)
+    ) {
+      const visibleAuthOptions = listAuthOptionLabels(observation, 5);
+      log.warn(
+        { step, visibleAuthOptions },
+        "press_back blocked on auth screen — re-asking with hint",
+      );
+      try {
+        const reask = await decideNextAction(
+          {
+            observation,
+            fingerprintChanged,
+            lastFeedback,
+            lastAction,
+            historyTail: history.slice(-HISTORY_TAIL_SIZE),
+            credentials: opts.credentials || null,
+            appContext: opts.appContext || {},
+            budget: budgetSnap,
+            budgetController: {
+              canEscalateToSonnet: () => budget.canEscalateToSonnet(),
+            },
+            uniqueScreens: stateGraph.uniqueScreenCount(),
+            targetUniqueScreens,
+            step,
+            stepsRemaining: Math.max(0, maxSteps - step),
+            sendImage,
+            forceEscalate,
+            stagnationStreak,
+            discoveryDelta5,
+            recentFingerprints: recentFingerprints.slice(),
+            authEscape: findAuthEscapeButton(observation),
+            pressBackBlockedOnAuth: { visibleAuthOptions },
+          },
+          { anthropic: deps.anthropic },
+        );
+        if (reask.inputTokens > 0 || reask.outputTokens > 0) {
+          budget.recordLlmCall(
+            reask.modelUsed,
+            reask.inputTokens,
+            reask.outputTokens,
+            reask.cachedInputTokens,
+          );
+        }
+        if (reask.action?.type === "press_back") {
+          log.warn(
+            { step },
+            "press_back guardrail: model insisted — concede blocked_by_auth",
+          );
+          decision = {
+            ...reask,
+            action: {
+              type: "done",
+              reason: "blocked_by_auth:press_back_blocked",
+            },
+          };
+        } else {
+          decision = reask;
+        }
+      } catch (err) {
+        log.error(
+          { err: err.message, step },
+          "press_back guardrail re-ask failed — concede blocked_by_auth",
+        );
+        decision = {
+          ...decision,
+          action: {
+            type: "done",
+            reason: "blocked_by_auth:press_back_blocked",
+          },
+        };
+      }
+    }
+
     // ── Consecutive-identical safety net ──
     let actionToExecute = decision.action;
     if (actionsIdentical(actionToExecute, lastActionForConsecutive)) {
@@ -631,6 +713,7 @@ async function runAgentLoop(opts) {
       targetPackage: opts.targetPackage,
       credentials: opts.credentials || null,
       adb: deps.adb,
+      xml: observation.xml,
       resolveHumanInput,
     };
     const v = validateAction(actionToExecute);
@@ -649,6 +732,21 @@ async function runAgentLoop(opts) {
       feedback: lastFeedback,
       ok: execResult.ok,
     });
+    log.info(
+      {
+        jobId: opts.jobId,
+        step,
+        actionType: actionToExecute.type,
+        targetText: actionToExecute.targetText || null,
+        x: actionToExecute.x,
+        y: actionToExecute.y,
+        pkg: observation.activity && observation.activity.split("/")[0],
+        fp: observation.fingerprint,
+        feedback: lastFeedback,
+        ok: execResult.ok,
+      },
+      "agent-step: action executed",
+    );
 
     if (execResult.terminal) {
       stopReason = execResult.stopReason || "agent_done";

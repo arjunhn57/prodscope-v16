@@ -71,6 +71,15 @@ const DECISION_TOOL = {
           y1: { type: "number" },
           x2: { type: "number" },
           y2: { type: "number" },
+          targetText: {
+            type: "string",
+            description:
+              "For tap/long_press on a labeled element, the exact visible text of "
+              + "the element (e.g. 'Continue with Email', 'Sign in', 'Skip'). The "
+              + "executor prefers coords derived from UIAutomator XML bounds when "
+              + "this text matches a clickable node. Omit for icon-only or "
+              + "coordinate-only taps.",
+          },
           text: { type: "string", description: "Use ${EMAIL} / ${PASSWORD} for credentials." },
           ms: { type: "number", description: "Wait duration in ms (0..3000)." },
           reason: { type: "string", description: "For done: why the crawl ends." },

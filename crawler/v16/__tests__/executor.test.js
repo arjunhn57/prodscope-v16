@@ -291,3 +291,61 @@ test("executeAction: request_human_input maps INPUT_CANCELLED to blocked_by_auth
   assert.equal(r.stopReason, "agent_done:blocked_by_auth:user_cancelled");
   assert.equal(r.humanInput.source, "cancel");
 });
+
+// ── tap-target-resolver integration ────────────────────────────────────
+
+test("executeAction: tap without targetText uses vision coords verbatim", async () => {
+  const adb = makeMockAdb();
+  const r = await executeAction(
+    { type: "tap", x: 100, y: 200 },
+    { targetPackage: "com.a", adb },
+  );
+  assert.equal(r.ok, true);
+  assert.deepEqual(adb.calls, [{ m: "tap", x: 100, y: 200 }]);
+});
+
+test("executeAction: tap with targetText but no ctx.xml still uses vision coords", async () => {
+  const adb = makeMockAdb();
+  const r = await executeAction(
+    { type: "tap", x: 100, y: 200, targetText: "Continue with Email" },
+    { targetPackage: "com.a", adb },
+  );
+  assert.equal(r.ok, true);
+  assert.deepEqual(adb.calls, [{ m: "tap", x: 100, y: 200 }]);
+});
+
+test("executeAction: tap with targetText + matching xml snaps to XML center", async () => {
+  const adb = makeMockAdb();
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<hierarchy rotation="0">
+<node index="0" text="Continue with Email" resource-id="" class="android.widget.Button" package="com.example" content-desc="" checkable="false" checked="false" clickable="true" enabled="true" focusable="true" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[40,1640][1040,1790]" />
+</hierarchy>`;
+  const r = await executeAction(
+    { type: "tap", x: 352, y: 1006, targetText: "Continue with Email" },
+    { targetPackage: "com.a", adb, xml },
+  );
+  assert.equal(r.ok, true);
+  assert.equal(adb.calls.length, 1);
+  assert.equal(adb.calls[0].m, "tap");
+  assert.equal(adb.calls[0].x, 540);
+  assert.equal(adb.calls[0].y, 1715);
+});
+
+test("executeAction: long_press uses resolver the same as tap", async () => {
+  const adb = makeMockAdb();
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<hierarchy rotation="0">
+<node index="0" text="Delete" resource-id="" class="android.widget.Button" package="com.example" content-desc="" checkable="false" checked="false" clickable="true" enabled="true" focusable="true" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[100,500][500,700]" />
+</hierarchy>`;
+  const r = await executeAction(
+    { type: "long_press", x: 50, y: 50, targetText: "Delete" },
+    { targetPackage: "com.a", adb, xml },
+  );
+  assert.equal(r.ok, true);
+  assert.equal(adb.calls.length, 1);
+  assert.equal(adb.calls[0].m, "swipe");
+  assert.equal(adb.calls[0].x1, 300);
+  assert.equal(adb.calls[0].y1, 600);
+  assert.equal(adb.calls[0].x2, 300);
+  assert.equal(adb.calls[0].y2, 600);
+});

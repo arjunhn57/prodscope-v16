@@ -6,6 +6,8 @@ const {
   findAuthEscapeButton,
   AUTH_ESCAPE_LABELS,
   AUTH_ESCAPE_REGEX,
+  isAuthScreen,
+  listAuthOptionLabels,
 } = require("../auth-escape");
 
 // ── XML fixture helpers ────────────────────────────────────────────────
@@ -218,4 +220,84 @@ test("findAuthEscapeButton: prefers XML match over perception cache", () => {
   assert.ok(r);
   assert.equal(r.source, "xml");
   assert.equal(r.label.toLowerCase(), "skip");
+});
+
+// ── isAuthScreen / listAuthOptionLabels ────────────────────────────────
+
+// Real biztoso Compose fixture: clickable parent with TextView child. Proves
+// the detector works on the screen where the 0ad30600 run flatlined.
+const biztosoComposeXml = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+<node index="12" text="" content-desc="" clickable="false" bounds="[42,1475][1038,1606]">
+  <node index="0" text="" content-desc="" clickable="true" bounds="[42,1475][1038,1606]">
+    <node index="0" text="Continue with Email" content-desc="" clickable="false" bounds="[384,1516][765,1565]" />
+  </node>
+</node>
+<node index="13" text="" content-desc="" clickable="false" bounds="[42,1648][1038,1779]">
+  <node index="0" text="" content-desc="" clickable="true" bounds="[42,1648][1038,1779]">
+    <node index="1" text="Continue with Google" content-desc="" clickable="false" bounds="[367,1689][782,1738]" />
+  </node>
+</node>
+</hierarchy>`;
+
+test("isAuthScreen: true on biztoso Compose login (Continue with Email/Google)", () => {
+  assert.equal(isAuthScreen({ xml: biztosoComposeXml }), true);
+});
+
+test("isAuthScreen: true when AuthEscape (Skip/Guest) is present", () => {
+  const xml = wrap(
+    node({ text: "Welcome", clickable: false, bounds: "[0,200][1080,300]" }),
+    node({ text: "Continue as guest", clickable: true, bounds: "[100,1600][980,1720]" }),
+  );
+  assert.equal(isAuthScreen({ xml }), true);
+});
+
+test("isAuthScreen: false on wikipedia-style content screen", () => {
+  const xml = wrap(
+    node({ text: "Article: Photosynthesis", clickable: false, bounds: "[0,200][1080,300]" }),
+    node({ text: "Read more", clickable: true, bounds: "[80,900][400,1000]" }),
+    node({ text: "Share", clickable: true, bounds: "[500,900][700,1000]" }),
+  );
+  assert.equal(isAuthScreen({ xml }), false);
+});
+
+test("isAuthScreen: false on empty/null observation", () => {
+  assert.equal(isAuthScreen({ xml: "" }), false);
+  assert.equal(isAuthScreen({ xml: null }), false);
+  assert.equal(isAuthScreen(null), false);
+  assert.equal(isAuthScreen(undefined), false);
+});
+
+test("isAuthScreen: true when only perception cache carries the auth label", () => {
+  // Compose / Canvas apps may not expose text in XML; fall back to perception.
+  const xml = wrap(node({ text: "Welcome", clickable: false, bounds: "[0,0][1080,200]" }));
+  const perceptionCache = {
+    buttons: [{ label: "Sign in with Google", bounds: { x1: 100, y1: 800, x2: 980, y2: 900 } }],
+  };
+  assert.equal(isAuthScreen({ xml, perceptionCache }), true);
+});
+
+test("listAuthOptionLabels: returns visible sign-in options from biztoso Compose xml", () => {
+  const labels = listAuthOptionLabels({ xml: biztosoComposeXml });
+  assert.ok(labels.includes("Continue with Email"));
+  assert.ok(labels.includes("Continue with Google"));
+});
+
+test("listAuthOptionLabels: deduplicates across xml and perception", () => {
+  const xml = wrap(node({ text: "Sign in with Google", clickable: true, bounds: "[100,800][980,900]" }));
+  const perceptionCache = {
+    buttons: [{ label: "Sign in with Google", bounds: { x1: 100, y1: 800, x2: 980, y2: 900 } }],
+  };
+  const labels = listAuthOptionLabels({ xml, perceptionCache });
+  assert.equal(labels.filter((l) => l === "Sign in with Google").length, 1);
+});
+
+test("listAuthOptionLabels: respects limit", () => {
+  const xml = wrap(
+    node({ text: "Continue with Email", clickable: true, bounds: "[0,100][100,200]" }),
+    node({ text: "Continue with Google", clickable: true, bounds: "[0,300][100,400]" }),
+    node({ text: "Sign in with Apple", clickable: true, bounds: "[0,500][100,600]" }),
+  );
+  const labels = listAuthOptionLabels({ xml }, 2);
+  assert.equal(labels.length, 2);
 });
