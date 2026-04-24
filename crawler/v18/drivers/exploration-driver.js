@@ -55,6 +55,25 @@ const EMPTY_FRONTIER_SAFE_BACK_SCREEN_TYPES = new Set([
 ]);
 
 /**
+ * Horizontal-pager detection — classes that host swipeable pages.
+ * Presence of any of these in the XML means swipe_horizontal likely
+ * reveals a new fp (next page of a carousel / tab / story rail).
+ */
+const HORIZONTAL_PAGER_XML_REGEX =
+  /class="[^"]*(?:ViewPager2|androidx\.viewpager\.widget\.ViewPager|HorizontalPager|LazyRow|HorizontalScrollView)"/;
+
+/** Per-fp horizontal swipe budget (mirror of vertical scroll budget). */
+const MAX_HORIZONTAL_SWIPES_PER_FP = 4;
+
+/**
+ * Back-edge escalation ladder for empty-frontier on safe screen types.
+ * On the first empty-frontier hit we press_back; on the second (same fp
+ * after press_back failed to change it) we try gesture-nav edge-swipe-back;
+ * on the third we yield.
+ */
+const BACK_LADDER_ATTEMPTS = ["press_back", "edge_swipe_back", "yield"];
+
+/**
  * Build the filtered clickable graph the v17 heuristics will operate on.
  * We run findListItemTargets etc. against the filtered set so:
  *   - Homogeneous Reply buttons (intent=write) never form a "list" group.
@@ -160,13 +179,63 @@ async function decide(observation, state, deps = {}) {
 
     if (frontier.length === 0 && filterable.clickables.length > 0) {
       const screenType = deps.plan && deps.plan.screenType;
-      if (EMPTY_FRONTIER_SAFE_BACK_SCREEN_TYPES.has(screenType)) {
+
+      // Before any back-nav, try a horizontal swipe if the screen hosts a
+      // ViewPager / HorizontalPager / LazyRow — a new page may reveal
+      // entirely new screens with their own frontier.
+      const v17Memory = v17Exploration.initMemory(state);
+      if (hasHorizontalPager(observation.xml) && v17Memory) {
+        if (!v17Memory.horizontalSwipeByFp) v17Memory.horizontalSwipeByFp = new Map();
+        const count = v17Memory.horizontalSwipeByFp.get(fp) || 0;
+        if (count < MAX_HORIZONTAL_SWIPES_PER_FP) {
+          v17Memory.horizontalSwipeByFp.set(fp, count + 1);
+          const { width, height } = inferScreenSize(filterable);
+          log.info(
+            { fingerprint: fp, screenType, swipes: count + 1 },
+            "ExplorationDriver: horizontal-pager detected — swiping to next page",
+          );
+          return {
+            type: "swipe_horizontal",
+            direction: "left", // finger right→left = NEXT page
+            screenWidth: width,
+            screenHeight: height,
+          };
+        }
+      }
+
+      // Back-nav ladder on safe screen types: press_back → edge_swipe_back → yield.
+      if (EMPTY_FRONTIER_SAFE_BACK_SCREEN_TYPES.has(screenType) && v17Memory) {
+        if (!v17Memory.backLadderByFp) v17Memory.backLadderByFp = new Map();
+        const attempt = v17Memory.backLadderByFp.get(fp) || 0;
+        const next = BACK_LADDER_ATTEMPTS[Math.min(attempt, BACK_LADDER_ATTEMPTS.length - 1)];
+        v17Memory.backLadderByFp.set(fp, attempt + 1);
+        if (next === "press_back") {
+          log.info(
+            { fingerprint: fp, screenType },
+            "ExplorationDriver: frontier empty on safe screen — emitting press_back (ladder step 1)",
+          );
+          return { type: "press_back" };
+        }
+        if (next === "edge_swipe_back") {
+          const { width, height } = inferScreenSize(filterable);
+          log.info(
+            { fingerprint: fp, screenType },
+            "ExplorationDriver: press_back didn't advance — trying edge_swipe_back (ladder step 2)",
+          );
+          return {
+            type: "edge_swipe_back",
+            screenWidth: width,
+            screenHeight: height,
+          };
+        }
+        // next === "yield"
         log.info(
           { fingerprint: fp, screenType },
-          "ExplorationDriver: frontier empty on safe screen — emitting press_back",
+          "ExplorationDriver: back ladder exhausted on safe screen — yielding to LLMFallback",
         );
-        return { type: "press_back" };
+        return null;
       }
+
       // Hub screen with empty frontier → yield so LLMFallback can route
       // to an unvisited hub via trajectory hint.
       log.info(
@@ -298,11 +367,49 @@ function tapAction(clickable) {
   return action;
 }
 
+/**
+ * True when the XML carries a ViewPager-style container — a swipeable
+ * page host where swipe_horizontal changes content.
+ *
+ * @param {string|null|undefined} xml
+ * @returns {boolean}
+ */
+function hasHorizontalPager(xml) {
+  if (typeof xml !== "string" || !xml) return false;
+  return HORIZONTAL_PAGER_XML_REGEX.test(xml);
+}
+
+/**
+ * Infer screen width/height from the max bounds of the clickables in
+ * graph. Fallback to common phone dimensions when the graph is empty or
+ * bounds-less.
+ */
+function inferScreenSize(graph) {
+  let w = 0;
+  let h = 0;
+  if (graph && Array.isArray(graph.clickables)) {
+    for (const c of graph.clickables) {
+      if (c && c.bounds) {
+        if (Number.isFinite(c.bounds.x2)) w = Math.max(w, c.bounds.x2);
+        if (Number.isFinite(c.bounds.y2)) h = Math.max(h, c.bounds.y2);
+      }
+    }
+  }
+  if (!w || w < 320) w = 1080;
+  if (!h || h < 480) h = 2400;
+  return { width: w, height: h };
+}
+
 module.exports = {
   name: "ExplorationDriver", // keep same name for dispatcher logging compat
   claim,
   decide,
   deriveFilterable,
+  hasHorizontalPager,
+  inferScreenSize,
   EXPLORATION_INTENTS,
   EMPTY_FRONTIER_SAFE_BACK_SCREEN_TYPES,
+  HORIZONTAL_PAGER_XML_REGEX,
+  MAX_HORIZONTAL_SWIPES_PER_FP,
+  BACK_LADDER_ATTEMPTS,
 };

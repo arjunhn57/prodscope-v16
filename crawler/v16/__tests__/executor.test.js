@@ -65,22 +65,25 @@ test("validateAction requires reason string for done", () => {
   assert.equal(validateAction({ type: "done", reason: "exhausted" }).valid, true);
 });
 
-test("VALID_TYPES contains all 10 documented action types including request_human_input", () => {
-  assert.equal(VALID_TYPES.size, 10);
-  for (const t of [
-    "tap",
-    "type",
-    "swipe",
-    "long_press",
-    "press_back",
-    "press_home",
-    "launch_app",
-    "wait",
-    "done",
-    "request_human_input",
-  ]) {
+test("VALID_TYPES contains all action types including the 2026-04-25 gesture expansion", () => {
+  const expected = [
+    // Core pointer
+    "tap", "double_tap", "long_press", "drag",
+    // Swipes
+    "swipe", "scroll_up", "scroll_down", "swipe_horizontal", "pull_to_refresh",
+    // Edge swipes
+    "edge_swipe_back", "edge_swipe_drawer", "edge_swipe_home",
+    // Text
+    "type", "clear_field",
+    // Keys
+    "press_back", "press_home", "press_menu", "press_app_switch", "press_escape", "ime_action",
+    // Lifecycle
+    "launch_app", "wait", "done", "request_human_input",
+  ];
+  for (const t of expected) {
     assert.ok(VALID_TYPES.has(t), `missing type: ${t}`);
   }
+  assert.equal(VALID_TYPES.size, expected.length);
 });
 
 test("validateAction: request_human_input accepts valid shape for each field", () => {
@@ -177,6 +180,8 @@ function makeMockAdb() {
     swipe: (x1, y1, x2, y2, d) => calls.push({ m: "swipe", x1, y1, x2, y2, d }),
     pressBack: () => calls.push({ m: "pressBack" }),
     pressHome: () => calls.push({ m: "pressHome" }),
+    pressEnter: () => calls.push({ m: "pressEnter" }),
+    keyEvent: (code) => calls.push({ m: "keyEvent", code }),
     inputText: (t) => calls.push({ m: "inputText", t }),
     launchApp: (p) => calls.push({ m: "launchApp", p }),
   };
@@ -348,4 +353,167 @@ test("executeAction: long_press uses resolver the same as tap", async () => {
   assert.equal(adb.calls[0].y1, 600);
   assert.equal(adb.calls[0].x2, 300);
   assert.equal(adb.calls[0].y2, 600);
+});
+
+// ── 2026-04-25 gesture-taxonomy expansion ──────────────────────────────
+
+test("executeAction: double_tap emits two taps at the same coords", async () => {
+  const adb = makeMockAdb();
+  const r = await executeAction(
+    { type: "double_tap", x: 540, y: 1200 },
+    { targetPackage: "com.a", adb },
+  );
+  assert.equal(r.ok, true);
+  assert.equal(adb.calls.length, 2);
+  assert.deepEqual(adb.calls[0], { m: "tap", x: 540, y: 1200 });
+  assert.deepEqual(adb.calls[1], { m: "tap", x: 540, y: 1200 });
+});
+
+test("executeAction: drag issues a swipe with the caller's coords", async () => {
+  const adb = makeMockAdb();
+  const r = await executeAction(
+    { type: "drag", x1: 100, y1: 500, x2: 100, y2: 1500, durationMs: 800 },
+    { targetPackage: "com.a", adb },
+  );
+  assert.equal(r.ok, true);
+  assert.equal(adb.calls[0].m, "swipe");
+  assert.equal(adb.calls[0].d, 800);
+});
+
+test("executeAction: scroll_down swipes bottom→top at screen center", async () => {
+  const adb = makeMockAdb();
+  const r = await executeAction(
+    { type: "scroll_down", screenWidth: 1080, screenHeight: 2400 },
+    { targetPackage: "com.a", adb },
+  );
+  assert.equal(r.ok, true);
+  assert.equal(adb.calls[0].m, "swipe");
+  // Default formula: cx=540, y1=bottom(1800), y2=top(600).
+  assert.equal(adb.calls[0].x1, 540);
+  assert.equal(adb.calls[0].x2, 540);
+  assert.ok(adb.calls[0].y1 > adb.calls[0].y2);
+});
+
+test("executeAction: scroll_up swipes top→bottom (opposite of scroll_down)", async () => {
+  const adb = makeMockAdb();
+  const r = await executeAction(
+    { type: "scroll_up", screenWidth: 1080, screenHeight: 2400 },
+    { targetPackage: "com.a", adb },
+  );
+  assert.equal(r.ok, true);
+  assert.ok(adb.calls[0].y1 < adb.calls[0].y2);
+});
+
+test("executeAction: swipe_horizontal direction='left' swipes right→left (next page)", async () => {
+  const adb = makeMockAdb();
+  const r = await executeAction(
+    { type: "swipe_horizontal", direction: "left", screenWidth: 1080, screenHeight: 2400 },
+    { targetPackage: "com.a", adb },
+  );
+  assert.equal(r.ok, true);
+  // finger right→left: x1 > x2
+  assert.ok(adb.calls[0].x1 > adb.calls[0].x2);
+});
+
+test("executeAction: swipe_horizontal direction='right' swipes left→right (prev page)", async () => {
+  const adb = makeMockAdb();
+  await executeAction(
+    { type: "swipe_horizontal", direction: "right", screenWidth: 1080, screenHeight: 2400 },
+    { targetPackage: "com.a", adb },
+  );
+  assert.ok(adb.calls[0].x1 < adb.calls[0].x2);
+});
+
+test("executeAction: edge_swipe_back swipes from x=0 inward at middle y", async () => {
+  const adb = makeMockAdb();
+  await executeAction(
+    { type: "edge_swipe_back", screenWidth: 1080, screenHeight: 2400 },
+    { targetPackage: "com.a", adb },
+  );
+  assert.equal(adb.calls[0].x1, 0, "edge-swipe-back must start at left edge x=0");
+  assert.ok(adb.calls[0].x2 > 0 && adb.calls[0].x2 < 1080);
+  assert.equal(adb.calls[0].y1, 1200);
+  assert.equal(adb.calls[0].y2, 1200);
+});
+
+test("executeAction: edge_swipe_drawer swipes from right edge inward", async () => {
+  const adb = makeMockAdb();
+  await executeAction(
+    { type: "edge_swipe_drawer", screenWidth: 1080, screenHeight: 2400 },
+    { targetPackage: "com.a", adb },
+  );
+  assert.equal(adb.calls[0].x1, 1079);
+  assert.ok(adb.calls[0].x2 < adb.calls[0].x1 && adb.calls[0].x2 > 0);
+});
+
+test("executeAction: edge_swipe_home swipes from bottom edge upward", async () => {
+  const adb = makeMockAdb();
+  await executeAction(
+    { type: "edge_swipe_home", screenWidth: 1080, screenHeight: 2400 },
+    { targetPackage: "com.a", adb },
+  );
+  assert.equal(adb.calls[0].y1, 2399);
+  assert.ok(adb.calls[0].y2 < adb.calls[0].y1);
+});
+
+test("executeAction: pull_to_refresh swipes short→long vertically at screen center", async () => {
+  const adb = makeMockAdb();
+  await executeAction(
+    { type: "pull_to_refresh", screenWidth: 1080, screenHeight: 2400 },
+    { targetPackage: "com.a", adb },
+  );
+  assert.equal(adb.calls[0].m, "swipe");
+  assert.ok(adb.calls[0].y2 > adb.calls[0].y1, "pull_to_refresh swipes downward");
+});
+
+test("executeAction: ime_action presses Enter", async () => {
+  const adb = makeMockAdb();
+  await executeAction({ type: "ime_action" }, { targetPackage: "com.a", adb });
+  assert.deepEqual(adb.calls, [{ m: "pressEnter" }]);
+});
+
+test("executeAction: press_menu emits KEYCODE_MENU", async () => {
+  const adb = makeMockAdb();
+  await executeAction({ type: "press_menu" }, { targetPackage: "com.a", adb });
+  assert.deepEqual(adb.calls, [{ m: "keyEvent", code: "KEYCODE_MENU" }]);
+});
+
+test("executeAction: press_app_switch + press_escape emit their keycodes", async () => {
+  const adb = makeMockAdb();
+  await executeAction({ type: "press_app_switch" }, { targetPackage: "com.a", adb });
+  await executeAction({ type: "press_escape" }, { targetPackage: "com.a", adb });
+  assert.deepEqual(adb.calls, [
+    { m: "keyEvent", code: "KEYCODE_APP_SWITCH" },
+    { m: "keyEvent", code: "KEYCODE_ESCAPE" },
+  ]);
+});
+
+test("executeAction: clear_field moves caret to end then issues DELs", async () => {
+  const adb = makeMockAdb();
+  await executeAction({ type: "clear_field" }, { targetPackage: "com.a", adb });
+  assert.equal(adb.calls[0].code, "KEYCODE_MOVE_END");
+  // Remaining calls are all DELs.
+  for (let i = 1; i < adb.calls.length; i++) {
+    assert.equal(adb.calls[i].code, "KEYCODE_DEL");
+  }
+  assert.ok(adb.calls.length > 10, "should emit many DELs to cover realistic field lengths");
+});
+
+test("validateAction: swipe_horizontal without direction is invalid", () => {
+  assert.equal(validateAction({ type: "swipe_horizontal" }).valid, false);
+  assert.equal(validateAction({ type: "swipe_horizontal", direction: "up" }).valid, false);
+  assert.equal(validateAction({ type: "swipe_horizontal", direction: "left" }).valid, true);
+  assert.equal(validateAction({ type: "swipe_horizontal", direction: "right" }).valid, true);
+});
+
+test("validateAction: drag requires numeric coords", () => {
+  assert.equal(validateAction({ type: "drag" }).valid, false);
+  assert.equal(validateAction({ type: "drag", x1: 0, y1: 0 }).valid, false);
+  assert.equal(validateAction({ type: "drag", x1: 0, y1: 0, x2: 100, y2: 100 }).valid, true);
+});
+
+test("validateAction: edge swipes need no params — executor computes coords from screen dims", () => {
+  for (const t of ["edge_swipe_back", "edge_swipe_drawer", "edge_swipe_home", "pull_to_refresh", "scroll_up", "scroll_down"]) {
+    assert.equal(validateAction({ type: t }).valid, true, `${t} should be valid with no args`);
+  }
 });

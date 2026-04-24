@@ -233,6 +233,29 @@ function pressEnter() {
   run('adb shell input keyevent KEYCODE_ENTER');
 }
 
+/**
+ * Emit a raw Android key event. Use a KEYCODE_* name from
+ * https://developer.android.com/reference/android/view/KeyEvent
+ *
+ * Examples:
+ *   keyEvent('KEYCODE_MENU')
+ *   keyEvent('KEYCODE_APP_SWITCH')
+ *   keyEvent('KEYCODE_ESCAPE')
+ *   keyEvent('KEYCODE_DEL')
+ *
+ * @param {string} code
+ */
+function keyEvent(code) {
+  if (typeof code !== 'string' || code.length === 0) {
+    throw new Error('keyEvent requires a KEYCODE_* string');
+  }
+  // Guard against shell injection — only allow uppercase letters, digits, underscores.
+  if (!/^[A-Z0-9_]+$/.test(code)) {
+    throw new Error(`keyEvent: suspicious code ${code}`);
+  }
+  run(`adb shell input keyevent ${code}`);
+}
+
 /** Type text into the currently focused field. */
 function inputText(text) {
   // Replace spaces with %s (ADB input text syntax)
@@ -451,6 +474,7 @@ module.exports = {
   pressBack,
   pressHome,
   pressEnter,
+  keyEvent,
   inputText,
   getCurrentActivity,
   getCurrentActivityAsync,

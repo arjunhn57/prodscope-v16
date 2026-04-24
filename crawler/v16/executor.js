@@ -25,17 +25,49 @@ const { resolveTapTarget } = require("./tap-target-resolver");
 const log = logger.child({ component: "v16-executor" });
 
 const VALID_TYPES = new Set([
+  // Core pointer gestures
   "tap",
-  "type",
-  "swipe",
+  "double_tap",
   "long_press",
+  "drag",
+  // Directional swipes (vertical / horizontal content)
+  "swipe",
+  "scroll_up",
+  "scroll_down",
+  "swipe_horizontal",
+  "pull_to_refresh",
+  // Edge swipes (gesture-nav)
+  "edge_swipe_back",
+  "edge_swipe_drawer",
+  "edge_swipe_home",
+  // Text input
+  "type",
+  "clear_field",
+  // Keys
   "press_back",
   "press_home",
+  "press_menu",
+  "press_app_switch",
+  "press_escape",
+  "ime_action",
+  // Lifecycle
   "launch_app",
   "wait",
   "done",
   "request_human_input",
 ]);
+
+/** Default screen dimensions when an action doesn't carry its own. */
+const DEFAULT_SCREEN_W = 1080;
+const DEFAULT_SCREEN_H = 2400;
+
+/** Edge-swipe tuning — small start-offset from the edge so the system
+ *  gesture detector reliably fires, and generous drag distance. */
+const EDGE_SWIPE_DURATION_MS = 200;
+const HORIZONTAL_SWIPE_DURATION_MS = 280;
+const VERTICAL_SCROLL_DURATION_MS = 300;
+const PULL_TO_REFRESH_DURATION_MS = 500;
+const DOUBLE_TAP_GAP_MS = 80;
 
 const KNOWN_INPUT_FIELDS = new Set(["otp", "email_code", "2fa", "captcha"]);
 
@@ -81,6 +113,29 @@ function resolveTapCoords(action, ctx) {
     );
   }
   return { x: resolved.x, y: resolved.y };
+}
+
+/**
+ * Resolve the screen dimensions for coord-computing gestures. Order:
+ *   1. Action-level override (action.screenWidth / action.screenHeight)
+ *   2. Context (ctx.screenWidth / ctx.screenHeight) — agent-loop can thread
+ *      these from the inferred-screen-size helper in ExplorationDriver
+ *   3. Default (1080×2400)
+ *
+ * @param {object} action
+ * @param {object} ctx
+ * @returns {{w:number, h:number}}
+ */
+function screenSize(action, ctx) {
+  const w =
+    (action && Number.isFinite(action.screenWidth) && action.screenWidth) ||
+    (ctx && Number.isFinite(ctx.screenWidth) && ctx.screenWidth) ||
+    DEFAULT_SCREEN_W;
+  const h =
+    (action && Number.isFinite(action.screenHeight) && action.screenHeight) ||
+    (ctx && Number.isFinite(ctx.screenHeight) && ctx.screenHeight) ||
+    DEFAULT_SCREEN_H;
+  return { w, h };
 }
 
 /**
@@ -146,7 +201,44 @@ function validateAction(action) {
 
     case "press_back":
     case "press_home":
+    case "press_menu":
+    case "press_app_switch":
+    case "press_escape":
+    case "ime_action":
     case "launch_app":
+    case "clear_field":
+      return { valid: true };
+
+    case "double_tap":
+      if (!Number.isFinite(action.x) || !Number.isFinite(action.y)) {
+        return { valid: false, error: "double_tap requires numeric x,y" };
+      }
+      return { valid: true };
+
+    case "drag":
+      if (
+        !Number.isFinite(action.x1) || !Number.isFinite(action.y1) ||
+        !Number.isFinite(action.x2) || !Number.isFinite(action.y2)
+      ) {
+        return { valid: false, error: "drag requires numeric x1,y1,x2,y2" };
+      }
+      return { valid: true };
+
+    // Directional swipes. All accept optional screenWidth/screenHeight —
+    // callers that know the emulator dimensions pass them; otherwise the
+    // executor uses DEFAULT_SCREEN_W/H.
+    case "scroll_up":
+    case "scroll_down":
+    case "edge_swipe_back":
+    case "edge_swipe_drawer":
+    case "edge_swipe_home":
+    case "pull_to_refresh":
+      return { valid: true };
+
+    case "swipe_horizontal":
+      if (action.direction !== "left" && action.direction !== "right") {
+        return { valid: false, error: "swipe_horizontal requires direction='left'|'right'" };
+      }
       return { valid: true };
 
     default:
@@ -217,6 +309,110 @@ async function executeAction(action, ctx) {
           Math.round(action.y2),
           300,
         );
+        return { terminal: false, stopReason: null, ok: true, error: null };
+
+      case "double_tap": {
+        const { x, y } = resolveTapCoords(action, ctx);
+        const rx = Math.round(x);
+        const ry = Math.round(y);
+        adb.tap(rx, ry);
+        await sleep(DOUBLE_TAP_GAP_MS);
+        adb.tap(rx, ry);
+        return { terminal: false, stopReason: null, ok: true, error: null };
+      }
+
+      case "drag":
+        adb.swipe(
+          Math.round(action.x1),
+          Math.round(action.y1),
+          Math.round(action.x2),
+          Math.round(action.y2),
+          action.durationMs || 700,
+        );
+        return { terminal: false, stopReason: null, ok: true, error: null };
+
+      case "scroll_up":
+      case "scroll_down": {
+        const { w, h } = screenSize(action, ctx);
+        const cx = Math.floor(w / 2);
+        const yTop = Math.floor(h * 0.25);
+        const yBottom = Math.floor(h * 0.75);
+        const [y1, y2] = action.type === "scroll_down"
+          ? [yBottom, yTop]
+          : [yTop, yBottom];
+        adb.swipe(cx, y1, cx, y2, VERTICAL_SCROLL_DURATION_MS);
+        return { terminal: false, stopReason: null, ok: true, error: null };
+      }
+
+      case "swipe_horizontal": {
+        const { w, h } = screenSize(action, ctx);
+        const cy = Math.floor(h / 2);
+        const xLeft = Math.floor(w * 0.2);
+        const xRight = Math.floor(w * 0.8);
+        const [x1, x2] = action.direction === "left"
+          ? [xRight, xLeft]   // swipe from right to left = "next page"
+          : [xLeft, xRight];  // swipe from left to right = "prev page"
+        adb.swipe(x1, cy, x2, cy, HORIZONTAL_SWIPE_DURATION_MS);
+        return { terminal: false, stopReason: null, ok: true, error: null };
+      }
+
+      case "pull_to_refresh": {
+        const { w, h } = screenSize(action, ctx);
+        const cx = Math.floor(w / 2);
+        adb.swipe(cx, Math.floor(h * 0.3), cx, Math.floor(h * 0.75), PULL_TO_REFRESH_DURATION_MS);
+        return { terminal: false, stopReason: null, ok: true, error: null };
+      }
+
+      case "edge_swipe_back": {
+        // Android 10+ gesture-nav BACK — swipe from left edge inward.
+        const { w, h } = screenSize(action, ctx);
+        const cy = Math.floor(h / 2);
+        adb.swipe(0, cy, Math.floor(w * 0.4), cy, EDGE_SWIPE_DURATION_MS);
+        return { terminal: false, stopReason: null, ok: true, error: null };
+      }
+
+      case "edge_swipe_drawer": {
+        // Open hamburger drawer (Material DrawerLayout or gesture-nav forward).
+        const { w, h } = screenSize(action, ctx);
+        const cy = Math.floor(h / 2);
+        adb.swipe(Math.max(0, w - 1), cy, Math.floor(w * 0.6), cy, EDGE_SWIPE_DURATION_MS);
+        return { terminal: false, stopReason: null, ok: true, error: null };
+      }
+
+      case "edge_swipe_home": {
+        // Android 10+ gesture-nav HOME — swipe up from bottom edge.
+        const { w, h } = screenSize(action, ctx);
+        const cx = Math.floor(w / 2);
+        adb.swipe(cx, Math.max(0, h - 1), cx, Math.floor(h * 0.3), EDGE_SWIPE_DURATION_MS);
+        return { terminal: false, stopReason: null, ok: true, error: null };
+      }
+
+      case "clear_field": {
+        // Move caret to end of field, then DEL repeatedly. 200 iterations
+        // covers most realistic field lengths without being catastrophic
+        // on short fields (extra DELs are no-ops on empty fields).
+        adb.keyEvent("KEYCODE_MOVE_END");
+        for (let i = 0; i < 200; i++) adb.keyEvent("KEYCODE_DEL");
+        return { terminal: false, stopReason: null, ok: true, error: null };
+      }
+
+      case "press_menu":
+        adb.keyEvent("KEYCODE_MENU");
+        return { terminal: false, stopReason: null, ok: true, error: null };
+
+      case "press_app_switch":
+        adb.keyEvent("KEYCODE_APP_SWITCH");
+        return { terminal: false, stopReason: null, ok: true, error: null };
+
+      case "press_escape":
+        adb.keyEvent("KEYCODE_ESCAPE");
+        return { terminal: false, stopReason: null, ok: true, error: null };
+
+      case "ime_action":
+        // KEYCODE_ENTER triggers the IME action on most search boxes
+        // (Search / Go / Next / Done). Much cheaper than guessing which
+        // on-screen button submits a search.
+        adb.pressEnter();
         return { terminal: false, stopReason: null, ok: true, error: null };
 
       case "type": {

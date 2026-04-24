@@ -380,6 +380,89 @@ test("dispatch: frontier empty on detail screen → ExplorationDriver emits pres
   assert.equal(r2.driver, "ExplorationDriver");
 });
 
+test("dispatch: detail screen with ViewPager + empty frontier → emits swipe_horizontal before press_back", async () => {
+  const { createMemory, recordTap } = require("../trajectory-memory");
+  // 3 rows + a ViewPager wrapper in the XML. After tapping all 3 rows,
+  // the frontier is empty; next call should swipe_horizontal because
+  // the screen hosts a pager.
+  const xml = `<?xml version="1.0"?>\n<hierarchy rotation="0">\n` +
+    `<node class="androidx.viewpager2.widget.ViewPager2" package="com.app" clickable="false" bounds="[0,0][1080,2400]" />` +
+    `<node text="Item A" resource-id="com.app:id/row" class="com.app.DetailRow" package="com.app" clickable="true" bounds="[40,200][1040,360]" />` +
+    `<node text="Item B" resource-id="com.app:id/row" class="com.app.DetailRow" package="com.app" clickable="true" bounds="[40,380][1040,540]" />` +
+    `<node text="Item C" resource-id="com.app:id/row" class="com.app.DetailRow" package="com.app" clickable="true" bounds="[40,560][1040,720]" />` +
+    `</hierarchy>`;
+  const plan = {
+    screen_type: "detail",
+    allowed_intents: ["navigate", "read_only"],
+    action_budget: 3,
+    confidence: 0.9,
+    nodes: Array.from({ length: 3 }, (_, i) => ({ nodeIndex: i, role: "content", intent: "navigate", priority: 5 })),
+  };
+  const trajectory = createMemory();
+  const { parseClickableGraph } = require("../../v17/drivers/clickable-graph");
+  const graph = parseClickableGraph(xml);
+  const r0 = await dispatch({ xml, packageName: "com.app" }, {}, {
+    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory,
+  });
+  const fp = r0.plan.fingerprint;
+  for (const c of graph.clickables) recordTap(trajectory, fp, c);
+  // Now frontier is empty. Expect swipe_horizontal (pager detected).
+  const r = await dispatch({ xml, packageName: "com.app" }, {}, {
+    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory,
+  });
+  assert.equal(r.action.type, "swipe_horizontal");
+  assert.equal(r.action.direction, "left");
+});
+
+test("dispatch: detail screen (no pager) empty frontier → press_back first, then edge_swipe_back on persistence, then yield", async () => {
+  const { createMemory, recordTap } = require("../trajectory-memory");
+  const xml = wrap(
+    n({ text: "Item A", rid: "com.app:id/row", cls: "com.app.DetailRow", bounds: "[40,200][1040,360]" }),
+    n({ text: "Item B", rid: "com.app:id/row", cls: "com.app.DetailRow", bounds: "[40,380][1040,540]" }),
+    n({ text: "Item C", rid: "com.app:id/row", cls: "com.app.DetailRow", bounds: "[40,560][1040,720]" }),
+  );
+  const plan = {
+    screen_type: "detail",
+    allowed_intents: ["navigate", "read_only"],
+    action_budget: 3,
+    confidence: 0.9,
+    nodes: Array.from({ length: 3 }, (_, i) => ({ nodeIndex: i, role: "content", intent: "navigate", priority: 5 })),
+  };
+  const trajectory = createMemory();
+  const { parseClickableGraph } = require("../../v17/drivers/clickable-graph");
+  const graph = parseClickableGraph(xml);
+  const r0 = await dispatch({ xml, packageName: "com.app" }, {}, {
+    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory,
+  });
+  const fp = r0.plan.fingerprint;
+  for (const c of graph.clickables) recordTap(trajectory, fp, c);
+  // Share driver state so back-ladder progresses across calls.
+  const sharedState = {};
+  // 1st empty-frontier: press_back
+  const r1 = await dispatch({ xml, packageName: "com.app" }, sharedState, {
+    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory,
+  });
+  assert.equal(r1.action.type, "press_back", "step 1 of ladder must be press_back");
+  // 2nd empty-frontier on same fp: edge_swipe_back
+  const r2 = await dispatch({ xml, packageName: "com.app" }, sharedState, {
+    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory,
+  });
+  assert.equal(r2.action.type, "edge_swipe_back", "step 2 of ladder must be edge_swipe_back");
+  // 3rd: yields → LLMFallback (default returns done). The assertion here is
+  // just that it's NOT another press_back / edge_swipe_back loop.
+  let fallbackCalled = false;
+  const llmFallback = async () => {
+    fallbackCalled = true;
+    return { type: "wait", ms: 500 };
+  };
+  const r3 = await dispatch({ xml, packageName: "com.app" }, sharedState, {
+    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory, llmFallback,
+  });
+  assert.equal(fallbackCalled, true, "ladder must yield to LLMFallback after 2 attempts");
+  assert.notEqual(r3.action.type, "press_back");
+  assert.notEqual(r3.action.type, "edge_swipe_back");
+});
+
 test("dispatch: frontier empty on feed screen → ExplorationDriver yields to LLMFallback (hub routing)", async () => {
   const { createMemory, recordTap } = require("../trajectory-memory");
   const xml = wrap(

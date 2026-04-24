@@ -53,12 +53,32 @@ const DECISION_TOOL = {
           type: {
             type: "string",
             enum: [
+              // Core pointer gestures
               "tap",
-              "type",
-              "swipe",
+              "double_tap",
               "long_press",
+              "drag",
+              // Swipes (semantic — executor fills in coords from screen dims)
+              "swipe",
+              "scroll_up",
+              "scroll_down",
+              "swipe_horizontal",
+              "pull_to_refresh",
+              // Edge / gesture-nav swipes
+              "edge_swipe_back",
+              "edge_swipe_drawer",
+              "edge_swipe_home",
+              // Text input
+              "type",
+              "clear_field",
+              // Keys
               "press_back",
               "press_home",
+              "press_menu",
+              "press_app_switch",
+              "press_escape",
+              "ime_action",
+              // Lifecycle
               "launch_app",
               "wait",
               "done",
@@ -71,10 +91,19 @@ const DECISION_TOOL = {
           y1: { type: "number" },
           x2: { type: "number" },
           y2: { type: "number" },
+          direction: {
+            type: "string",
+            enum: ["left", "right"],
+            description:
+              "For swipe_horizontal: 'left' = swipe finger right→left (go to NEXT page in a ViewPager/carousel); 'right' = swipe finger left→right (go to PREVIOUS page).",
+          },
+          screenWidth: { type: "number", description: "Optional — emulator screen width in px. Default 1080." },
+          screenHeight: { type: "number", description: "Optional — emulator screen height in px. Default 2400." },
+          durationMs: { type: "number", description: "For drag: gesture duration in ms. Default 700." },
           targetText: {
             type: "string",
             description:
-              "For tap/long_press on a labeled element, the exact visible text of "
+              "For tap/long_press/double_tap on a labeled element, the exact visible text of "
               + "the element (e.g. 'Continue with Email', 'Sign in', 'Skip'). The "
               + "executor prefers coords derived from UIAutomator XML bounds when "
               + "this text matches a clickable node. Omit for icon-only or "
