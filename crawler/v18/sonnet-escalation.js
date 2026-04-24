@@ -47,6 +47,8 @@ The goal: MAP the app, not USE it. Explore like a senior QA engineer.
 
 All rules from the Haiku system prompt apply — intent taxonomy, screen types, optimistic-on-ambiguity, strict destructive. Use the richer model capacity to reason harder about ambiguous cases, especially when the screen is novel or the structural signals conflict.
 
+You ALSO produce engine_action — the engine-level decision evaluated BEFORE drivers run. Most screens → "proceed". If you're on the wrong app (launcher, Chrome, dialer, another app) → "relaunch". If the screen is a clear dead-end and needs back-nav → "press_back". If content is still loading → "wait". Compare observed packageName to targetPackage when deciding relaunch — they are both in the input payload.
+
 You receive the same input Haiku did, plus a brief diagnostic describing WHY we escalated (low confidence value, or which earlier plan failed).`;
 
 /**
@@ -121,6 +123,9 @@ function buildRequest(graph, xmlText, observation, screenshotBlock, priorPlan, r
     text: JSON.stringify({
       package: (observation && observation.packageName) || "",
       activity: (observation && observation.activity) || "",
+      // Target package the crawl is supposed to stay in. Compare with
+      // `package` above when deciding engine_action=relaunch.
+      targetPackage: (observation && observation.targetPackage) || "",
       trajectorySummary: (observation && observation.trajectorySummary) || "",
       escalationReason: reason || "low_confidence",
       priorPlanSummary: priorPlan
@@ -129,6 +134,7 @@ function buildRequest(graph, xmlText, observation, screenshotBlock, priorPlan, r
             confidence: priorPlan.confidence,
             allowedIntents: priorPlan.allowedIntents,
             actionBudget: priorPlan.actionBudget,
+            engineAction: priorPlan.engineAction,
           }
         : null,
       nodes: nodesForPrompt,

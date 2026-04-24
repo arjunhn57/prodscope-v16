@@ -59,6 +59,9 @@ async function runAgentLoop(opts) {
     extraDispatchDeps: {
       trajectory,
       escalationBudget,
+      // Phase 2: Haiku needs the target package to decide engine_action=relaunch
+      // when the current observation is on the wrong app (launcher, browser, ...).
+      targetPackage: opts && opts.targetPackage,
     },
   });
   const mergedOpts = Object.assign({}, opts, { deps: mergedDeps });

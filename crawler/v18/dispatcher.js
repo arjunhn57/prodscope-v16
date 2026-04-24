@@ -52,6 +52,42 @@ async function defaultLlmFallback() {
 }
 
 /**
+ * Phase 2 — translate an LLM-decided engine_action into an Action the
+ * v17 agent-loop executor already understands. Returns null if the action
+ * can't be translated (e.g. relaunch requested but targetPackage not
+ * available) — dispatcher falls through to normal driver dispatch.
+ *
+ * @param {string} engineAction  "relaunch" | "press_back" | "wait"
+ * @param {object} plan           ScreenPlan from classifier
+ * @param {object} observation    current observation
+ * @param {object} deps           dispatch deps (contains targetPackage)
+ * @returns {null | { driver: string, action: object }}
+ */
+function handleEngineAction(engineAction, plan, observation, deps) {
+  switch (engineAction) {
+    case "relaunch":
+      // v16/executor already pulls targetPackage from ctx (set by runAgentLoop)
+      // when action.type === "launch_app". We don't need to thread it here.
+      return {
+        driver: "EngineAction:relaunch",
+        action: { type: "launch_app" },
+      };
+    case "press_back":
+      return {
+        driver: "EngineAction:press_back",
+        action: { type: "press_back" },
+      };
+    case "wait":
+      return {
+        driver: "EngineAction:wait",
+        action: { type: "wait", ms: 1500 },
+      };
+    default:
+      return null;
+  }
+}
+
+/**
  * @typedef {Object} DispatchDeps
  * @property {Array<object>} [drivers]
  * @property {Function} [llmFallback]
@@ -83,6 +119,9 @@ async function dispatch(observation, state, deps = {}) {
   const graph = parseClickableGraph(observation.xml || "");
   const classifierObs = Object.assign({}, observation, {
     trajectorySummary: deps.trajectory ? summariseTrajectory(deps.trajectory) : "",
+    // Phase 2: Haiku compares observation.packageName vs targetPackage to
+    // decide engine_action=relaunch when we've drifted out of the target.
+    targetPackage: deps.targetPackage || observation.targetPackage || "",
   });
   let classification = await classifyScreen(graph, classifierObs, observation.xml || "", {
     anthropic: deps.anthropic,
@@ -92,7 +131,9 @@ async function dispatch(observation, state, deps = {}) {
 
   // 2. Sonnet escalation on low confidence or stuck loop.
   if (shouldEscalate(classification.plan, { stuckFingerprintFamily: !!deps.stuckFingerprintFamily })) {
-    const escalated = await escalate(graph, observation, observation.xml || "", classification.plan, {
+    // Ensure Sonnet also receives targetPackage and trajectory context.
+    const escalateObs = classifierObs;
+    const escalated = await escalate(graph, escalateObs, observation.xml || "", classification.plan, {
       anthropic: deps.anthropic,
       escalationBudget: deps.escalationBudget,
       cache: deps.classifierCache,
@@ -116,9 +157,38 @@ async function dispatch(observation, state, deps = {}) {
       allowedIntents: plan.allowedIntents.join(","),
       confidence: plan.confidence,
       clickables: classifiedClickables.length,
+      engineAction: plan.engineAction || "proceed",
     },
     "dispatcher: semantic plan ready",
   );
+
+  // 3.5. Phase 2 — engine-level action. If the LLM decided we should
+  //      relaunch / press_back / wait BEFORE drivers touch the screen,
+  //      honour that decision here and skip the driver loop entirely.
+  //      Replaces (most of) the DRIFT_ALLOWLIST + press_back regex
+  //      guardrails with LLM-driven decisions.
+  const engineAction = (plan && plan.engineAction) || "proceed";
+  if (engineAction !== "proceed") {
+    const engineActionResult = handleEngineAction(
+      engineAction,
+      plan,
+      observation,
+      deps,
+    );
+    if (engineActionResult) {
+      log.info(
+        {
+          engineAction,
+          reason: plan.engineActionReason,
+          screenType: plan.screenType,
+          fingerprint: plan.fingerprint,
+          dispatchCount: state && state.dispatchCount,
+        },
+        "dispatcher: engine action took over",
+      );
+      return Object.assign(engineActionResult, { diagnostics: { claimedButNull: [], claimThrew: [], decideThrew: [] }, plan });
+    }
+  }
 
   // 4. Build the driver deps object. v17 drivers get a classify() shim that
   //    serves the cached classification in v17 shape (just `.role`).
