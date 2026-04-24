@@ -499,8 +499,21 @@ async function callHaiku(request, deps) {
 
 /**
  * Merge a classification map into the clickables array, producing the
- * ClassifiedClickable[] consumed by downstream drivers. Missing indices
- * default to role: "unknown", intent: "navigate" (optimistic), priority 3.
+ * ClassifiedClickable[] consumed by downstream drivers.
+ *
+ * Missing indices default to intent: "unknown" (NOT "navigate"). The
+ * optimistic-on-ambiguity rule in the user-facing prompt applies to cases
+ * where Haiku HAS an opinion but low confidence — "unsure, prefer
+ * navigate". When Haiku returns nothing at all about a node (silence,
+ * not ambiguity), we have literally no signal, so the safest default is
+ * "unknown" — which is NOT in EXPLORATION_INTENTS, so the driver will
+ * yield and let LLMFallback make a smarter choice.
+ *
+ * Regression: run a1dba69e (2026-04-24) hit a compose/detail screen
+ * with 16 clickables where Haiku returned the screen-level plan but
+ * ZERO per-node classifications. Defaulting those to "navigate" let the
+ * emoji picker sail through the filter and produced a 4-step revisit
+ * loop. The unknown default fixes this.
  *
  * @param {Clickable[]} clickables
  * @param {Map<number, NodeClassification>} nodeClassifications
@@ -510,8 +523,8 @@ function mergeClassifications(clickables, nodeClassifications) {
   return clickables.map((c, i) => {
     const n = nodeClassifications.get(i) || {
       role: "unknown",
-      intent: "navigate",
-      priority: 3,
+      intent: "unknown",
+      priority: 0,
     };
     return Object.assign({}, c, {
       role: n.role,

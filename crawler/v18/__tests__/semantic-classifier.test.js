@@ -276,10 +276,14 @@ test("classifyScreen: Haiku timeout → default plan returned (allowed=navigate,
   assert.deepEqual(plan.allowedIntents, ["navigate", "read_only"]);
   assert.equal(plan.confidence, 0.0);
   assert.ok(plan.confidence < LOW_CONFIDENCE_THRESHOLD, "default-plan confidence must trigger Sonnet escalation");
-  // Clickables still present with fallback tags — missing indices default to navigate.
+  // Clickables still present with fallback tags — missing indices default to
+  // "unknown" (silence ≠ permission). Short-circuited password/email still get "write".
   assert.equal(clickables.length, graph.clickables.length);
   for (const c of clickables) {
-    assert.ok(["navigate", "write"].includes(c.intent), `unexpected intent ${c.intent}`);
+    assert.ok(
+      ["unknown", "write", "navigate"].includes(c.intent),
+      `unexpected intent ${c.intent}`,
+    );
   }
 });
 
@@ -342,6 +346,45 @@ test("classifyScreen: password/email short-circuit overrides whatever Haiku said
   assert.ok(em, "expected an email clickable");
   assert.equal(em.role, "email_input");
   assert.equal(em.intent, "write");
+});
+
+// Regression for production run a1dba69e (2026-04-24): Haiku returned the
+// screen-level plan but ZERO per-node classifications on a compose/detail
+// screen with 16 clickables. Prior code defaulted those to intent="navigate"
+// (optimistic) which let the emoji picker row pass the intent filter and
+// caused a 4-step revisit loop. Silence from Haiku ≠ permission.
+
+test("classifyScreen: Haiku returns plan but zero per-node nodes → all clickables default to intent=unknown", async () => {
+  const xml = wrap(
+    node({ text: "🦖", cls: "android.view.View", bounds: "[40,1920][200,2060]" }),
+    node({ text: "😊", cls: "android.view.View", bounds: "[240,1920][400,2060]" }),
+    node({ text: "✨", cls: "android.view.View", bounds: "[440,1920][600,2060]" }),
+    node({ text: "😍", cls: "android.view.View", bounds: "[640,1920][800,2060]" }),
+    node({ text: "Reply", rid: "com.app:id/reply", cls: "android.widget.Button", bounds: "[40,400][400,500]" }),
+  );
+  const graph = parseClickableGraph(xml);
+  // Haiku returns a screen plan but an EMPTY nodes array.
+  const planWithoutNodes = {
+    screen_type: "detail",
+    allowed_intents: ["navigate", "read_only"],
+    action_budget: 3,
+    confidence: 0.9,
+    nodes: [],
+  };
+  const client = makeMockClient([planWithoutNodes]);
+  const { plan, clickables } = await classifyScreen(graph, { packageName: "com.app" }, xml, {
+    anthropic: client,
+    cache: createCache(),
+  });
+  assert.equal(plan.nodeClassifications.size, 0, "classifier received zero per-node tags");
+  // All clickables should default to intent="unknown" — NOT navigate.
+  for (const c of clickables) {
+    assert.equal(
+      c.intent,
+      "unknown",
+      `node ${c.label} got intent=${c.intent}, expected unknown (silence is not permission)`,
+    );
+  }
 });
 
 // ── Extra coverage on applyInputTypeShortCircuit directly ──────────────
