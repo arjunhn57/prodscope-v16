@@ -88,11 +88,20 @@ const MAX_SCROLLS_PER_FP = 4;
  * detect a row of ≥3 clickables clustered in the bottom BOTTOM_BAR_Y_FRACTION
  * of the screen sharing a y-bucket (rounded to BOTTOM_BAR_Y_BUCKET_PX).
  *
- * These are intentionally conservative — a spurious ≥3-row cluster would
- * normally be real nav, since most content layouts don't place 3 clickables
- * on a single row at the very bottom of the screen.
+ * BOTTOM_BAR_Y_FRACTION was 0.80 initially, tightened to 0.88 on
+ * 2026-04-24 after biztoso runs 6965d9f4 / 498c93ca tapped a profile
+ * contact-actions row (Phone / Email / Message buttons at cy≈1970, ~82%
+ * of a 2400px screen) as if it were a Compose NavigationBar. That
+ * opened an ACTION_DIAL intent and dropped the crawler into the system
+ * dialer — a navigation event the drift guard missed because the
+ * resulting activity reported packageName="unknown".
+ *
+ * Real Android NavigationBars sit at the very bottom of the window,
+ * typically cy ≥ 95%. 0.88 gives ~5% headroom for devices with tall
+ * status bars or 3-button gesture indicators while still rejecting the
+ * action rows common on profile pages.
  */
-const BOTTOM_BAR_Y_FRACTION = 0.80;
+const BOTTOM_BAR_Y_FRACTION = 0.88;
 const BOTTOM_BAR_Y_BUCKET_PX = 32;
 const BOTTOM_BAR_MIN_SIBLINGS = 3;
 
