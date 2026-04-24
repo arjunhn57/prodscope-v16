@@ -975,6 +975,15 @@ async function runAgentLoop(opts) {
 function detectPackageDrift(observation, targetPackage) {
   if (!observation || !targetPackage) return false;
   if (!observation.packageName) return false;
+  // "unknown" is the sentinel returned by v16/observation.js:parsePackageFromActivity
+  // when adb.getCurrentActivityAsync() fails to resolve the foreground
+  // activity (common race during app boot / device reconnect). It means
+  // "we couldn't tell", not "we're in a different app" — treating it as
+  // drift would trigger false-positive relaunch storms that block
+  // biztoso's crawl from ever reaching step 1 (observed run 8708eddb,
+  // 2026-04-24 09:46). Skip the check; next observation will usually
+  // have a real packageName once the activity resolver catches up.
+  if (observation.packageName === "unknown") return false;
   if (observation.packageName === targetPackage) return false;
   if (DRIFT_ALLOWLIST.has(observation.packageName)) return false;
   return true;
