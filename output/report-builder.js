@@ -445,6 +445,97 @@ async function buildReport(params) {
     };
   }
 
+  // ── Phase 3.2: critical_bugs quality gate ────────────────────────────
+  // Phase 1 suppression didn't fire — we have enough coverage to produce
+  // some real signal. But we require a sharper bar before surfacing
+  // critical_bugs specifically: the crawl must have reached >= 10 unique
+  // screens AND crossed the first decision boundary (some driver other
+  // than LLMFallback acted, or the crawl reached > 4 unique screens).
+  //
+  // Why stricter than Phase 1: a 7-screen crawl can still yield honest
+  // ux_issues and accessibility findings. But claiming a "critical bug"
+  // from that thin a sample tends to produce false positives that hurt
+  // user trust. Better to ship the coverage + retry guidance and let the
+  // user trigger a deeper run.
+  //
+  // Missing crossedFirstDecisionBoundary is treated as `true` — legacy
+  // callers (pre-3.2 runner) don't set the field and we don't want to
+  // regress their report quality.
+  const MIN_SCREENS_FOR_BUGS = 10;
+  const boundaryCrossed =
+    crawlHealth && crawlHealth.crossedFirstDecisionBoundary !== undefined
+      ? Boolean(crawlHealth.crossedFirstDecisionBoundary)
+      : true;
+  const screensSufficient = inAppScreens >= MIN_SCREENS_FOR_BUGS;
+  const bugsGatePasses = screensSufficient && boundaryCrossed;
+
+  if (!bugsGatePasses) {
+    const allUx = [];
+    const allSuggestions = [];
+    const allAccessibility = [];
+    for (const a of aiAnalyses || []) {
+      for (const u of (a && a.ux_issues) || []) allUx.push(u);
+      for (const s of (a && a.suggestions) || []) allSuggestions.push(s);
+      for (const x of (a && a.accessibility) || []) allAccessibility.push(x);
+    }
+
+    let suppressionReason;
+    let retryHint;
+    if (!screensSufficient && !boundaryCrossed) {
+      suppressionReason = `below_threshold: ${inAppScreens} unique screens reached (need >= ${MIN_SCREENS_FOR_BUGS}) AND crawl never crossed the first decision boundary`;
+      retryHint = "re-run the crawl with a higher step budget; check if the app is stuck on auth/onboarding";
+    } else if (!screensSufficient) {
+      suppressionReason = `thin_coverage: only ${inAppScreens} unique screens reached (need >= ${MIN_SCREENS_FOR_BUGS} to publish critical bugs confidently)`;
+      retryHint = "re-run the crawl with a higher MAX_CRAWL_STEPS budget";
+    } else {
+      suppressionReason = `no_decision_boundary: crawl reached ${inAppScreens} screens but never crossed the first decision boundary — every action was LLMFallback or the crawl stayed under 5 screens`;
+      retryHint = "inspect the crawl trace for press_back loops or unresolved auth prompts";
+    }
+
+    const qualityGated = {
+      overall_score: null,
+      summary:
+        `Coverage-only report: the crawl's signal was strong enough for UX/accessibility findings ` +
+        `but too thin to publish critical bugs with confidence. ${suppressionReason}.`,
+      critical_bugs: [],
+      critical_bugs_suppressed: true,
+      critical_bugs_suppression_reason: suppressionReason,
+      ux_issues: allUx,
+      accessibility: allAccessibility,
+      suggestions: allSuggestions,
+      quick_wins: allSuggestions.filter((s) => s && s.effort === "low").slice(0, 5),
+      recommended_next_steps: [
+        retryHint,
+        "Review ux_issues and accessibility findings — those are real signal",
+        "After re-running with more coverage, compare critical_bugs across runs to confirm any patterns",
+      ],
+      coverage_assessment:
+        `Crawled ${inAppScreens} unique screens over ${crawlStats?.totalSteps ?? 0} steps. ` +
+        `${aiScreensAnalyzed} received deep AI analysis.`,
+      coverage: {
+        summary: coverageSummary,
+        totalFlows: (flows || []).length,
+        completedFlows: (flows || []).filter((f) => f.outcome === "completed").length,
+      },
+      crawl_health: crawlHealth || {},
+      crawl_stats: crawlStats,
+      deterministic_findings: (deterministicFindings || []).map((f) => ({
+        type: f.type,
+        severity: f.severity,
+        detail: f.detail,
+        step: f.step,
+        element: f.element,
+      })),
+      report_synthesis_model: "quality_gated",
+      token_usage: { input_tokens: 0, output_tokens: 0 },
+    };
+
+    return {
+      report: JSON.stringify(qualityGated, null, 2),
+      tokenUsage: { input_tokens: 0, output_tokens: 0 },
+    };
+  }
+
   // ── Stage 3: skip Sonnet when Stage 2 already has enough signal ─────
   // Phase 1 suppression ran above and didn't fire — the crawl produced
   // real coverage. If Stage 2 returned >= SONNET_SKIP_MIN_CRITICAL_BUGS

@@ -40,6 +40,10 @@ const { analyzeTriagedScreens } = require("../oracle/ai-oracle");
 const { buildReport } = require("../output/report-builder");
 const { renderReportEmail } = require("../output/email-renderer");
 const { ORACLE_STAGE1_ENABLED } = require("../config/defaults");
+const {
+  computeDriverHits,
+  crossedFirstDecisionBoundary,
+} = require("../lib/crawl-health");
 
 // ---------------------------------------------------------------------------
 // C8: Pre-crawl disk check and auto-cleanup
@@ -496,6 +500,16 @@ async function processJob(jobId, apkPath, opts) {
       // Step 5: Structured report (1 Sonnet LLM call)
       store.updateJob(jobId, { step: 5 });
 
+      // Phase 3.2: crossedFirstDecisionBoundary gates critical_bugs in
+      // report-builder. Compute from V17 actionsTaken via lib/crawl-health.js
+      // (same heuristic as scripts/golden-suite-run.js so CI and runtime agree).
+      const actionsTaken = crawlResult.actionsTaken || [];
+      const driverHits = computeDriverHits(actionsTaken);
+      const boundaryCrossed = crossedFirstDecisionBoundary(
+        actionsTaken,
+        (crawlResult.stats || {}).uniqueStates || 0,
+      );
+
       const reportResult = await buildReport({
         packageName: appProfile.packageName || "",
         coverageSummary: crawlResult.coverage || {},
@@ -508,6 +522,8 @@ async function processJob(jobId, apkPath, opts) {
           stopReason: crawlResult.stopReason,
           totalSteps: (crawlResult.stats || {}).totalSteps,
           uniqueStates: (crawlResult.stats || {}).uniqueStates,
+          crossedFirstDecisionBoundary: boundaryCrossed,
+          driverHits,
           oracleFindingsCount: (crawlResult.oracleFindings || []).length,
           aiScreensAnalyzed: triageResult.screensToAnalyze.length,
           aiScreensSkipped: triageResult.skippedScreens.length,
