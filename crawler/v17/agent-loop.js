@@ -44,7 +44,7 @@ const { decideNextAction } = require("../v16/agent");
 const jobStore = require("../../jobs/store");
 
 // V17 additions: driver dispatcher + per-run classifier cache + LLMFallback wrapper.
-const { dispatch } = require("./dispatcher");
+const { dispatch: defaultDispatch } = require("./dispatcher");
 const {
   createCache: createClassifierCache,
   computeStructuralFingerprint,
@@ -303,6 +303,14 @@ function resolveDeps(opts) {
     readiness: d.readiness || readiness,
     anthropic: d.anthropic, // may be undefined — agent.js uses default client then
     store: d.store || jobStore,
+    // V18 extension: if present, these override the dispatcher and forward
+    // additional deps (trajectory memory, escalation budget). Undefined in
+    // the v17 default path.
+    dispatch: d.dispatch || null,
+    extraDispatchDeps: d.extraDispatchDeps || null,
+    // Preserve relaunchApp + sleep if tests injected stubs.
+    relaunchApp: d.relaunchApp || null,
+    sleep: d.sleep || null,
   };
 }
 
@@ -701,11 +709,17 @@ async function runAgentLoop(opts) {
      */
     let decision;
     try {
-      const dispatchResult = await dispatch(observation, driverState, {
+      // V18 injection point: opts.deps.dispatch overrides the v17 dispatcher
+      // so V18's LLM-first dispatcher can be swapped in via feature flag
+      // without forking this whole file. Default is the v17 dispatcher —
+      // existing runs are unaffected.
+      const dispatchFn = (deps && deps.dispatch) || defaultDispatch;
+      const extraDispatchDeps = (deps && deps.extraDispatchDeps) || {};
+      const dispatchResult = await dispatchFn(observation, driverState, Object.assign({
         anthropic: deps.anthropic,
         classifierCache,
         llmFallback,
-      });
+      }, extraDispatchDeps));
       if (dispatchResult.driver === "LLMFallback" && lastLlmCall) {
         decision = {
           action: dispatchResult.action,

@@ -1,0 +1,638 @@
+"use strict";
+
+/**
+ * v18/semantic-classifier.js
+ *
+ * LLM-first semantic layer. ONE Haiku tool_use call per fp produces BOTH
+ * per-node tags (role + intent + priority) AND screen-level planning
+ * fields (type, allowed_intents, action_budget, exit_condition).
+ *
+ * This replaces v17/node-classifier.js for the v18 engine. V17's
+ * classifier stays alongside; the engine choice is controlled by the
+ * USE_V18_ENGINE feature flag in jobs/runner.js.
+ *
+ * Design per plan draft 2 (2026-04-24):
+ *   - Intent axis orthogonal to role: navigate | read_only | write | destructive.
+ *   - Exploration driver consumes intent filter to stop tapping Reply /
+ *     Like / Post / Dial / Delete buttons — bugs the V17 ExplorationDriver
+ *     couldn't solve structurally.
+ *   - Optimistic-on-ambiguity (user's call): ambiguous → "navigate". Max
+ *     coverage for a dev tool. `destructive` remains strict — only for
+ *     clearly-irreversible actions.
+ *   - confidence field drives Sonnet escalation (sonnet-escalation.js).
+ *   - Screenshot + XML both sent to Haiku — the screenshot carries layout
+ *     / affordance information the XML alone misses (especially on
+ *     heavily-Compose apps where className is uninformative).
+ *   - Cache by fp (same structural key as v17) so plans amortise across
+ *     revisits.
+ *
+ * Failure modes:
+ *   - Haiku timeout / abort → returns null (caller falls back to a
+ *     conservative default plan or the v17 classifier path).
+ *   - Schema validation failure → returns null.
+ *   - Missing screenshot → still proceeds with XML only.
+ */
+
+const fs = require("fs");
+const crypto = require("crypto");
+const Anthropic = require("@anthropic-ai/sdk");
+const { logger } = require("../../lib/logger");
+
+const log = logger.child({ component: "v18-semantic-classifier" });
+
+const HAIKU_MODEL = "claude-haiku-4-5-20251001";
+const HAIKU_TIMEOUT_MS = 5000; // higher than v17's 3s — screenshot bumps token budget
+const HAIKU_MAX_TOKENS = 1200; // larger because plan + per-node fields
+const BOUNDS_BUCKET = 32;
+
+/** Confidence below this triggers Sonnet escalation (see sonnet-escalation.js). */
+const LOW_CONFIDENCE_THRESHOLD = 0.5;
+
+/** Valid role values shared with v17 for cross-compat. */
+const VALID_ROLES = [
+  "email_input",
+  "password_input",
+  "otp_input",
+  "submit_button",
+  "auth_option_email",
+  "auth_option_google",
+  "auth_option_apple",
+  "auth_option_other",
+  "dismiss_button",
+  "nav_tab",
+  "content",
+  "unknown",
+];
+const VALID_ROLES_SET = new Set(VALID_ROLES);
+
+/** Intent axis — the v18 contribution. */
+const VALID_INTENTS = ["navigate", "read_only", "write", "destructive"];
+const VALID_INTENTS_SET = new Set(VALID_INTENTS);
+
+/** Screen type taxonomy. */
+const VALID_SCREEN_TYPES = [
+  "feed",
+  "compose",
+  "form",
+  "settings",
+  "detail",
+  "auth",
+  "permission",
+  "dialog",
+  "profile",
+  "search",
+  "onboarding",
+  "error",
+  "other",
+];
+const VALID_SCREEN_TYPES_SET = new Set(VALID_SCREEN_TYPES);
+
+/**
+ * Anthropic tool_use schema. One call → per-node and screen-level fields.
+ */
+const CLASSIFY_TOOL = {
+  name: "classify_screen",
+  description:
+    "Classify the current mobile app screen AND each interactive node. " +
+    "Produces both screen-level planning fields (type, allowed intents, action " +
+    "budget, exit condition) and per-node classifications (role, intent, priority). " +
+    "This is the single source of truth that drives the dispatcher on this screen. " +
+    "Be language-agnostic: classify by MEANING, not by matching English strings.",
+  input_schema: {
+    type: "object",
+    properties: {
+      screen_type: { type: "string", enum: VALID_SCREEN_TYPES },
+      screen_summary: { type: "string" },
+      allowed_intents: {
+        type: "array",
+        items: { type: "string", enum: VALID_INTENTS },
+      },
+      action_budget: { type: "integer", minimum: 1, maximum: 20 },
+      exit_condition: { type: "string" },
+      confidence: { type: "number" },
+      nodes: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            nodeIndex: { type: "integer" },
+            role: { type: "string", enum: VALID_ROLES },
+            intent: { type: "string", enum: VALID_INTENTS },
+            priority: { type: "integer", minimum: 0, maximum: 10 },
+            note: { type: "string" },
+          },
+          required: ["nodeIndex", "role", "intent"],
+        },
+      },
+    },
+    required: [
+      "screen_type",
+      "allowed_intents",
+      "action_budget",
+      "confidence",
+      "nodes",
+    ],
+  },
+};
+
+const SYSTEM_PROMPT = `You are the semantic layer for a mobile app crawler. Given a mobile app screen (XML hierarchy + screenshot + interactable clickables + trajectory summary), produce BOTH:
+
+1. A screen-level plan — what kind of screen this is, what exploration budget is appropriate, and what intents the crawler may act on.
+
+2. Per-node tags — role and intent for every interactive clickable.
+
+The crawler's goal is to MAP the app, not USE it. It explores to build a coverage report for developers. Behave like a senior QA engineer: enumerate screens by navigating, tap items that open new screens, skip items that modify state or create content.
+
+── Intent taxonomy (most important axis) ──
+- navigate: moving between screens without changing data — tabs, drawer items, pagination, opening a detail view, back buttons.
+- read_only: reveals more info without mutating state — expand/collapse, "Show more", toggle view modes within the same screen.
+- write: CREATES or MODIFIES data — Reply, Comment, Post, Send, Like, Repost, Emoji-react, Follow, Subscribe, Save, Add to cart, Dial/Call, Submit (unless an auth form), typing content.
+- destructive: IRREVERSIBLE data loss — Delete, Remove, Block, Unfriend, Sign out, Clear data, Reset, Revoke.
+
+Intent rules:
+- When genuinely unsure between navigate and write, PREFER navigate. The crawler is used by developers, not end users; max coverage matters more than occasional accidental state changes.
+- destructive is STRICT — only assign when the element clearly triggers irreversible data loss. When in doubt about destructive → assign write instead.
+- Labels may be in ANY language (Japanese, Spanish, Chinese, Korean, Arabic, ...). Classify by meaning, not English matching.
+
+── Role taxonomy (same as v17) ──
+- email_input / password_input / otp_input: form input fields.
+- submit_button: primary form action on an auth screen.
+- auth_option_email / auth_option_google / auth_option_apple / auth_option_other: provider selector buttons.
+- dismiss_button: "Not now", "Skip", "Later", "✕", "Close sheet".
+- nav_tab: bottom-nav / top-tab / drawer items.
+- content: non-interactive labels, or interactive elements that don't fit the above.
+- unknown: genuinely unsure.
+
+── Screen types ──
+- feed: homogeneous list of items (posts, articles, products, messages).
+- compose: text input sheet for creating content — SKIP, never navigate; the crawler should dismiss these.
+- form: data-entry (non-auth) — user info, checkout, profile edit.
+- settings: toggles + sub-screen entries.
+- detail: view-one-item screen.
+- auth: login / signup / OTP / SSO.
+- permission: system permission dialog.
+- dialog: in-app modal.
+- profile: user's own or another user's profile page.
+- search: search box + results.
+- onboarding: first-run tutorials / tooltips.
+- error: error state / empty state.
+- other: anything that doesn't fit.
+
+── Plan fields ──
+- allowed_intents: intents the dispatcher may act on here. For feed/detail/profile/settings/search: ["navigate", "read_only"]. For compose/dialog (crawler's job is to dismiss): ["navigate"] (navigate here includes tapping the close button). For auth/permission: ["navigate", "read_only", "write"] (write is needed to submit). Never include "destructive".
+- action_budget: reasonable number of actions before the dispatcher re-plans or moves to a new hub. Feed: 3-5. Settings: up to number of items. Compose: 1 (just dismiss). Dialog: 1-2.
+- exit_condition: one-line natural-language condition that signals we're done here (e.g. "after 3 feed items opened, press back and navigate to an unvisited hub").
+- confidence: 0.0-1.0 — your confidence in the plan. Low confidence (< 0.5) triggers an escalation to Sonnet.
+
+── Per-node priority ──
+- priority: 0-10, higher = tap-first. Assign 8-10 to promising navigate targets (nav tabs, feed items, new hubs). Assign 0 to write / destructive items so the filter drops them early.
+
+Be conservative on budgets (small numbers) — the dispatcher will re-plan when budgets run out. Be generous on classifications — mark every clickable.`;
+
+/**
+ * @typedef {import('../v17/drivers/clickable-graph').Clickable} Clickable
+ * @typedef {import('../v17/drivers/clickable-graph').ClickableGraph} ClickableGraph
+ *
+ * @typedef {Object} NodeClassification
+ * @property {string} role
+ * @property {string} intent
+ * @property {number} priority
+ * @property {string} [note]
+ *
+ * @typedef {Object} ScreenPlan
+ * @property {string} screenType
+ * @property {string} [screenSummary]
+ * @property {string[]} allowedIntents
+ * @property {number} actionBudget
+ * @property {string} [exitCondition]
+ * @property {number} confidence
+ * @property {string} fingerprint
+ * @property {Map<number, NodeClassification>} nodeClassifications
+ *
+ * @typedef {Clickable & NodeClassification} ClassifiedClickable
+ *
+ * @typedef {Object} ClassifierDeps
+ * @property {any} [anthropic]
+ * @property {Map<string, ScreenPlan>} [cache]
+ * @property {number} [timeoutMs]
+ *
+ * @typedef {Object} ObservationLike
+ * @property {string} [packageName]
+ * @property {string} [activity]
+ * @property {string} [screenshotPath]
+ * @property {string} [trajectorySummary]
+ */
+
+let _defaultClient = null;
+function getDefaultClient() {
+  if (!_defaultClient) {
+    _defaultClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  }
+  return _defaultClient;
+}
+
+function createCache() {
+  return new Map();
+}
+
+/**
+ * Compute a structural fingerprint that ignores dynamic text. Matches v17's
+ * algorithm so plans can be shared if we ever converge engines.
+ *
+ * @param {ClickableGraph} graph
+ * @param {string} [packageName]
+ * @param {string} [activity]
+ * @returns {string}
+ */
+function computeStructuralFingerprint(graph, packageName, activity) {
+  const clickables = (graph && graph.clickables) || [];
+  const resourceIds = clickables.map((c) => c.resourceId || "").sort();
+  const classNames = clickables.map((c) => c.className || "").sort();
+  const buckets = clickables
+    .map((c) => `${Math.floor((c.cx || 0) / BOUNDS_BUCKET)}:${Math.floor((c.cy || 0) / BOUNDS_BUCKET)}`)
+    .sort();
+  const inputCount = (graph && graph.groups && graph.groups.inputs && graph.groups.inputs.length) || 0;
+  const clickableCount = clickables.length;
+  const material = JSON.stringify({
+    pkg: packageName || "",
+    act: activity || "",
+    resourceIds,
+    classNames,
+    buckets,
+    inputCount,
+    clickableCount,
+  });
+  return crypto.createHash("sha256").update(material).digest("hex").slice(0, 12);
+}
+
+/**
+ * Read a screenshot from disk and return a base64 data block for Anthropic
+ * vision input. Missing / unreadable files → null (classifier proceeds with
+ * XML only).
+ *
+ * @param {string} [screenshotPath]
+ * @returns {{type:string, source:object}|null}
+ */
+function loadScreenshotBlock(screenshotPath) {
+  if (!screenshotPath || typeof screenshotPath !== "string") return null;
+  try {
+    const data = fs.readFileSync(screenshotPath);
+    return {
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: "image/png",
+        data: data.toString("base64"),
+      },
+    };
+  } catch (err) {
+    log.warn({ err: err.message, screenshotPath }, "classifier: screenshot load failed — XML only");
+    return null;
+  }
+}
+
+/**
+ * Short-circuit deterministic roles for Android-standard inputs. These are
+ * always {role:password_input, intent:write} or {role:email_input, intent:write}
+ * — AuthDriver owns them, ExplorationDriver's intent filter keeps its hands off.
+ *
+ * @param {Clickable[]} clickables
+ * @returns {Map<number, NodeClassification>}
+ */
+function applyInputTypeShortCircuit(clickables) {
+  const resolved = new Map();
+  for (let i = 0; i < clickables.length; i++) {
+    const c = clickables[i];
+    if (c.isPassword) {
+      resolved.set(i, { role: "password_input", intent: "write", priority: 9, note: "password field" });
+      continue;
+    }
+    if (c.isEmail) {
+      resolved.set(i, { role: "email_input", intent: "write", priority: 9, note: "email field" });
+      continue;
+    }
+    const desc = c.contentDesc || "";
+    const rid = c.resourceId || "";
+    if (/close|dismiss|✕|×/i.test(desc) || /close|dismiss/i.test(rid)) {
+      resolved.set(i, { role: "dismiss_button", intent: "navigate", priority: 8, note: "close affordance" });
+    }
+  }
+  return resolved;
+}
+
+/**
+ * Pull the tool_use block out of an Anthropic message.
+ */
+function extractToolInput(message) {
+  if (!message || !Array.isArray(message.content)) return null;
+  for (const block of message.content) {
+    if (block && block.type === "tool_use" && block.name === CLASSIFY_TOOL.name) {
+      return block.input || null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Validate and normalise the Haiku output into a ScreenPlan. Returns null
+ * if the response is structurally broken (missing required fields, invalid
+ * enums, etc.).
+ *
+ * @param {object} toolInput
+ * @param {number} clickableCount
+ * @param {string} fingerprint
+ * @returns {ScreenPlan|null}
+ */
+function validatePlan(toolInput, clickableCount, fingerprint) {
+  if (!toolInput || typeof toolInput !== "object") return null;
+
+  // Screen-level fields
+  if (!VALID_SCREEN_TYPES_SET.has(toolInput.screen_type)) return null;
+  if (!Array.isArray(toolInput.allowed_intents) || toolInput.allowed_intents.length === 0) return null;
+  for (const intent of toolInput.allowed_intents) {
+    if (!VALID_INTENTS_SET.has(intent)) return null;
+  }
+  // Destructive must never appear in allowed_intents.
+  if (toolInput.allowed_intents.includes("destructive")) return null;
+  const actionBudget = Number(toolInput.action_budget);
+  if (!Number.isFinite(actionBudget) || actionBudget < 1 || actionBudget > 20) return null;
+  const confidence = Number(toolInput.confidence);
+  if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) return null;
+
+  // Per-node fields
+  const nodeClassifications = new Map();
+  if (Array.isArray(toolInput.nodes)) {
+    for (const n of toolInput.nodes) {
+      if (!n || typeof n.nodeIndex !== "number") continue;
+      if (n.nodeIndex < 0 || n.nodeIndex >= clickableCount) continue;
+      if (!VALID_ROLES_SET.has(n.role)) continue;
+      if (!VALID_INTENTS_SET.has(n.intent)) continue;
+      const priority = Number.isFinite(n.priority) ? Math.max(0, Math.min(10, Math.floor(n.priority))) : 5;
+      nodeClassifications.set(n.nodeIndex, {
+        role: n.role,
+        intent: n.intent,
+        priority,
+        note: typeof n.note === "string" ? n.note.slice(0, 120) : undefined,
+      });
+    }
+  }
+
+  return {
+    screenType: toolInput.screen_type,
+    screenSummary: typeof toolInput.screen_summary === "string" ? toolInput.screen_summary.slice(0, 240) : undefined,
+    allowedIntents: toolInput.allowed_intents.slice(),
+    actionBudget,
+    exitCondition: typeof toolInput.exit_condition === "string" ? toolInput.exit_condition.slice(0, 200) : undefined,
+    confidence,
+    fingerprint,
+    nodeClassifications,
+  };
+}
+
+/**
+ * Build the Haiku request. Includes:
+ *   - System prompt (intent + role + screen type rules).
+ *   - User content: XML (truncated to ~8k), screenshot (optional), trajectory
+ *     summary (optional, ≤300 tokens).
+ *
+ * @param {ClickableGraph} graph
+ * @param {string} xmlText
+ * @param {ObservationLike} observation
+ * @param {{type:string, source:object}|null} screenshotBlock
+ */
+function buildRequest(graph, xmlText, observation, screenshotBlock) {
+  const nodesForPrompt = graph.clickables.map((c, i) => ({
+    index: i,
+    label: c.label || "",
+    resourceId: c.resourceId || "",
+    className: c.className || "",
+    bounds: c.bounds
+      ? { x1: c.bounds.x1, y1: c.bounds.y1, x2: c.bounds.x2, y2: c.bounds.y2 }
+      : null,
+    isInput: !!c.isInput,
+    isButton: !!c.isButton,
+    isCheckbox: !!c.isCheckbox,
+  }));
+
+  const trajectorySummary =
+    observation && typeof observation.trajectorySummary === "string"
+      ? observation.trajectorySummary.slice(0, 1200)
+      : "";
+
+  const truncatedXml = typeof xmlText === "string" ? xmlText.slice(0, 8000) : "";
+
+  const textBlock = {
+    type: "text",
+    text: JSON.stringify({
+      package: (observation && observation.packageName) || "",
+      activity: (observation && observation.activity) || "",
+      trajectorySummary,
+      nodes: nodesForPrompt,
+      xmlExcerpt: truncatedXml,
+    }),
+  };
+
+  const content = screenshotBlock ? [screenshotBlock, textBlock] : [textBlock];
+
+  return {
+    model: HAIKU_MODEL,
+    max_tokens: HAIKU_MAX_TOKENS,
+    temperature: 0,
+    system: SYSTEM_PROMPT,
+    tools: [CLASSIFY_TOOL],
+    tool_choice: { type: "tool", name: CLASSIFY_TOOL.name },
+    messages: [{ role: "user", content }],
+  };
+}
+
+/**
+ * Call Haiku with a hard AbortController timeout.
+ *
+ * @param {object} request
+ * @param {{anthropic:any, timeoutMs?:number}} deps
+ * @returns {Promise<object|null>}
+ */
+async function callHaiku(request, deps) {
+  const timeoutMs = typeof deps.timeoutMs === "number" ? deps.timeoutMs : HAIKU_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = Date.now();
+  try {
+    const response = await deps.anthropic.messages.create(request, {
+      signal: controller.signal,
+    });
+    const durationMs = Date.now() - startedAt;
+    const toolInput = extractToolInput(response);
+    if (!toolInput) {
+      log.warn(
+        { stopReason: response && response.stop_reason, durationMs },
+        "classifier: no tool_use block",
+      );
+      return null;
+    }
+    log.info({ durationMs, timeoutMs }, "classifier: haiku call ok");
+    return toolInput;
+  } catch (err) {
+    const durationMs = Date.now() - startedAt;
+    const msg = (err && err.message) || "";
+    if ((err && err.name === "AbortError") || /aborted|abort/i.test(msg)) {
+      log.warn({ durationMs, timeoutMs }, "classifier: timeout");
+    } else {
+      log.warn({ err: msg, durationMs }, "classifier: haiku call failed");
+    }
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Merge a classification map into the clickables array, producing the
+ * ClassifiedClickable[] consumed by downstream drivers. Missing indices
+ * default to role: "unknown", intent: "navigate" (optimistic), priority 3.
+ *
+ * @param {Clickable[]} clickables
+ * @param {Map<number, NodeClassification>} nodeClassifications
+ * @returns {ClassifiedClickable[]}
+ */
+function mergeClassifications(clickables, nodeClassifications) {
+  return clickables.map((c, i) => {
+    const n = nodeClassifications.get(i) || {
+      role: "unknown",
+      intent: "navigate",
+      priority: 3,
+    };
+    return Object.assign({}, c, {
+      role: n.role,
+      intent: n.intent,
+      priority: n.priority,
+      note: n.note,
+    });
+  });
+}
+
+/**
+ * Build a conservative default plan used when the Haiku call fails, times out,
+ * or produces invalid output. Keeps the crawler moving rather than stalling —
+ * we fall through to v17-like behaviour with an optimistic intent filter.
+ *
+ * @param {Clickable[]} clickables
+ * @param {string} fingerprint
+ * @returns {ScreenPlan}
+ */
+function buildDefaultPlan(clickables, fingerprint) {
+  const shortCircuited = applyInputTypeShortCircuit(clickables);
+  return {
+    screenType: "other",
+    screenSummary: "default plan (classifier unavailable)",
+    allowedIntents: ["navigate", "read_only"],
+    actionBudget: 3,
+    exitCondition: "explore conservatively, then move to next hub",
+    confidence: 0.0, // forces Sonnet escalation if anyone checks
+    fingerprint,
+    nodeClassifications: shortCircuited,
+  };
+}
+
+/**
+ * Classify a screen end-to-end. Returns a ScreenPlan + the classified
+ * clickables. On total failure, returns a conservative default plan.
+ *
+ * @param {ClickableGraph} graph
+ * @param {ObservationLike} observation
+ * @param {string} xmlText
+ * @param {ClassifierDeps} [deps]
+ * @returns {Promise<{plan:ScreenPlan, clickables:ClassifiedClickable[]}>}
+ */
+async function classifyScreen(graph, observation, xmlText, deps = {}) {
+  const clickables = (graph && graph.clickables) || [];
+  const fingerprint = computeStructuralFingerprint(
+    graph,
+    observation && observation.packageName,
+    observation && observation.activity,
+  );
+
+  const cache = deps.cache;
+  if (cache && cache.has(fingerprint)) {
+    const cached = cache.get(fingerprint);
+    log.info({ fingerprint, source: "cache", screenType: cached.screenType }, "classifier: cache hit");
+    return { plan: cached, clickables: mergeClassifications(clickables, cached.nodeClassifications) };
+  }
+
+  // No clickables → return a trivial plan without burning a Haiku call.
+  if (clickables.length === 0) {
+    const plan = {
+      screenType: "other",
+      screenSummary: "empty screen (no clickables)",
+      allowedIntents: ["navigate"],
+      actionBudget: 1,
+      exitCondition: "wait briefly for content, then move on",
+      confidence: 1.0,
+      fingerprint,
+      nodeClassifications: new Map(),
+    };
+    if (cache) cache.set(fingerprint, plan);
+    return { plan, clickables: [] };
+  }
+
+  const anthropic = deps.anthropic || getDefaultClient();
+  const screenshotBlock = loadScreenshotBlock(observation && observation.screenshotPath);
+  const request = buildRequest(graph, xmlText, observation, screenshotBlock);
+
+  const toolInput = await callHaiku(request, { anthropic, timeoutMs: deps.timeoutMs });
+  if (!toolInput) {
+    const plan = buildDefaultPlan(clickables, fingerprint);
+    log.warn({ fingerprint, reason: "haiku_unavailable" }, "classifier: using default plan");
+    return { plan, clickables: mergeClassifications(clickables, plan.nodeClassifications) };
+  }
+
+  const plan = validatePlan(toolInput, clickables.length, fingerprint);
+  if (!plan) {
+    const fallback = buildDefaultPlan(clickables, fingerprint);
+    log.warn({ fingerprint, reason: "schema_validation_failed" }, "classifier: using default plan");
+    return { plan: fallback, clickables: mergeClassifications(clickables, fallback.nodeClassifications) };
+  }
+
+  // Layer short-circuit classifications on top — they're deterministic and
+  // trump whatever Haiku said about password/email fields.
+  const shortCircuited = applyInputTypeShortCircuit(clickables);
+  for (const [idx, cls] of shortCircuited.entries()) {
+    plan.nodeClassifications.set(idx, cls);
+  }
+
+  if (cache) cache.set(fingerprint, plan);
+  log.info(
+    {
+      fingerprint,
+      source: "fresh",
+      screenType: plan.screenType,
+      confidence: plan.confidence,
+      allowedIntents: plan.allowedIntents.join(","),
+      budget: plan.actionBudget,
+      classifiedNodes: plan.nodeClassifications.size,
+    },
+    "classifier: fresh classification",
+  );
+  return { plan, clickables: mergeClassifications(clickables, plan.nodeClassifications) };
+}
+
+module.exports = {
+  classifyScreen,
+  computeStructuralFingerprint,
+  applyInputTypeShortCircuit,
+  buildDefaultPlan,
+  validatePlan,
+  mergeClassifications,
+  loadScreenshotBlock,
+  createCache,
+  CLASSIFY_TOOL,
+  HAIKU_MODEL,
+  HAIKU_TIMEOUT_MS,
+  LOW_CONFIDENCE_THRESHOLD,
+  VALID_ROLES,
+  VALID_ROLES_SET,
+  VALID_INTENTS,
+  VALID_INTENTS_SET,
+  VALID_SCREEN_TYPES,
+  VALID_SCREEN_TYPES_SET,
+};
