@@ -199,14 +199,22 @@ function clamp(n, lo, hi) {
 /**
  * Rank screens semantically via a single batched Haiku call.
  *
+ * Contract: always resolves. `rankings` is either the (normalized) array
+ * or null; callers treat null as "use heuristic scoring". `tokenUsage` is
+ * always present so per-stage cost telemetry can charge Stage 1 even when
+ * the call returned unusable data.
+ *
  * @param {Array} candidates - Screens to rank (no images sent)
  * @param {{client?: object}} [opts]
- * @returns {Promise<Array<{step: number, hotspotScore: number, reason: string}> | null>}
- *          null on SDK error, malformed response, or missing tool_use —
- *          callers MUST treat null as "use heuristic scoring".
+ * @returns {Promise<{
+ *   rankings: Array<{step:number,hotspotScore:number,reason:string}> | null,
+ *   tokenUsage: { input_tokens: number, output_tokens: number },
+ * }>}
  */
 async function rankScreens(candidates, opts = {}) {
-  if (!Array.isArray(candidates) || candidates.length === 0) return [];
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return { rankings: [], tokenUsage: { input_tokens: 0, output_tokens: 0 } };
+  }
   const client = opts.client || defaultClient;
 
   const items = candidates.map((s, idx) => {
@@ -240,8 +248,13 @@ async function rankScreens(candidates, opts = {}) {
     });
   } catch (e) {
     log.error({ err: e, candidates: candidates.length }, "Stage 1 ranker SDK call failed");
-    return null;
+    return { rankings: null, tokenUsage: { input_tokens: 0, output_tokens: 0 } };
   }
+
+  const tokenUsage = {
+    input_tokens: (response && response.usage && response.usage.input_tokens) || 0,
+    output_tokens: (response && response.usage && response.usage.output_tokens) || 0,
+  };
 
   let input = null;
   if (response && Array.isArray(response.content)) {
@@ -254,17 +267,18 @@ async function rankScreens(candidates, opts = {}) {
   }
   if (!input || !Array.isArray(input.rankings)) {
     log.warn({ stop_reason: response && response.stop_reason }, "Stage 1 ranker returned no rankings array");
-    return null;
+    return { rankings: null, tokenUsage };
   }
 
   // Normalize into a guaranteed-safe array. Extra entries from the model
   // are kept; missing entries mean that screen gets neutral score in
   // triageWithRanker below.
-  return input.rankings.map((r) => ({
+  const rankings = input.rankings.map((r) => ({
     step: typeof r.step === "number" ? r.step : -1,
     hotspotScore: clamp(r.hotspot_score, 0, 10),
     reason: typeof r.reason === "string" ? r.reason : "",
   }));
+  return { rankings, tokenUsage };
 }
 
 // ── Stage 1 + selection combined ───────────────────────────────────────────
@@ -291,11 +305,11 @@ async function triageWithRanker(screens, oracleFindings, coverageSummary, stateG
   const skipEntries = baseline.triageLog.filter((e) => e.action === "skip");
 
   if (!stage1Enabled || allScored.length === 0) {
-    return selectTopK(allScored, maxK, skipEntries, /* rankerUsed */ false);
+    return selectTopK(allScored, maxK, skipEntries, /* rankerUsed */ false, { input_tokens: 0, output_tokens: 0 });
   }
 
   const rankerScreens = allScored.map((s) => s.screen);
-  const rankings = await rankScreens(rankerScreens, { client: opts.client });
+  const { rankings, tokenUsage: rankerTokens } = await rankScreens(rankerScreens, { client: opts.client });
 
   if (!rankings) {
     // Surface the fallback so the log reader can diagnose why Stage 2
@@ -308,7 +322,7 @@ async function triageWithRanker(screens, oracleFindings, coverageSummary, stateG
         reason: "stage1 failed — heuristic fallback in effect",
       },
     ];
-    return selectTopK(allScored, maxK, fallbackLog, /* rankerUsed */ false);
+    return selectTopK(allScored, maxK, fallbackLog, /* rankerUsed */ false, rankerTokens);
   }
 
   // Merge: rankerScore 0-10 maps to 0-150 score units, equal weight with
@@ -327,7 +341,7 @@ async function triageWithRanker(screens, oracleFindings, coverageSummary, stateG
     };
   });
 
-  return selectTopK(merged, maxK, skipEntries, /* rankerUsed */ true);
+  return selectTopK(merged, maxK, skipEntries, /* rankerUsed */ true, rankerTokens);
 }
 
 /**
@@ -335,7 +349,7 @@ async function triageWithRanker(screens, oracleFindings, coverageSummary, stateG
  * enforcing a per-screen-type diversity cap of 2. Carries through heuristic
  * skip entries from the dedup/dialog phase.
  */
-function selectTopK(scored, k, priorLog, rankerUsed) {
+function selectTopK(scored, k, priorLog, rankerUsed, rankerTokens) {
   const ordered = [...scored].sort(
     (a, b) => (b.combinedScore ?? b.score) - (a.combinedScore ?? a.score),
   );
@@ -379,6 +393,7 @@ function selectTopK(scored, k, priorLog, rankerUsed) {
     skippedScreens: skipped.map((s) => ({ step: s.step, reason: "below_cutoff" })),
     triageLog,
     rankerUsed: Boolean(rankerUsed),
+    rankerTokens: rankerTokens || { input_tokens: 0, output_tokens: 0 },
   };
 }
 

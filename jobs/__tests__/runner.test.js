@@ -436,6 +436,48 @@ describe("runner.js — processJob", () => {
     }
   });
 
+  // ─── Phase 3.1 step 5: per-stage cost telemetry ──────────────────────
+  //
+  // The final job record must carry a costBreakdown object with per-stage
+  // Haiku and Sonnet costs. Without this we can't tune Stage 1/2 budgets
+  // from real telemetry, and we can't prove to ourselves (or to users) that
+  // the 3-stage pipeline is actually cheaper than the legacy flat Sonnet
+  // call.
+
+  it("writes costBreakdown to the final job record with per-stage USD amounts", async () => {
+    const jobId = "test-job-costbreakdown";
+    const apkPath = nodePath.join(os.tmpdir(), "test-cost.apk");
+    fs.writeFileSync(apkPath, Buffer.from([0x50, 0x4B, 0x03, 0x04, ...Buffer.from("fake-apk")]));
+
+    try {
+      await processJob(jobId, apkPath, { email: "test@example.com" });
+
+      // The final updateJob call that carries a costBreakdown field.
+      const costUpdates = mockStore.updateJob.mock.calls
+        .map((c) => c.arguments)
+        .filter(([, data]) => data && data.costBreakdown);
+
+      assert.ok(costUpdates.length >= 1, "costBreakdown must be written to the job at least once");
+      const breakdown = costUpdates[costUpdates.length - 1][1].costBreakdown;
+
+      // Shape check: all four per-stage buckets are present, numeric, and non-negative.
+      assert.ok(typeof breakdown.crawlHaiku === "number" && breakdown.crawlHaiku >= 0);
+      assert.ok(typeof breakdown.oracleStage1 === "number" && breakdown.oracleStage1 >= 0);
+      assert.ok(typeof breakdown.oracleStage2 === "number" && breakdown.oracleStage2 >= 0);
+      assert.ok(typeof breakdown.reportSynthesis === "number" && breakdown.reportSynthesis >= 0);
+      assert.ok(typeof breakdown.totalUsd === "number" && breakdown.totalUsd >= 0);
+
+      // Conservation: sum of buckets equals totalUsd (within float tolerance).
+      const sum = breakdown.crawlHaiku + breakdown.oracleStage1 + breakdown.oracleStage2 + breakdown.reportSynthesis;
+      assert.ok(
+        Math.abs(sum - breakdown.totalUsd) < 1e-6,
+        `breakdown buckets sum=${sum} != totalUsd=${breakdown.totalUsd}`,
+      );
+    } finally {
+      try { fs.unlinkSync(apkPath); } catch (_) {}
+    }
+  });
+
   it("catches unhandled exceptions and marks job as failed", async () => {
     const jobId = "test-job-crash";
     const apkPath = nodePath.join(os.tmpdir(), "test6.apk");

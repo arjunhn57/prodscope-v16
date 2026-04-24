@@ -75,13 +75,16 @@ test("rankScreens — single batched Haiku call with a tool_use response", async
   ]);
   const client = mockClient({ response });
 
-  const ranked = await rankScreens(screens, { client });
+  const { rankings, tokenUsage } = await rankScreens(screens, { client });
 
-  assert.ok(ranked);
-  assert.equal(ranked.length, 3);
-  assert.equal(ranked[0].step, 1);
-  assert.equal(ranked[0].hotspotScore, 9);
-  assert.match(ranked[0].reason, /login/);
+  assert.ok(rankings);
+  assert.equal(rankings.length, 3);
+  assert.equal(rankings[0].step, 1);
+  assert.equal(rankings[0].hotspotScore, 9);
+  assert.match(rankings[0].reason, /login/);
+  // Per-stage cost telemetry requires tokenUsage on every return.
+  assert.equal(tokenUsage.input_tokens, 200);
+  assert.equal(tokenUsage.output_tokens, 80);
 
   // Enforce "single batched call" — no N-per-screen call pattern.
   assert.ok(mockClient.lastCall, "client should have been called");
@@ -91,20 +94,24 @@ test("rankScreens — single batched Haiku call with a tool_use response", async
 
 test("rankScreens — empty candidate list skips the SDK call entirely", async () => {
   const client = mockClient({ throwError: new Error("should not be called") });
-  const ranked = await rankScreens([], { client });
-  assert.deepEqual(ranked, []);
+  const { rankings, tokenUsage } = await rankScreens([], { client });
+  assert.deepEqual(rankings, []);
+  assert.equal(tokenUsage.input_tokens, 0);
+  assert.equal(tokenUsage.output_tokens, 0);
 });
 
-test("rankScreens — SDK throw returns null so callers fall back", async () => {
+test("rankScreens — SDK throw returns null rankings so callers fall back", async () => {
   const screens = [makeScreen(1, "login")];
   const client = mockClient({ throwError: new Error("rate limit") });
 
-  const ranked = await rankScreens(screens, { client });
+  const { rankings, tokenUsage } = await rankScreens(screens, { client });
 
-  assert.equal(ranked, null, "SDK errors yield null; heuristic path takes over");
+  assert.equal(rankings, null, "SDK errors yield null; heuristic path takes over");
+  assert.equal(tokenUsage.input_tokens, 0);
+  assert.equal(tokenUsage.output_tokens, 0);
 });
 
-test("rankScreens — response without tool_use returns null", async () => {
+test("rankScreens — response without tool_use returns null rankings but keeps token count", async () => {
   const screens = [makeScreen(1, "login")];
   const response = {
     content: [{ type: "text", text: "I cannot rank these." }],
@@ -112,17 +119,20 @@ test("rankScreens — response without tool_use returns null", async () => {
   };
   const client = mockClient({ response });
 
-  const ranked = await rankScreens(screens, { client });
-  assert.equal(ranked, null);
+  const { rankings, tokenUsage } = await rankScreens(screens, { client });
+  assert.equal(rankings, null);
+  // Tokens were still consumed even if the response was unusable.
+  assert.equal(tokenUsage.input_tokens, 10);
+  assert.equal(tokenUsage.output_tokens, 5);
 });
 
-test("rankScreens — malformed rankings array returns null, not a crash", async () => {
+test("rankScreens — malformed rankings array returns null rankings, not a crash", async () => {
   const screens = [makeScreen(1, "login")];
   const response = makeRankerResponse("not an array"); // deliberately wrong
   const client = mockClient({ response });
 
-  const ranked = await rankScreens(screens, { client });
-  assert.equal(ranked, null);
+  const { rankings } = await rankScreens(screens, { client });
+  assert.equal(rankings, null);
 });
 
 test("rankScreens — scores outside [0,10] are clamped", async () => {
@@ -133,9 +143,9 @@ test("rankScreens — scores outside [0,10] are clamped", async () => {
   ]);
   const client = mockClient({ response });
 
-  const ranked = await rankScreens(screens, { client });
-  assert.equal(ranked[0].hotspotScore, 10);
-  assert.equal(ranked[1].hotspotScore, 0);
+  const { rankings } = await rankScreens(screens, { client });
+  assert.equal(rankings[0].hotspotScore, 10);
+  assert.equal(rankings[1].hotspotScore, 0);
 });
 
 // ── triageWithRanker contract ──────────────────────────────────────────────
@@ -224,6 +234,36 @@ test("triageWithRanker — ORACLE_STAGE1_ENABLED=false routes to heuristic path"
 
   // Both screens pass the heuristic filters.
   assert.equal(result.screensToAnalyze.length, 2);
+});
+
+test("triageWithRanker — returns rankerTokens for per-stage cost telemetry", async () => {
+  const screens = [makeScreen(1, "login"), makeScreen(2, "feed")];
+  const response = makeRankerResponse(
+    [
+      { step: 1, hotspot_score: 8, reason: "login" },
+      { step: 2, hotspot_score: 3, reason: "feed" },
+    ],
+    { inputTokens: 180, outputTokens: 60 },
+  );
+  const client = mockClient({ response });
+
+  const result = await triageWithRanker(screens, {}, {}, null, { client, maxDeepAnalyze: 2 });
+
+  assert.ok(result.rankerTokens);
+  assert.equal(result.rankerTokens.input_tokens, 180);
+  assert.equal(result.rankerTokens.output_tokens, 60);
+});
+
+test("triageWithRanker — rankerTokens is zero when Stage 1 disabled", async () => {
+  const screens = [makeScreen(1, "login")];
+  const client = mockClient({ throwError: new Error("should not call") });
+  const result = await triageWithRanker(screens, {}, {}, null, {
+    client,
+    stage1Enabled: false,
+    maxDeepAnalyze: 10,
+  });
+  assert.equal(result.rankerTokens.input_tokens, 0);
+  assert.equal(result.rankerTokens.output_tokens, 0);
 });
 
 test("triageWithRanker — surfaces ranker scores in triageLog for observability", async () => {
