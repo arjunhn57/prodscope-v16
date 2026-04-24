@@ -31,10 +31,17 @@ const CACHEABLE_PREFIX = [
   "new screens remain.",
   "",
   "ACTION VOCABULARY — emit exactly one action per turn, with numeric pixel coordinates:",
-  '  { "type": "tap", "x": <int>, "y": <int> }',
+  '  { "type": "tap", "x": <int>, "y": <int>, "targetText": "<label>" }',
+  "    // targetText is OPTIONAL but RECOMMENDED for labeled buttons. When you tap a",
+  "    // button with visible text (\"Continue with Email\", \"Skip\", \"Sign in\", \"Next\"),",
+  "    // set targetText to the EXACT label. The executor snaps the tap to pixel-perfect",
+  "    // XML bounds for that label, so vision-coordinate drift cannot miss the button.",
+  "    // Omit targetText for icon-only buttons, gestures on raw content (images, list",
+  "    // rows without labels), or when you are tapping a location rather than a named",
+  "    // element. Never invent a label that is not visually on-screen.",
   '  { "type": "type", "text": "<string>" }        // use ${EMAIL} / ${PASSWORD} for creds',
   '  { "type": "swipe", "x1": <int>, "y1": <int>, "x2": <int>, "y2": <int> }',
-  '  { "type": "long_press", "x": <int>, "y": <int> }',
+  '  { "type": "long_press", "x": <int>, "y": <int>, "targetText": "<label>" }',
   '  { "type": "press_back" }',
   '  { "type": "press_home" }',
   '  { "type": "launch_app" }                       // only if app has been backgrounded',
@@ -90,6 +97,13 @@ const CACHEABLE_PREFIX = [
   "    fingerprint 3+ times, YOU MUST emit done(\"blocked_by_auth\") on the NEXT step — do",
   "    NOT keep trying press_home / launch_app / different taps. The loop will force an",
   "    exit if you don't, but owning the decision is cheaper and produces a cleaner report.",
+  "  * NEVER press_back on a login / auth / OTP / onboarding screen. Many apps are",
+  "    single-activity: the auth screen IS the only activity, so press_back closes the",
+  "    app and drops you onto the Android launcher — burning budget for zero discovery.",
+  "    If you cannot satisfy the auth wall, follow AUTH HANDLING below: tap an email /",
+  "    SSO option, tap a Skip / Guest / Later button, emit request_human_input for a",
+  "    code field, or emit done(\"blocked_by_auth\"). press_back on an auth screen is",
+  "    ALWAYS the wrong action — there is no earlier in-app screen to go back to.",
   "  * Prefer unvisited-looking UI: different tabs, different list items, buttons you have",
   "    not tried, drawer/hamburger icons, overflow menus (⋮).",
   "  * AUTH HANDLING — strict priority order when you hit a login wall:",
@@ -225,6 +239,21 @@ function buildStepSuffix(ctx) {
     // Giving pixel-perfect coords lets the agent tap without a vision round-trip.
     lines.push(
       `AuthEscape: "${ctx.authEscape.label}" at (${ctx.authEscape.x},${ctx.authEscape.y}) [${ctx.authEscape.source}]`,
+    );
+  }
+
+  if (
+    ctx.pressBackBlockedOnAuth &&
+    typeof ctx.pressBackBlockedOnAuth === "object"
+  ) {
+    // Injected on the re-ask after the press_back guardrail fired. The prior
+    // press_back would have dropped out of the app entirely.
+    const opts = Array.isArray(ctx.pressBackBlockedOnAuth.visibleAuthOptions)
+      ? ctx.pressBackBlockedOnAuth.visibleAuthOptions
+      : [];
+    const optsStr = opts.length > 0 ? ` Visible options: ${opts.map((s) => `"${s}"`).join(", ")}.` : "";
+    lines.push(
+      `!! PRESS_BACK REJECTED on auth screen — it would drop you to the home launcher and end the run. Pick a sign-in path or emit done("blocked_by_auth").${optsStr}`,
     );
   }
 

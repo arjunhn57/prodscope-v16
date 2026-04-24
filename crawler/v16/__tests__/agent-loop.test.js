@@ -429,6 +429,104 @@ test("runAgentLoop: agent decision failure uses press_back fallback and continue
   assert.equal(result.stopReason, "agent_done:recovered");
 });
 
+// ── press_back guardrail on auth screens ────────────────────────────
+
+const BIZTOSO_AUTH_XML = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+<node index="12" text="" content-desc="" clickable="false" bounds="[42,1475][1038,1606]">
+  <node index="0" text="" content-desc="" clickable="true" bounds="[42,1475][1038,1606]">
+    <node index="0" text="Continue with Email" content-desc="" clickable="false" bounds="[384,1516][765,1565]" />
+  </node>
+</node>
+</hierarchy>`;
+
+test("runAgentLoop: press_back on auth screen triggers re-ask and executes model's 2nd choice", async () => {
+  const dir = makeTmpScreenshotDir();
+  const adb = makeMockAdb();
+  adb.dumpXmlAsync = async () => BIZTOSO_AUTH_XML;
+  const readiness = makeMockReadiness();
+  // 1st response: press_back (should be rejected by guardrail on auth screen)
+  // 2nd response: re-ask returns a tap (this should execute)
+  // 3rd response: done
+  const anthropic = makeMockAnthropic([
+    response({ type: "press_back" }),
+    response({ type: "tap", x: 540, y: 1540 }),
+    response({ type: "done", reason: "ok" }),
+  ]);
+
+  const result = await runAgentLoop({
+    jobId: "test",
+    targetPackage: "com.a",
+    screenshotDir: dir,
+    budgetConfig: { maxSteps: 10 },
+    deps: { adb, readiness, anthropic },
+  });
+
+  assert.equal(result.stopReason, "agent_done:ok");
+  // Step 1's executed action must be the re-ask's tap, not the rejected press_back
+  assert.equal(result.actionsTaken[0].action.type, "tap");
+  assert.equal(result.actionsTaken[0].action.x, 540);
+  // ADB must NOT have received a pressBack on step 1 — only the tap at (540,1540)
+  const pressBacks = adb.calls.filter((c) => c.m === "pressBack");
+  assert.equal(pressBacks.length, 0);
+  const taps = adb.calls.filter((c) => c.m === "tap");
+  assert.equal(taps.length, 1);
+  assert.deepEqual(taps[0], { m: "tap", x: 540, y: 1540 });
+  // Anthropic was called twice on step 1 (original + re-ask), then once on step 2
+  assert.equal(anthropic.calls.length, 3);
+});
+
+test("runAgentLoop: press_back guardrail concedes blocked_by_auth if re-ask still returns press_back", async () => {
+  const dir = makeTmpScreenshotDir();
+  const adb = makeMockAdb();
+  adb.dumpXmlAsync = async () => BIZTOSO_AUTH_XML;
+  const readiness = makeMockReadiness();
+  // Both responses press_back on auth screen → guardrail must hard-rewrite to done
+  const anthropic = makeMockAnthropic([
+    response({ type: "press_back" }),
+    response({ type: "press_back" }),
+  ]);
+
+  const result = await runAgentLoop({
+    jobId: "test",
+    targetPackage: "com.a",
+    screenshotDir: dir,
+    budgetConfig: { maxSteps: 10 },
+    deps: { adb, readiness, anthropic },
+  });
+
+  assert.equal(result.stopReason, "agent_done:blocked_by_auth:press_back_blocked");
+  assert.equal(result.actionsTaken[0].action.type, "done");
+  assert.equal(result.actionsTaken[0].action.reason, "blocked_by_auth:press_back_blocked");
+  // Never actually pressed back on the device
+  assert.equal(adb.calls.filter((c) => c.m === "pressBack").length, 0);
+});
+
+test("runAgentLoop: press_back on non-auth screen is NOT intercepted", async () => {
+  const dir = makeTmpScreenshotDir();
+  const adb = makeMockAdb();
+  // Default dumpXmlAsync returns "<hierarchy/>" — no auth labels → isAuthScreen false
+  const readiness = makeMockReadiness();
+  const anthropic = makeMockAnthropic([
+    response({ type: "press_back" }),
+    response({ type: "done", reason: "ok" }),
+  ]);
+
+  const result = await runAgentLoop({
+    jobId: "test",
+    targetPackage: "com.a",
+    screenshotDir: dir,
+    budgetConfig: { maxSteps: 10 },
+    deps: { adb, readiness, anthropic },
+  });
+
+  assert.equal(result.stopReason, "agent_done:ok");
+  assert.equal(result.actionsTaken[0].action.type, "press_back");
+  assert.equal(adb.calls.filter((c) => c.m === "pressBack").length, 1);
+  // Only 2 anthropic calls — guardrail never fired, so no re-ask
+  assert.equal(anthropic.calls.length, 2);
+});
+
 test("runAgentLoop: records token cost correctly across steps", async () => {
   const dir = makeTmpScreenshotDir();
   const adb = makeMockAdb();

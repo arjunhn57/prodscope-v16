@@ -21,6 +21,7 @@
 const defaultAdb = require("../adb");
 const { sleep } = require("../../utils/sleep");
 const { logger } = require("../../lib/logger");
+const { resolveTapTarget } = require("./tap-target-resolver");
 const log = logger.child({ component: "v16-executor" });
 
 const VALID_TYPES = new Set([
@@ -40,6 +41,47 @@ const KNOWN_INPUT_FIELDS = new Set(["otp", "email_code", "2fa", "captcha"]);
 
 const MAX_WAIT_MS = 3000;
 const LONG_PRESS_MS = 800;
+// Threshold above which XML override vs vision coord is interesting enough to
+// log. Noise below ~50px is typical rounding / center-point jitter.
+const TAP_DRIFT_WARN_PX = 50;
+
+/**
+ * Resolve tap coords, preferring XML when the model emitted an action.targetText
+ * and ctx.xml is available. Falls back to model (x, y) when XML misses.
+ *
+ * @param {{type:string, x:number, y:number, targetText?:string}} action
+ * @param {{xml?:string|null}} ctx
+ * @returns {{x:number, y:number}}
+ */
+function resolveTapCoords(action, ctx) {
+  const visionX = action.x;
+  const visionY = action.y;
+  const xml = ctx && typeof ctx.xml === "string" ? ctx.xml : null;
+  const targetText = typeof action.targetText === "string" ? action.targetText : null;
+  if (!targetText || !xml) {
+    return { x: visionX, y: visionY };
+  }
+  const resolved = resolveTapTarget(xml, targetText, { x: visionX, y: visionY });
+  if (resolved.source !== "xml") {
+    return { x: visionX, y: visionY };
+  }
+  const dx = Math.abs(resolved.x - visionX);
+  const dy = Math.abs(resolved.y - visionY);
+  if (dx > TAP_DRIFT_WARN_PX || dy > TAP_DRIFT_WARN_PX) {
+    log.info(
+      {
+        actionType: action.type,
+        targetText,
+        vision: { x: visionX, y: visionY },
+        xml: { x: resolved.x, y: resolved.y },
+        drift: Math.max(dx, dy),
+        confidence: resolved.confidence,
+      },
+      "tap-target: xml override",
+    );
+  }
+  return { x: resolved.x, y: resolved.y };
+}
 
 /**
  * @param {object} action
@@ -153,14 +195,17 @@ async function executeAction(action, ctx) {
 
   try {
     switch (action.type) {
-      case "tap":
-        adb.tap(Math.round(action.x), Math.round(action.y));
+      case "tap": {
+        const { x, y } = resolveTapCoords(action, ctx);
+        adb.tap(Math.round(x), Math.round(y));
         return { terminal: false, stopReason: null, ok: true, error: null };
+      }
 
       case "long_press": {
-        const x = Math.round(action.x);
-        const y = Math.round(action.y);
-        adb.swipe(x, y, x, y, LONG_PRESS_MS);
+        const { x, y } = resolveTapCoords(action, ctx);
+        const rx = Math.round(x);
+        const ry = Math.round(y);
+        adb.swipe(rx, ry, rx, ry, LONG_PRESS_MS);
         return { terminal: false, stopReason: null, ok: true, error: null };
       }
 
