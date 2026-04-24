@@ -74,6 +74,16 @@ test("detectPackageDrift: null observation — safe, no drift", () => {
   assert.equal(detectPackageDrift(null, "com.biztoso.app"), false);
 });
 
+test("detectPackageDrift: packageName='unknown' is NOT drift (adb activity resolver failed)", () => {
+  // Regression for run 8708eddb (2026-04-24 09:46). v16/observation.js
+  // returns the literal "unknown" string when getCurrentActivityAsync()
+  // can't resolve the foreground (common race during app boot / adb
+  // reconnect). Treating it as drift caused a relaunch storm — every
+  // step tried recovery, agent-loop never advanced past step 0.
+  const obs = { packageName: "unknown" };
+  assert.equal(detectPackageDrift(obs, "com.biztoso.app"), false);
+});
+
 // ── allowlist shape ────────────────────────────────────────────────────
 
 test("DRIFT_ALLOWLIST: includes every package a real crawl can legitimately hit", () => {
