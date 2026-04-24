@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hierarchy rotation="0">
+  <!--
+    Discord Android — channel list screen, React Native (com.facebook.react).
+    Representative UIAutomator dump shape:
+      - Server / guild selector sidebar is a React ScrollView.
+      - Channel rows are ReactViewGroup clickable=true containers with a
+        TextView child carrying the channel name. This is the same
+        parent-clickable + child-label shape as Jetpack Compose, which is
+        exactly why the V17 clickable-graph parser already handles it.
+      - Bottom nav has 5 ReactViewGroup tabs.
+      - resource-id is usually empty in RN (RN doesn't set it automatically).
+  -->
+  <node text="" resource-id="" class="android.view.ViewGroup"
+        package="com.discord" content-desc="" clickable="false"
+        bounds="[0,0][1080,2400]">
+    <!-- Top bar: server name + search -->
+    <node text="" resource-id="" class="com.facebook.react.views.view.ReactViewGroup"
+          package="com.discord" content-desc="" clickable="false"
+          bounds="[0,96][1080,240]">
+      <node text="Private Server" resource-id="" class="android.widget.TextView"
+            package="com.discord" content-desc="" clickable="false"
+            bounds="[80,128][600,208]"/>
+      <node text="" resource-id="" class="com.facebook.react.views.view.ReactViewGroup"
+            package="com.discord" content-desc="Search" clickable="true"
+            bounds="[920,128][1000,208]"/>
+    </node>
+
+    <!-- Channel category header -->
+    <node text="TEXT CHANNELS" resource-id="" class="android.widget.TextView"
+          package="com.discord" content-desc="" clickable="false"
+          bounds="[32,300][500,340]"/>
+
+    <!-- Text channels: 4 channels, each a ReactViewGroup clickable=true -->
+    <node text="" resource-id="" class="com.facebook.react.views.view.ReactViewGroup"
+          package="com.discord" content-desc="" clickable="true"
+          bounds="[0,360][1080,448]">
+      <node text="# general" resource-id="" class="android.widget.TextView"
+            package="com.discord" content-desc="" clickable="false"
+            bounds="[80,380][400,428]"/>
+    </node>
+    <node text="" resource-id="" class="com.facebook.react.views.view.ReactViewGroup"
+          package="com.discord" content-desc="" clickable="true"
+          bounds="[0,448][1080,536]">
+      <node text="# announcements" resource-id="" class="android.widget.TextView"
+            package="com.discord" content-desc="" clickable="false"
+            bounds="[80,468][600,516]"/>
+    </node>
+    <node text="" resource-id="" class="com.facebook.react.views.view.ReactViewGroup"
+          package="com.discord" content-desc="" clickable="true"
+          bounds="[0,536][1080,624]">
+      <node text="# random" resource-id="" class="android.widget.TextView"
+            package="com.discord" content-desc="" clickable="false"
+            bounds="[80,556][350,604]"/>
+    </node>
+    <node text="" resource-id="" class="com.facebook.react.views.view.ReactViewGroup"
+          package="com.discord" content-desc="" clickable="true"
+          bounds="[0,624][1080,712]">
+      <node text="# help" resource-id="" class="android.widget.TextView"
+            package="com.discord" content-desc="" clickable="false"
+            bounds="[80,644][320,692]"/>
+    </node>
+
+    <!-- Voice channels -->
+    <node text="VOICE CHANNELS" resource-id="" class="android.widget.TextView"
+          package="com.discord" content-desc="" clickable="false"
+          bounds="[32,780][500,820]"/>
+    <node text="" resource-id="" class="com.facebook.react.views.view.ReactViewGroup"
+          package="com.discord" content-desc="" clickable="true"
+          bounds="[0,840][1080,928]">
+      <node text="General Voice" resource-id="" class="android.widget.TextView"
+            package="com.discord" content-desc="" clickable="false"
+            bounds="[80,860][500,908]"/>
+    </node>
+
+    <!-- Bottom navigation — 5 ReactViewGroup tabs -->
+    <node text="" resource-id="" class="com.facebook.react.views.view.ReactViewGroup"
+          package="com.discord" content-desc="" clickable="false"
+          bounds="[0,2232][1080,2400]">
+      <node text="" resource-id="" class="com.facebook.react.views.view.ReactViewGroup"
+            package="com.discord" content-desc="Servers" clickable="true"
+            bounds="[0,2232][216,2400]"/>
+      <node text="" resource-id="" class="com.facebook.react.views.view.ReactViewGroup"
+            package="com.discord" content-desc="Messages" clickable="true"
+            bounds="[216,2232][432,2400]"/>
+      <node text="" resource-id="" class="com.facebook.react.views.view.ReactViewGroup"
+            package="com.discord" content-desc="Friends" clickable="true"
+            bounds="[432,2232][648,2400]"/>
+      <node text="" resource-id="" class="com.facebook.react.views.view.ReactViewGroup"
+            package="com.discord" content-desc="Search" clickable="true"
+            bounds="[648,2232][864,2400]"/>
+      <node text="" resource-id="" class="com.facebook.react.views.view.ReactViewGroup"
+            package="com.discord" content-desc="You" clickable="true"
+            bounds="[864,2232][1080,2400]"/>
+    </node>
+  </node>
+</hierarchy>

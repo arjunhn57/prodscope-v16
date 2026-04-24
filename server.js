@@ -5,7 +5,6 @@ const express = require("express");
 const helmet = require("helmet");
 const multer = require("multer");
 const cors = require("cors");
-const rateLimit = require("express-rate-limit");
 const { v4: uuidv4 } = require("uuid");
 const fs = require("fs");
 const path = require("path");
@@ -21,52 +20,33 @@ const {
   SKIP_AI_FOR_TESTS,
   SCREENSHOT_DIR_PREFIX,
 } = require("./config/defaults");
-const { createAuthMiddleware, generateToken } = require("./middleware/auth");
+const { createAuthMiddleware } = require("./middleware/auth");
 const { validateStartJob, MAX_FILE_SIZE_BYTES } = require("./middleware/validate");
 const { wrapSuccess, wrapError, errorHandler } = require("./middleware/error-handler");
+const { multerErrorHandler } = require("./middleware/multer-error-handler");
+const { sendApiError } = require("./lib/api-errors");
 const { logger, requestLogger } = require("./lib/logger");
 const metrics = require("./lib/metrics");
 const magicLink = require("./lib/magic-link");
 const { renderReportEmail } = require("./output/email-renderer");
-const { sendApplicationNotification } = require("./output/application-email");
-const { z: zod } = require("zod");
 
 // ─── Environment validation ──────────────────────────────────────────────────
-const REQUIRED_ENV_VARS = ["ANTHROPIC_API_KEY"];
-const OPTIONAL_ENV_VARS = [
-  "JWT_SECRET",
-  "PRODSCOPE_API_KEY",
-  "CORS_ALLOWED_ORIGINS",
-  "GOOGLE_CLIENT_ID",
-  "ADMIN_EMAILS",
-  "MAGIC_LINK_SECRET",
-  "PUBLIC_APP_URL",
-  "RESEND_API_KEY",
-];
+// Extracted into config/env-validator.js so it's unit-testable. The validator
+// is a pure function; this file is responsible for acting on the result —
+// logging warnings and exiting on fatal misconfigurations.
+const { validateEnvironment } = require("./config/env-validator");
 
-function validateEnvironment() {
-  const missing = REQUIRED_ENV_VARS.filter((v) => !process.env[v]);
-  if (missing.length > 0) {
-    logger.error({ missing }, "FATAL: Missing required environment variables");
-    logger.error("See .env.example for the full list of required variables.");
-    process.exit(1);
-  }
-
-  // Warn about missing optional security vars
-  const missingOptional = OPTIONAL_ENV_VARS.filter((v) => !process.env[v]);
-  if (missingOptional.length > 0) {
-    logger.warn({ missingOptional }, "Missing optional env vars");
-    if (!process.env.JWT_SECRET && !process.env.PRODSCOPE_API_KEY) {
-      if (process.env.NODE_ENV === "production") {
-        logger.error("FATAL: No JWT_SECRET or PRODSCOPE_API_KEY set in production mode.");
-        process.exit(1);
-      }
-      logger.warn("No JWT_SECRET or PRODSCOPE_API_KEY — auth disabled (dev mode)");
-    }
-  }
+const envResult = validateEnvironment(process.env);
+for (const warning of envResult.warnings) {
+  logger.warn(warning);
 }
-
-validateEnvironment();
+if (!envResult.ok) {
+  for (const error of envResult.fatal) {
+    logger.error(error);
+  }
+  logger.error("See .env.example for the full list of required variables.");
+  process.exit(1);
+}
 
 // ─── Express app ─────────────────────────────────────────────────────────────
 
@@ -110,446 +90,37 @@ const authMiddleware = createAuthMiddleware({
 app.use(authMiddleware);
 
 // ─── Rate limiting ───────────────────────────────────────────────────────────
-
-// Rate limiters use default IP-based key generator (req.ip via trust proxy).
-// keyGeneratorIpFallback suppressed: behind nginx, IPv6 bypass is not a concern.
-const jobLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 10,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: "Too many job requests. Limit: 10 per minute." },
-  validate: { xForwardedForHeader: false },
-});
-
-const statusLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 120,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: "Too many status requests. Limit: 120 per minute." },
-  validate: { xForwardedForHeader: false },
-});
-
-const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: "Too many login attempts. Try again in 15 minutes." },
-  validate: { xForwardedForHeader: false },
-});
-
-const applyLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 5,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: "Too many applications. Try again in an hour." },
-  validate: { xForwardedForHeader: false },
-});
+// Limiter instances moved into middleware/rate-limiters.js (sprint-4.1).
+// Routers import only the limiter they need.
+const {
+  jobLimiter,
+  statusLimiter,
+} = require("./middleware/rate-limiters");
 
 // ─── Multer with file size limit ─────────────────────────────────────────────
+// Ensure the upload scratch directory exists at startup. Without this a VM
+// disk-cleanup (or a fresh box) that removes /tmp/uploads leaves multer in a
+// state where every POST /api/v1/start-job 500s with ENOENT. The recursive
+// flag is safe on existing dirs and creates parents if needed.
+
+try {
+  fs.mkdirSync(UPLOAD_DEST, { recursive: true });
+} catch (err) {
+  // eslint-disable-next-line no-console -- logger not ready this early
+  console.error(`[startup] failed to ensure UPLOAD_DEST ${UPLOAD_DEST}:`, err.message);
+  process.exit(1);
+}
 
 const upload = multer({
   dest: UPLOAD_DEST,
   limits: { fileSize: MAX_FILE_SIZE_BYTES },
 });
 
-// ─── Auth endpoints ──────────────────────────────────────────────────────────
-
-/**
- * POST /api/v1/auth/login — Exchange API key for a JWT token (CLI/programmatic).
- * Not used by the web UI in Phase 7+ — see /auth/google for the user flow.
- */
-app.post("/api/v1/auth/login", loginLimiter, express.json(), (req, res) => {
-  const { apiKey } = req.body || {};
-  const configuredKey = process.env.PRODSCOPE_API_KEY;
-
-  if (!configuredKey) {
-    return res.status(501).json(wrapError("Authentication not configured on this server"));
-  }
-
-  if (!apiKey || apiKey !== configuredKey) {
-    return res.status(401).json(wrapError("Invalid API key"));
-  }
-
-  const jwtSecret = process.env.JWT_SECRET;
-  if (!jwtSecret) {
-    return res.status(501).json(wrapError("JWT signing not configured"));
-  }
-
-  const token = generateToken({ type: "api_client", iat: Math.floor(Date.now() / 1000) }, jwtSecret, "24h");
-  res.json(wrapSuccess({ token, expiresIn: "24h" }));
-});
-
-/**
- * POST /api/v1/auth/google — Verify a Google Identity Services ID token,
- * upsert the user into SQLite, and return our own signed JWT.
- *
- * Client flow:
- *   1. Frontend uses @react-oauth/google to get a `credential` (ID token JWT)
- *      signed by Google.
- *   2. POST { credential } to this endpoint.
- *   3. Server verifies the signature, audience, and email_verified claim via
- *      google-auth-library.
- *   4. On success, user row is upserted and a server JWT is returned that
- *      authenticates all subsequent API calls.
- */
-const { OAuth2Client } = require("google-auth-library");
-
-app.post("/api/v1/auth/google", loginLimiter, express.json(), async (req, res) => {
-  const { credential } = req.body || {};
-  if (typeof credential !== "string" || credential.length === 0) {
-    return res.status(400).json(wrapError("Missing Google credential"));
-  }
-
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  if (!clientId) {
-    return res.status(501).json(wrapError("Google auth not configured (set GOOGLE_CLIENT_ID)"));
-  }
-
-  const jwtSecret = process.env.JWT_SECRET;
-  if (!jwtSecret) {
-    return res.status(501).json(wrapError("JWT signing not configured (set JWT_SECRET)"));
-  }
-
-  try {
-    const googleClient = new OAuth2Client(clientId);
-    const ticket = await googleClient.verifyIdToken({
-      idToken: credential,
-      audience: clientId,
-    });
-    const payload = ticket.getPayload();
-    if (!payload || !payload.email) {
-      return res.status(401).json(wrapError("Google token missing email"));
-    }
-    if (!payload.email_verified) {
-      return res.status(401).json(wrapError("Google email not verified"));
-    }
-
-    const user = store.upsertUserFromGoogle({
-      googleId: payload.sub,
-      email: payload.email,
-      name: payload.name || "",
-      picture: payload.picture || "",
-    });
-
-    const token = generateToken(
-      {
-        type: "user",
-        sub: user.id,
-        email: user.email,
-        role: user.role,
-        iat: Math.floor(Date.now() / 1000),
-      },
-      jwtSecret,
-      "24h"
-    );
-
-    res.json(
-      wrapSuccess({
-        token,
-        expiresIn: "24h",
-        user: {
-          id: user.id,
-          email: user.email,
-          name: user.name,
-          picture: user.picture,
-          role: user.role,
-        },
-      })
-    );
-  } catch (err) {
-    logger.warn(
-      { err: err instanceof Error ? err.message : String(err), component: "auth-google" },
-      "Google ID token verification failed"
-    );
-    return res.status(401).json(wrapError("Invalid Google credential"));
-  }
-});
-
-// ─── Design partner applications (Phase 7, Day 3) ───────────────────────────
-
-const applicationSchema = zod.object({
-  name: zod.string().trim().min(1, "Name is required").max(200),
-  email: zod.string().trim().email("Enter a valid email").max(320),
-  appName: zod.string().trim().min(1, "App name is required").max(200),
-  playStoreUrl: zod
-    .string()
-    .trim()
-    .max(500)
-    .url("Enter a valid URL")
-    .optional()
-    .or(zod.literal("")),
-  whyNow: zod.string().trim().max(500).optional().or(zod.literal("")),
-  website: zod.string().optional(), // honeypot — must be empty
-});
-
-/**
- * POST /api/v1/apply — Public design-partner application form.
- * Persists to design_partner_applications and emails ADMIN_EMAILS.
- * Rate-limited to 5/hour/IP. Includes a honeypot field for basic bot filtering.
- */
-app.post("/api/v1/apply", applyLimiter, express.json(), async (req, res) => {
-  const parsed = applicationSchema.safeParse(req.body || {});
-  if (!parsed.success) {
-    const details = parsed.error.issues.map(
-      (i) => `${i.path.join(".") || "field"}: ${i.message}`
-    );
-    return res.status(400).json(wrapError("Validation failed", { details }));
-  }
-
-  // Honeypot: if `website` is filled, silently accept without storing.
-  if (parsed.data.website && parsed.data.website.trim().length > 0) {
-    return res.json(wrapSuccess({ id: "accepted" }));
-  }
-
-  const { name, email, appName, playStoreUrl, whyNow } = parsed.data;
-  const ip = req.ip || req.headers["x-forwarded-for"] || null;
-  const userAgent = req.headers["user-agent"] || null;
-
-  let record;
-  try {
-    record = store.createApplication({
-      name,
-      email,
-      appName,
-      playStoreUrl: playStoreUrl || null,
-      whyNow: whyNow || null,
-      ip: typeof ip === "string" ? ip : null,
-      userAgent: typeof userAgent === "string" ? userAgent : null,
-    });
-  } catch (err) {
-    logger.error({ err: err.message }, "Failed to persist design partner application");
-    return res.status(500).json(wrapError("Could not save application"));
-  }
-
-  // Notify admins — best-effort, don't fail the request if email is down.
-  const adminEmails = (process.env.ADMIN_EMAILS || "arjunhn57@gmail.com")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  const notification = await sendApplicationNotification(adminEmails, {
-    id: record.id,
-    name,
-    email,
-    appName,
-    playStoreUrl: playStoreUrl || null,
-    whyNow: whyNow || null,
-    ip: typeof ip === "string" ? ip : null,
-    userAgent: typeof userAgent === "string" ? userAgent : null,
-  });
-
-  if (notification.status !== "sent") {
-    logger.warn(
-      { applicationId: record.id, notificationStatus: notification.status, error: notification.error },
-      "Design partner application saved but notification email failed"
-    );
-  } else {
-    logger.info(
-      { applicationId: record.id, adminCount: adminEmails.length },
-      "Design partner application received"
-    );
-  }
-
-  res.json(
-    wrapSuccess({
-      id: record.id,
-      notification: notification.status,
-    })
-  );
-});
-
-/**
- * GET /api/v1/auth/me — Return the authenticated user from the JWT.
- * Useful for the frontend to check token validity on page load.
- */
-app.get("/api/v1/auth/me", (req, res) => {
-  const user = req.user;
-  if (!user || user.type !== "user") {
-    return res.status(401).json(wrapError("Not a user session"));
-  }
-  const record = store.getUserById(user.sub);
-  if (!record) {
-    return res.status(404).json(wrapError("User not found"));
-  }
-  res.json(
-    wrapSuccess({
-      id: record.id,
-      email: record.email,
-      name: record.name,
-      picture: record.picture,
-      role: record.role,
-    })
-  );
-});
-
-// ─── Admin dashboard (Phase 7, Day 4) ───────────────────────────────────────
-//
-// All /admin routes require an authenticated user session (req.user.type === "user")
-// whose DB record has role === "admin". The ADMIN_EMAILS env var controls which
-// emails get promoted to admin at first login (see store.upsertUserFromGoogle).
-
-function requireAdmin(req, res, next) {
-  if (!req.user || req.user.type !== "user") {
-    return res.status(401).json(wrapError("Admin access requires a user session"));
-  }
-  const record = store.getUserById(req.user.sub);
-  if (!record || record.role !== "admin") {
-    return res.status(403).json(wrapError("Admin role required"));
-  }
-  req.adminUser = record;
-  next();
-}
-
-app.get("/api/v1/admin/summary", requireAdmin, (req, res) => {
-  try {
-    res.json(wrapSuccess(store.adminSummary()));
-  } catch (err) {
-    logger.error({ err: err.message }, "adminSummary failed");
-    res.status(500).json(wrapError("Could not load admin summary"));
-  }
-});
-
-app.get("/api/v1/admin/applications", requireAdmin, (req, res) => {
-  const limit = Number(req.query.limit) || 100;
-  try {
-    const items = store.listApplications({ limit });
-    res.json(
-      wrapSuccess({
-        items: items.map((row) => ({
-          id: row.id,
-          name: row.name,
-          email: row.email,
-          appName: row.app_name,
-          playStoreUrl: row.play_store_url,
-          whyNow: row.why_now,
-          status: row.status,
-          loiStatus: row.loi_status,
-          notes: row.notes,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-        })),
-      })
-    );
-  } catch (err) {
-    logger.error({ err: err.message }, "listApplications failed");
-    res.status(500).json(wrapError("Could not load applications"));
-  }
-});
-
-const applicationPatchSchema = zod
-  .object({
-    status: zod
-      .enum(["new", "contacted", "onboarded", "declined"])
-      .optional(),
-    loiStatus: zod
-      .enum(["not_asked", "asked", "signed", "declined"])
-      .optional(),
-  })
-  .refine(
-    (v) => v.status !== undefined || v.loiStatus !== undefined,
-    { message: "Provide at least one of: status, loiStatus" }
-  );
-
-app.patch("/api/v1/admin/applications/:id", requireAdmin, (req, res) => {
-  const existing = store.getApplicationById(req.params.id);
-  if (!existing) {
-    return res.status(404).json(wrapError("Application not found"));
-  }
-
-  const parsed = applicationPatchSchema.safeParse(req.body || {});
-  if (!parsed.success) {
-    const details = parsed.error.issues.map(
-      (i) => `${i.path.join(".") || "field"}: ${i.message}`
-    );
-    return res.status(400).json(wrapError("Validation failed", { details }));
-  }
-
-  try {
-    if (parsed.data.status) {
-      store.setApplicationStatus(req.params.id, parsed.data.status);
-    }
-    if (parsed.data.loiStatus) {
-      store.setApplicationLoiStatus(req.params.id, parsed.data.loiStatus);
-    }
-  } catch (err) {
-    return res.status(400).json(wrapError(err.message));
-  }
-
-  const updated = store.getApplicationById(req.params.id);
-  res.json(
-    wrapSuccess({
-      id: updated.id,
-      status: updated.status,
-      loiStatus: updated.loi_status,
-    })
-  );
-});
-
-app.get("/api/v1/admin/users", requireAdmin, (req, res) => {
-  const limit = Number(req.query.limit) || 200;
-  try {
-    const items = store.listUsersWithUsage({ limit });
-    res.json(wrapSuccess({ items }));
-  } catch (err) {
-    logger.error({ err: err.message }, "listUsersWithUsage failed");
-    res.status(500).json(wrapError("Could not load users"));
-  }
-});
-
-app.get("/api/v1/admin/users/:id/jobs", requireAdmin, (req, res) => {
-  const user = store.getUserById(req.params.id);
-  if (!user) return res.status(404).json(wrapError("User not found"));
-  const limit = Number(req.query.limit) || 50;
-  try {
-    const items = store.listJobsForUser(req.params.id, { limit });
-    res.json(wrapSuccess({ items }));
-  } catch (err) {
-    logger.error({ err: err.message }, "listJobsForUser failed");
-    res.status(500).json(wrapError("Could not load user jobs"));
-  }
-});
-
-const rolePatchSchema = zod.object({
-  role: zod.enum(["public", "design_partner", "admin"]),
-});
-
-app.patch("/api/v1/admin/users/:id/role", requireAdmin, (req, res) => {
-  const user = store.getUserById(req.params.id);
-  if (!user) return res.status(404).json(wrapError("User not found"));
-
-  const parsed = rolePatchSchema.safeParse(req.body || {});
-  if (!parsed.success) {
-    return res.status(400).json(wrapError("Validation failed"));
-  }
-
-  // Guard: admins can't demote themselves — they'd lose access immediately.
-  if (user.id === req.adminUser.id && parsed.data.role !== "admin") {
-    return res
-      .status(400)
-      .json(wrapError("You cannot remove your own admin role"));
-  }
-
-  try {
-    const updated = store.setUserRole(req.params.id, parsed.data.role);
-    logger.info(
-      { adminEmail: req.adminUser.email, targetUserId: req.params.id, newRole: parsed.data.role },
-      "Admin changed user role"
-    );
-    res.json(
-      wrapSuccess({
-        id: updated.id,
-        email: updated.email,
-        role: updated.role,
-      })
-    );
-  } catch (err) {
-    res.status(400).json(wrapError(err.message));
-  }
-});
+// ─── Mounted routers (sprint-4.1 split) ─────────────────────────────────────
+// Each router imports its own auth middleware / rate limiters / store so
+// this file stays a wiring layer. Jobs + reports are next in a follow-up.
+app.use("/api/v1", require("./routes/auth"));        // /auth/*, /apply
+app.use("/api/v1/admin", require("./routes/admin")); // /admin/*
 
 // ─── API Documentation ──────────────────────────────────────────────────────
 
@@ -626,10 +197,52 @@ app.get("/metrics", (req, res) => {
  * POST /api/start-job — Upload APK and enqueue a test job.
  * Returns immediately with jobId. Job runs in background via queue.
  */
+// Route-scoped middleware — multer errors (file too large, ENOENT on /tmp/uploads)
+// must be translated into the structured api-errors shape BEFORE the route
+// handler runs, otherwise Express's default handler swallows them as HTML.
+function uploadApkMiddleware(req, res, next) {
+  upload.single("apk")(req, res, (err) => {
+    if (err) return multerErrorHandler(err, req, res, next);
+    next();
+  });
+}
+
+// APK sanity check — at minimum, the file must have the PK zip magic.
+// aapt2 would fail later with an inscrutable error; better to fail fast
+// with the INVALID_APK code so the UI can tell the user exactly what's wrong.
+function validateApkMagicBytes(req, res, next) {
+  if (!req.file || !req.file.path) return next();
+  try {
+    const fd = fs.openSync(req.file.path, "r");
+    const buf = Buffer.alloc(4);
+    fs.readSync(fd, buf, 0, 4, 0);
+    fs.closeSync(fd);
+    // APK/AAB/XAPK are ZIPs — must start with "PK\x03\x04" or "PK\x05\x06" (empty zip).
+    const isZip =
+      buf[0] === 0x50 && buf[1] === 0x4b &&
+      ((buf[2] === 0x03 && buf[3] === 0x04) || (buf[2] === 0x05 && buf[3] === 0x06));
+    if (!isZip) {
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
+      return sendApiError(res, "INVALID_APK", {
+        details: {
+          reason: "file does not start with PK zip magic bytes",
+          firstBytes: [...buf].map((b) => b.toString(16).padStart(2, "0")).join(" "),
+        },
+      });
+    }
+  } catch (e) {
+    return sendApiError(res, "INVALID_APK", {
+      message: `Could not read uploaded file: ${e.message}`,
+    });
+  }
+  next();
+}
+
 app.post(
   "/api/v1/start-job",
   jobLimiter,
-  upload.single("apk"),
+  uploadApkMiddleware,
+  validateApkMagicBytes,
   validateStartJob,
   async (req, res) => {
     const jobId = uuidv4();

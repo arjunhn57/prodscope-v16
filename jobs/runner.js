@@ -26,16 +26,25 @@ const metrics = require("../lib/metrics");
 const { alertJobFailed, alertConsecutiveFailures, alertDiskCritical } = require("../lib/alerts");
 const { logger, createJobLogger } = require("../lib/logger");
 
-const { runAgentLoop } = require("../crawler/v16/agent-loop");
+// Engine selection happens at job runtime below — both v16 and v17 are loaded
+// so a run can be steered via CRAWL_ENGINE env var without restarting.
+const { runAgentLoop: runAgentLoopV16 } = require("../crawler/v16/agent-loop");
+const { runAgentLoop: runAgentLoopV17 } = require("../crawler/v17/agent-loop");
 const { parseApk } = require("../ingestion/manifest-parser");
 const { assessCompatibility } = require("../lib/app-compatibility");
 const adb = require("../crawler/adb");
 
-// Oracle pipeline (Week 4)
-const { triageForAI } = require("../oracle/triage");
+// Oracle pipeline (Week 4 + Phase 3.1)
+const { triageForAI, triageWithRanker } = require("../oracle/triage");
 const { analyzeTriagedScreens } = require("../oracle/ai-oracle");
 const { buildReport } = require("../output/report-builder");
 const { renderReportEmail } = require("../output/email-renderer");
+const { ORACLE_STAGE1_ENABLED } = require("../config/defaults");
+const {
+  computeDriverHits,
+  crossedFirstDecisionBoundary,
+} = require("../lib/crawl-health");
+const { apiError } = require("../lib/api-errors");
 
 // ---------------------------------------------------------------------------
 // C8: Pre-crawl disk check and auto-cleanup
@@ -221,6 +230,24 @@ async function processJob(jobId, apkPath, opts) {
         }
       }
 
+      // Clear prior-run user data so every crawl sees a cold-start session.
+      // pm install -r preserves the app's data dir, so a prior run's login
+      // cookies / session tokens survive into the next run and AuthDriver never
+      // sees an auth screen to claim. Mirrors scripts/golden-suite-run.js
+      // resetForApp() — keeps the API path equivalent to the regression harness.
+      if (packageName) {
+        try {
+          require("child_process").execFileSync(
+            "adb",
+            ["shell", "pm", "clear", packageName],
+            { timeout: 30000, stdio: "pipe" },
+          );
+          log.info({ pkg: packageName }, "app data cleared pre-launch");
+        } catch (e) {
+          log.warn({ err: e, pkg: packageName }, "pm clear failed — continuing with stale data");
+        }
+      }
+
       // Launch app using launcher activity from manifest, or monkey fallback
       try {
         if (appProfile.launcherActivity) {
@@ -240,12 +267,17 @@ async function processJob(jobId, apkPath, opts) {
 
       await sleep(3000);
 
-      if (CRAWL_ENGINE !== "v16") {
+      // Engine selection. V17 is the default (ecosystem.config.js pins it);
+      // setting CRAWL_ENGINE=v16 in .env + `pm2 restart --update-env` is the
+      // rollback path documented in V17_LAUNCH_CHECKLIST §3. That 14-day
+      // fallback window expires when V17 retires V16 per checklist §5.
+      if (CRAWL_ENGINE !== "v16" && CRAWL_ENGINE !== "v17") {
         throw new Error(
-          `V15 engine has been archived. Set CRAWL_ENGINE=v16 (current: ${CRAWL_ENGINE}). ` +
-            `V15 sources are preserved at crawler/_v15-archive/ for rollback.`,
+          `Unknown CRAWL_ENGINE "${CRAWL_ENGINE}". Supported: "v16" (legacy fallback) or "v17" (driver-first, default).`,
         );
       }
+      const runAgentLoop = CRAWL_ENGINE === "v17" ? runAgentLoopV17 : runAgentLoopV16;
+      log.info({ engine: CRAWL_ENGINE }, "crawl: selected agent loop engine");
       const crawlPromise = runAgentLoop({
         jobId,
         targetPackage: packageName,
@@ -379,10 +411,23 @@ async function processJob(jobId, apkPath, opts) {
       });
 
       const updatedJob = store.getJob(jobId);
+      // Test-mode runs skip the full oracle pipeline, but every job MUST
+      // carry a costBreakdown so downstream telemetry / admin rollups have
+      // a consistent shape to read. All per-stage buckets are zero here
+      // since no paid calls happened in this branch.
+      const zeroCostBreakdown = {
+        crawlHaiku: 0,
+        oracleStage1: 0,
+        oracleStage2: 0,
+        reportSynthesis: 0,
+        totalUsd: 0,
+      };
       store.updateJob(jobId, {
         step: 6,
         emailStatus: "skipped_test_mode",
         status: updatedJob.crawlQuality === "degraded" ? "degraded" : "complete",
+        costUsd: 0,
+        costBreakdown: zeroCostBreakdown,
       });
 
       // E6: Keep emulator alive for warm reset
@@ -396,18 +441,43 @@ async function processJob(jobId, apkPath, opts) {
     const tokenUsage = { input_tokens: 0, output_tokens: 0 };
     const haikuTokensAccum = { input_tokens: 0, output_tokens: 0 };
     const sonnetTokensAccum = { input_tokens: 0, output_tokens: 0 };
+    // Per-stage tokens for costBreakdown (Phase 3.1 step 5). Zero-initialized
+    // here so the final metric is always present even if step 4 crashes.
+    const stage1Tokens = { input_tokens: 0, output_tokens: 0 };
+    const stage2Tokens = { input_tokens: 0, output_tokens: 0 };
     let triageResult = { screensToAnalyze: [], skippedScreens: [], triageLog: [] };
     let analyses = [];
     let report = null;
 
     try {
-      // 4a: Triage — select max 8 screens for AI analysis
-      triageResult = triageForAI(
-        crawlResult.screens || [],
-        crawlResult.oracleFindingsByStep || {},
-        crawlResult.coverage || {},
-      );
-      log.info({ selected: triageResult.screensToAnalyze.length, skipped: triageResult.skippedScreens.length }, "Triage complete");
+      // 4a: Triage — Stage 1 Haiku ranker + top-K selection.
+      // Falls back to heuristic-only (triageForAI) if the flag is off OR if
+      // the Stage 1 SDK call fails — zero regression vs pre-3.1 behavior.
+      if (ORACLE_STAGE1_ENABLED) {
+        triageResult = await triageWithRanker(
+          crawlResult.screens || [],
+          crawlResult.oracleFindingsByStep || {},
+          crawlResult.coverage || {},
+          null,
+          {},
+        );
+        if (triageResult.rankerTokens) {
+          stage1Tokens.input_tokens = triageResult.rankerTokens.input_tokens;
+          stage1Tokens.output_tokens = triageResult.rankerTokens.output_tokens;
+        }
+      } else {
+        triageResult = triageForAI(
+          crawlResult.screens || [],
+          crawlResult.oracleFindingsByStep || {},
+          crawlResult.coverage || {},
+        );
+      }
+      log.info({
+        selected: triageResult.screensToAnalyze.length,
+        skipped: triageResult.skippedScreens.length,
+        rankerUsed: Boolean(triageResult.rankerUsed),
+        stage1InputTokens: stage1Tokens.input_tokens,
+      }, "Triage complete");
 
       // 4b: Gated AI analysis — only on triaged screens
       const { analyses: aiAnalyses, totalTokens: analysisTokens } = await analyzeTriagedScreens(
@@ -423,9 +493,27 @@ async function processJob(jobId, apkPath, opts) {
       // Oracle analysis uses Haiku
       haikuTokensAccum.input_tokens += analysisTokens.input_tokens;
       haikuTokensAccum.output_tokens += analysisTokens.output_tokens;
+      // Stage 1 ranker also uses Haiku — account for it in the same bucket.
+      haikuTokensAccum.input_tokens += stage1Tokens.input_tokens;
+      haikuTokensAccum.output_tokens += stage1Tokens.output_tokens;
+      tokenUsage.input_tokens += stage1Tokens.input_tokens;
+      tokenUsage.output_tokens += stage1Tokens.output_tokens;
+      // Per-stage Haiku breakdown — Stage 2 tokens == analysisTokens.
+      stage2Tokens.input_tokens = analysisTokens.input_tokens;
+      stage2Tokens.output_tokens = analysisTokens.output_tokens;
 
       // Step 5: Structured report (1 Sonnet LLM call)
       store.updateJob(jobId, { step: 5 });
+
+      // Phase 3.2: crossedFirstDecisionBoundary gates critical_bugs in
+      // report-builder. Compute from V17 actionsTaken via lib/crawl-health.js
+      // (same heuristic as scripts/golden-suite-run.js so CI and runtime agree).
+      const actionsTaken = crawlResult.actionsTaken || [];
+      const driverHits = computeDriverHits(actionsTaken);
+      const boundaryCrossed = crossedFirstDecisionBoundary(
+        actionsTaken,
+        (crawlResult.stats || {}).uniqueStates || 0,
+      );
 
       const reportResult = await buildReport({
         packageName: appProfile.packageName || "",
@@ -439,6 +527,8 @@ async function processJob(jobId, apkPath, opts) {
           stopReason: crawlResult.stopReason,
           totalSteps: (crawlResult.stats || {}).totalSteps,
           uniqueStates: (crawlResult.stats || {}).uniqueStates,
+          crossedFirstDecisionBoundary: boundaryCrossed,
+          driverHits,
           oracleFindingsCount: (crawlResult.oracleFindings || []).length,
           aiScreensAnalyzed: triageResult.screensToAnalyze.length,
           aiScreensSkipped: triageResult.skippedScreens.length,
@@ -538,11 +628,30 @@ async function processJob(jobId, apkPath, opts) {
     const costUsd = haikuCost + sonnetCost;
     const costInr = costUsd * USD_TO_INR;
 
+    // Per-stage cost breakdown (Phase 3.1 step 5). Lets us tune stage
+    // budgets from real telemetry rather than guessing at defaults. Whatever
+    // wasn't attributed to Stage 1 or Stage 2 falls into the "crawl" bucket
+    // (in-crawl Haiku vision calls from the agent loop).
+    const stage1CostUsd = stage1Tokens.input_tokens * 0.000001 + stage1Tokens.output_tokens * 0.000005;
+    const stage2CostUsd = stage2Tokens.input_tokens * 0.000001 + stage2Tokens.output_tokens * 0.000005;
+    const crawlHaikuTokens = {
+      input_tokens: Math.max(0, haikuTokensAccum.input_tokens - stage1Tokens.input_tokens - stage2Tokens.input_tokens),
+      output_tokens: Math.max(0, haikuTokensAccum.output_tokens - stage1Tokens.output_tokens - stage2Tokens.output_tokens),
+    };
+    const crawlCostUsd = crawlHaikuTokens.input_tokens * 0.000001 + crawlHaikuTokens.output_tokens * 0.000005;
+    const costBreakdown = {
+      crawlHaiku: Number(crawlCostUsd.toFixed(6)),
+      oracleStage1: Number(stage1CostUsd.toFixed(6)),
+      oracleStage2: Number(stage2CostUsd.toFixed(6)),
+      reportSynthesis: Number(sonnetCost.toFixed(6)),
+      totalUsd: Number(costUsd.toFixed(6)),
+    };
+
     const finalJob = store.getJob(jobId);
     const finalStatus = finalJob.crawlQuality === "degraded" ? "degraded" : "complete";
     // D4 (Phase 7): persist cost_usd to the dedicated column so admin rollups
     // can sum across users without parsing the JSON blob.
-    store.updateJob(jobId, { status: finalStatus, costUsd });
+    store.updateJob(jobId, { status: finalStatus, costUsd, costBreakdown });
 
     metrics.recordCrawl({
       stopReason: crawlResult.stopReason || "complete",
@@ -567,7 +676,22 @@ async function processJob(jobId, apkPath, opts) {
     try { fs.unlinkSync(apkPath); } catch (e) {}
   } catch (err) {
     log.error({ err }, "Job failed with uncaught exception");
-    store.updateJob(jobId, { status: "failed", error: err.message, costUsd: 0 });
+    // Classify known failure modes into the structured api-errors shape so
+    // the frontend can show a sensible message + retry hint instead of a
+    // raw stack trace. Unknown errors still write `error.message` for ops.
+    const msg = String(err && err.message || "");
+    let errorDetails = null;
+    if (/crawl timeout exceeded|crawl exceeded.*limit|timeout/i.test(msg)) {
+      errorDetails = apiError("JOB_TIMEOUT");
+    } else if (/no idle emulators|emulator.*unavailable|emulator.*not.*found/i.test(msg)) {
+      errorDetails = apiError("EMULATOR_UNAVAILABLE");
+    }
+    store.updateJob(jobId, {
+      status: "failed",
+      error: err.message,
+      costUsd: 0,
+      ...(errorDetails ? { errorDetails } : {}),
+    });
     metrics.recordCrawl({
       stopReason: "uncaught_exception",
       durationMs: Date.now() - crawlStartTime,

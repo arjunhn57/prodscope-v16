@@ -126,7 +126,9 @@ describe("Auth middleware", () => {
       });
     });
 
-    it("rejects unauthenticated requests with 401", () => {
+    it("rejects unauthenticated requests with 401 + MISSING_API_KEY code", () => {
+      // Phase 3.5: structured api-errors shape — no `success` field, `error`
+      // is now a boolean, details live under `code` / `message` / `retryable`.
       const mw = createAuthMiddleware({ jwtSecret: "secret", apiKey: "key" });
       const req = mockReq();
       const res = mockRes();
@@ -136,8 +138,21 @@ describe("Auth middleware", () => {
 
       assert.strictEqual(nextCalled, false);
       assert.strictEqual(res.statusCode, 401);
-      assert.strictEqual(res.body.success, false);
-      assert.ok(res.body.error.includes("Authentication required"));
+      assert.strictEqual(res.body.error, true);
+      assert.strictEqual(res.body.code, "MISSING_API_KEY");
+      assert.strictEqual(res.body.retryable, false);
+      assert.ok(typeof res.body.message === "string" && res.body.message.length > 0);
+    });
+
+    it("returns INVALID_API_KEY when caller presents a wrong key", () => {
+      const mw = createAuthMiddleware({ jwtSecret: "", apiKey: "correct-key" });
+      const req = mockReq({ headers: { "x-api-key": "wrong-key" } });
+      const res = mockRes();
+      let nextCalled = false;
+      mw(req, res, () => { nextCalled = true; });
+      assert.strictEqual(nextCalled, false);
+      assert.strictEqual(res.statusCode, 401);
+      assert.strictEqual(res.body.code, "INVALID_API_KEY");
     });
 
     it("accepts valid API key via X-API-Key header", (t, done) => {

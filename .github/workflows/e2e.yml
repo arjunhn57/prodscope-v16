@@ -1,0 +1,161 @@
+name: E2E (emulator smoke)
+
+# V17 smoke test. Boots an Android emulator in GitHub's hosted Linux runner,
+# installs Wikipedia from F-Droid, and runs scripts/e2e-smoke.js — a single
+# ~10-step crawl asserting that the agent loop doesn't crash and captures at
+# least 3 unique screens.
+#
+# Not a full golden-suite run (that belongs in a scheduled/manual job with
+# credentials and a longer budget). This workflow proves the full pipeline
+# (crawler ↔ adb ↔ Claude API) still works on PR commits that touch any of
+# the crawler, agent loop, dispatcher, drivers, or runner.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "crawler/**"
+      - "jobs/**"
+      - "oracle/**"
+      - "scripts/e2e-smoke.js"
+      - "scripts/golden-suite-run.js"
+      - "scripts/baselines.js"
+      - "scripts/golden-suite-baselines.json"
+      - ".github/workflows/e2e.yml"
+      - "package.json"
+      - "package-lock.json"
+  workflow_dispatch: {}
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  WIKIPEDIA_APK_URL: "https://f-droid.org/repo/org.wikipedia_50480.apk"
+  WIKIPEDIA_APK_SHA256: "" # set when we pin a specific build; empty = skip hash check
+
+jobs:
+  smoke:
+    name: Wikipedia V17 smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    # Emulator action requires KVM. These are the options the action's docs
+    # recommend for fastest boot on hosted runners.
+    env:
+      ANDROID_API_LEVEL: 33
+      ANDROID_TARGET: google_apis
+      ANDROID_ARCH: x86_64
+      CRAWL_ENGINE: v17
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Unit suite first. If that's red there's no point booting the
+      # emulator — fail fast before the 10-minute cold boot.
+      - name: Unit tests
+        run: npm test
+        env:
+          NODE_ENV: test
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: AVD cache
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ env.ANDROID_API_LEVEL }}-${{ env.ANDROID_TARGET }}-${{ env.ANDROID_ARCH }}-v1
+
+      - name: Create AVD and generate snapshot
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ env.ANDROID_API_LEVEL }}
+          target: ${{ env.ANDROID_TARGET }}
+          arch: ${{ env.ANDROID_ARCH }}
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: echo "AVD snapshot generated"
+
+      - name: Cache Wikipedia APK
+        uses: actions/cache@v4
+        id: apk-cache
+        with:
+          path: ~/.cache/prodscope-apks/wikipedia.apk
+          key: wikipedia-apk-${{ env.WIKIPEDIA_APK_URL }}
+
+      - name: Download Wikipedia APK
+        if: steps.apk-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.cache/prodscope-apks
+          curl -fsSL --retry 3 --retry-delay 5 \
+            -o ~/.cache/prodscope-apks/wikipedia.apk \
+            "$WIKIPEDIA_APK_URL"
+          echo "Downloaded $(stat -c%s ~/.cache/prodscope-apks/wikipedia.apk) bytes"
+          if [ -n "$WIKIPEDIA_APK_SHA256" ]; then
+            echo "$WIKIPEDIA_APK_SHA256  $HOME/.cache/prodscope-apks/wikipedia.apk" | sha256sum -c -
+          fi
+
+      - name: Run V17 smoke
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ env.ANDROID_API_LEVEL }}
+          target: ${{ env.ANDROID_TARGET }}
+          arch: ${{ env.ANDROID_ARCH }}
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: |
+            set -euo pipefail
+            adb wait-for-device
+            adb shell input keyevent KEYCODE_WAKEUP || true
+            adb shell wm dismiss-keyguard || true
+            echo "::group::Install Wikipedia APK"
+            adb install -r -g ~/.cache/prodscope-apks/wikipedia.apk
+            echo "::endgroup::"
+            echo "::group::V17 smoke"
+            node scripts/e2e-smoke.js | tee "$RUNNER_TEMP/smoke.log"
+            echo "::endgroup::"
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SKIP_AI_FOR_TESTS: "false"
+          NODE_ENV: test
+
+      - name: Collect artifacts
+        if: always()
+        run: |
+          mkdir -p artifacts
+          cp -r "$RUNNER_TEMP"/smoke.log artifacts/ 2>/dev/null || true
+          cp -r /tmp/e2e-smoke-* artifacts/ 2>/dev/null || true
+          cp -r /tmp/screenshots-* artifacts/ 2>/dev/null || true
+          ls -la artifacts || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts
+          if-no-files-found: warn
+          retention-days: 7

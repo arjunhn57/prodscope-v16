@@ -50,7 +50,11 @@ const staticInputsSchema = z
 // ---------------------------------------------------------------------------
 
 const ALLOWED_EXTENSIONS = new Set([".apk", ".aab", ".xapk"]);
-const MAX_FILE_SIZE_BYTES = 200 * 1024 * 1024; // 200 MB
+// 50 MB — Vercel proxy caps at ~4.5 MB, the production deployment
+// uses direct-to-backend upload which is fine up to 50 MB. Larger APKs
+// should be compressed (strip debug symbols, split ABIs) before upload.
+// Task 3.5 — matched to the FILE_TOO_LARGE error code's documented limit.
+const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
 
 /**
  * Validate the uploaded file.

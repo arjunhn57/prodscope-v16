@@ -26,10 +26,30 @@ const jobsDir = nodePath.join(__dirname, "..");
 // Mock dotenv
 cacheMock("dotenv", { config: () => {} });
 
-// Mock child_process
+// Mock child_process — capture named references so tests can assert against
+// the exact call shape (which command, which args) later. A shared
+// `execOrder` array records every exec/execFile invocation in order so tests
+// can assert on cross-mock ordering (pm clear MUST happen before am start).
+const execOrder = [];
+const mockExecSync = mock.fn((cmd) => {
+  execOrder.push({ kind: "execSync", cmd });
+  return "package:com.test.app";
+});
+const mockExecFileSync = mock.fn((cmd, args) => {
+  execOrder.push({ kind: "execFileSync", cmd, args });
+  // df -h / is called for disk-check before every job
+  if (cmd === "df") {
+    return "Filesystem      Size  Used Avail Use% Mounted on\n/dev/sda1       50G   20G   28G  42% /";
+  }
+  // adb shell pm clear <pkg> is called pre-launch in every job
+  if (cmd === "adb" && Array.isArray(args) && args[0] === "shell" && args[1] === "pm" && args[2] === "clear") {
+    return "Success";
+  }
+  return "";
+});
 cacheMock("child_process", {
-  execSync: mock.fn(() => "package:com.test.app"),
-  execFileSync: mock.fn(() => "Filesystem      Size  Used Avail Use% Mounted on\n/dev/sda1       50G   20G   28G  42% /"),
+  execSync: mockExecSync,
+  execFileSync: mockExecFileSync,
 });
 
 // Mock store
@@ -181,6 +201,9 @@ describe("runner.js — processJob", () => {
     mockMetrics.recordCrawl.mock.resetCalls();
     mockAdb.setSerial.mock.resetCalls();
     mockAssessCompatibility.mock.resetCalls();
+    mockExecFileSync.mock.resetCalls();
+    mockExecSync.mock.resetCalls();
+    execOrder.length = 0;
   });
 
   it("completes a job lifecycle: queued → processing → complete", async () => {
@@ -317,6 +340,139 @@ describe("runner.js — processJob", () => {
 
       // Crawl should NOT have been run
       assert.strictEqual(mockRunAgentLoop.mock.callCount(), 0);
+    } finally {
+      try { fs.unlinkSync(apkPath); } catch (_) {}
+    }
+  });
+
+  // ─── pm clear pre-launch (Phase D.2 regression guard) ─────────────────
+  //
+  // The crawler's real-API path uses `adb install -r` which preserves the
+  // app's data dir across runs. Without an explicit `pm clear` before
+  // launch, a prior run's auth cookies survive into the next job and
+  // AuthDriver never sees a login screen (see jobs/runner.js:227 comment).
+  // These tests pin that behavior so it can't silently regress.
+
+  it("calls 'adb shell pm clear <packageName>' before launching the app", async () => {
+    const jobId = "test-job-pmclear";
+    const apkPath = nodePath.join(os.tmpdir(), "test-pmclear.apk");
+    fs.writeFileSync(apkPath, Buffer.from([0x50, 0x4B, 0x03, 0x04, ...Buffer.from("fake-apk")]));
+
+    try {
+      await processJob(jobId, apkPath, { email: "test@example.com" });
+
+      const pmClearCalls = mockExecFileSync.mock.calls.filter(({ arguments: [cmd, args] }) =>
+        cmd === "adb" &&
+        Array.isArray(args) &&
+        args[0] === "shell" &&
+        args[1] === "pm" &&
+        args[2] === "clear",
+      );
+
+      assert.strictEqual(pmClearCalls.length, 1, "pm clear should run exactly once per job");
+      assert.strictEqual(pmClearCalls[0].arguments[1][3], "com.test.app", "pm clear target must be the APK's package name");
+    } finally {
+      try { fs.unlinkSync(apkPath); } catch (_) {}
+    }
+  });
+
+  it("pm clear runs BEFORE 'am start' so launch observes a clean data dir", async () => {
+    const jobId = "test-job-ordering";
+    const apkPath = nodePath.join(os.tmpdir(), "test-ordering.apk");
+    fs.writeFileSync(apkPath, Buffer.from([0x50, 0x4B, 0x03, 0x04, ...Buffer.from("fake-apk")]));
+
+    try {
+      await processJob(jobId, apkPath, { email: "test@example.com" });
+
+      // pm clear goes through execFileSync; am start goes through execSync.
+      // Cross-mock order is captured in the shared `execOrder` array.
+      const pmClearIndex = execOrder.findIndex(
+        (e) => e.kind === "execFileSync" && e.cmd === "adb" && e.args && e.args[1] === "pm" && e.args[2] === "clear",
+      );
+      const amStartIndex = execOrder.findIndex(
+        (e) => e.kind === "execSync" && typeof e.cmd === "string" && e.cmd.includes("am start"),
+      );
+
+      assert.ok(pmClearIndex >= 0, "expected a pm clear call");
+      assert.ok(amStartIndex >= 0, "expected an am start call");
+      assert.ok(
+        pmClearIndex < amStartIndex,
+        `pm clear (index=${pmClearIndex}) must precede am start (index=${amStartIndex})`,
+      );
+    } finally {
+      try { fs.unlinkSync(apkPath); } catch (_) {}
+    }
+  });
+
+  it("continues the job when pm clear fails (e.g. flaky adb)", async () => {
+    const jobId = "test-job-pmclear-fail";
+    const apkPath = nodePath.join(os.tmpdir(), "test-pmclear-fail.apk");
+    fs.writeFileSync(apkPath, Buffer.from([0x50, 0x4B, 0x03, 0x04, ...Buffer.from("fake-apk")]));
+
+    // Override execFileSync so only the `pm clear` call throws. df and any
+    // other pass through to the normal implementation.
+    mockExecFileSync.mock.mockImplementationOnce((cmd, args) => {
+      if (cmd === "adb" && args && args[1] === "pm" && args[2] === "clear") {
+        throw new Error("adb: device offline");
+      }
+      return "";
+    });
+
+    try {
+      await processJob(jobId, apkPath, { email: "test@example.com" });
+
+      const statusUpdates = mockStore.updateJob.mock.calls
+        .map((c) => c.arguments)
+        .filter(([, data]) => data.status);
+      const statuses = statusUpdates.map(([, data]) => data.status);
+
+      assert.ok(
+        statuses.includes("complete") || statuses.includes("degraded") || statuses.includes("failed"),
+        `Job should still reach a terminal status after pm clear failure, saw: ${statuses.join(", ")}`,
+      );
+      assert.strictEqual(mockRunAgentLoop.mock.callCount(), 1, "crawl should still run even when pm clear fails");
+    } finally {
+      try { fs.unlinkSync(apkPath); } catch (_) {}
+    }
+  });
+
+  // ─── Phase 3.1 step 5: per-stage cost telemetry ──────────────────────
+  //
+  // The final job record must carry a costBreakdown object with per-stage
+  // Haiku and Sonnet costs. Without this we can't tune Stage 1/2 budgets
+  // from real telemetry, and we can't prove to ourselves (or to users) that
+  // the 3-stage pipeline is actually cheaper than the legacy flat Sonnet
+  // call.
+
+  it("writes costBreakdown to the final job record with per-stage USD amounts", async () => {
+    const jobId = "test-job-costbreakdown";
+    const apkPath = nodePath.join(os.tmpdir(), "test-cost.apk");
+    fs.writeFileSync(apkPath, Buffer.from([0x50, 0x4B, 0x03, 0x04, ...Buffer.from("fake-apk")]));
+
+    try {
+      await processJob(jobId, apkPath, { email: "test@example.com" });
+
+      // The final updateJob call that carries a costBreakdown field.
+      const costUpdates = mockStore.updateJob.mock.calls
+        .map((c) => c.arguments)
+        .filter(([, data]) => data && data.costBreakdown);
+
+      assert.ok(costUpdates.length >= 1, "costBreakdown must be written to the job at least once");
+      const breakdown = costUpdates[costUpdates.length - 1][1].costBreakdown;
+
+      // Shape check: all four per-stage buckets are present, numeric, and non-negative.
+      assert.ok(typeof breakdown.crawlHaiku === "number" && breakdown.crawlHaiku >= 0);
+      assert.ok(typeof breakdown.oracleStage1 === "number" && breakdown.oracleStage1 >= 0);
+      assert.ok(typeof breakdown.oracleStage2 === "number" && breakdown.oracleStage2 >= 0);
+      assert.ok(typeof breakdown.reportSynthesis === "number" && breakdown.reportSynthesis >= 0);
+      assert.ok(typeof breakdown.totalUsd === "number" && breakdown.totalUsd >= 0);
+
+      // Conservation: sum of buckets equals totalUsd (within float tolerance).
+      const sum = breakdown.crawlHaiku + breakdown.oracleStage1 + breakdown.oracleStage2 + breakdown.reportSynthesis;
+      assert.ok(
+        Math.abs(sum - breakdown.totalUsd) < 1e-6,
+        `breakdown buckets sum=${sum} != totalUsd=${breakdown.totalUsd}`,
+      );
     } finally {
       try { fs.unlinkSync(apkPath); } catch (_) {}
     }

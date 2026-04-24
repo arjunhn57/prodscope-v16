@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hierarchy rotation="0">
+  <!--
+    Google Pay Android — home screen, Flutter-dominant rendering.
+    Representative UIAutomator dump shape:
+      - io.flutter.embedding.android.FlutterView is the single big view.
+      - By default Flutter apps render without semantic exposure, so
+        UIAutomator sees one clickable canvas with no child structure.
+      - CanvasDriver SHOULD claim this shape (no parseable clickable
+        children) and emit a wait so the LLMFallback can decide what to
+        do with it. That's the correct fallback — we cannot parseably
+        navigate a semantic-free Flutter surface.
+
+    Some real Google Pay screens DO expose semantics (Flutter with
+    SemanticsBinding enabled); those would parse more cleanly. This
+    fixture captures the worst-case shape which is what CanvasDriver
+    exists to handle.
+  -->
+  <node text="" resource-id="" class="android.widget.FrameLayout"
+        package="com.google.android.apps.nbu.paisa.user" content-desc=""
+        clickable="false" bounds="[0,0][1080,2400]">
+    <node text="" resource-id="android:id/content"
+          class="android.widget.FrameLayout"
+          package="com.google.android.apps.nbu.paisa.user" content-desc=""
+          clickable="false" bounds="[0,96][1080,2400]">
+      <node text="" resource-id=""
+            class="io.flutter.embedding.android.FlutterView"
+            package="com.google.android.apps.nbu.paisa.user" content-desc=""
+            clickable="true" bounds="[0,96][1080,2400]"/>
+    </node>
+  </node>
+</hierarchy>

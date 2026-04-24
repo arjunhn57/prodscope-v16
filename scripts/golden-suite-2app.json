@@ -1,0 +1,15 @@
+[
+  {
+    "label": "biztoso",
+    "pkg": "com.biztoso.app",
+    "description": "auth-walled; AuthDriver email flow",
+    "credentialsFromEnv": true,
+    "maxSteps": 30
+  },
+  {
+    "label": "wikipedia",
+    "pkg": "org.wikipedia",
+    "description": "no-auth content; coverage regression target",
+    "maxSteps": 30
+  }
+]

@@ -15,6 +15,7 @@ const store = require("./store");
 const { processJob } = require("./runner");
 const { logger } = require("../lib/logger");
 const { encrypt, decrypt } = require("../lib/crypto");
+const { apiError } = require("../lib/api-errors");
 
 const log = logger.child({ component: "queue" });
 
@@ -63,7 +64,11 @@ async function init() {
     jobQueue = new Queue("crawl-jobs", {
       connection,
       defaultJobOptions: {
-        attempts: 1,
+        // One free retry on transient emulator / adb / network failure. A
+        // second failure is actually broken — don't keep retrying in a
+        // loop and burn the user's credits.
+        attempts: 2,
+        backoff: { type: "fixed", delay: 10000 },
         removeOnComplete: { count: 100 },
         removeOnFail: { count: 50 },
       },
@@ -101,7 +106,16 @@ async function init() {
         } catch (err) {
           log.error({ jobId, err }, "Job threw unhandled error");
           try {
-            store.updateJob(jobId, { status: "failed", error: err.message });
+            // If the failure looks like an emulator / device problem, attach
+            // the structured EMULATOR_UNAVAILABLE envelope so the UI can show
+            // "retryable, wait for a free emulator" instead of a raw stack.
+            const msg = String(err && err.message || "");
+            const looksLikeEmulator = /no idle emulators|device.offline|emulator.fail|cannot connect|adb.*not found|device.*not found/i.test(msg);
+            store.updateJob(jobId, {
+              status: "failed",
+              error: err.message,
+              ...(looksLikeEmulator ? { errorDetails: apiError("EMULATOR_UNAVAILABLE") } : {}),
+            });
           } catch (_) {}
           // Detect device errors and mark emulator unhealthy instead of releasing as idle
           const isDeviceError = /device.offline|emulator.fail|cannot connect|adb.*not found|device.*not found/i.test(err.message);
