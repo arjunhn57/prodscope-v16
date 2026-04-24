@@ -548,3 +548,73 @@ test("ExplorationDriver.decide: nav tabs dedup on resource-id alone, not label (
     );
   }
 });
+
+// ── Profile contact-actions row rejection (2026-04-24) ──────────────
+//
+// Biztoso runs 6965d9f4 (step 59) and 498c93ca (step 26) both tapped a
+// "Phone" button clustered with Email / Message at cy ≈ 1970 on a
+// 2400-tall screen. findStructuralBottomBar matched the cluster as if
+// it were a Compose NavigationBar (old threshold was 80% of screen
+// height), the tap fired ACTION_DIAL, and the emulator drifted into
+// the system dialer. Real Android NavigationBars sit ≥ 95% down the
+// window; raising BOTTOM_BAR_Y_FRACTION to 0.88 rejects these
+// mid-screen action rows without false-negating genuine Compose navs.
+
+// Three buttons (Phone/Email/Message) at cy≈1970 on a 2400-tall screen
+// (82% of height). The avatar ImageView is a clickable that pins the
+// inferred screen dimensions via inferScreenSize (which uses the max
+// bounds from clickables) so the driver's bottom-fraction math resolves
+// against a real 2400px tall window, not just the action-row y-span.
+const profileContactActionsRowXml = wrap(
+  node({
+    cls: "android.widget.ImageView",
+    pkg: "com.biztoso.app",
+    desc: "avatar",
+    bounds: "[0,0][1080,2400]",
+  }),
+  node({
+    cls: "android.view.View",
+    pkg: "com.biztoso.app",
+    desc: "Phone",
+    bounds: "[40,1920][300,2020]",
+  }),
+  node({
+    cls: "android.view.View",
+    pkg: "com.biztoso.app",
+    desc: "Email",
+    bounds: "[400,1920][680,2020]",
+  }),
+  node({
+    cls: "android.view.View",
+    pkg: "com.biztoso.app",
+    desc: "Message",
+    bounds: "[780,1920][1040,2020]",
+  }),
+);
+
+test("ExplorationDriver.findStructuralBottomBar: rejects a profile actions row at 82% height (biztoso dialer drift)", () => {
+  const { parseClickableGraph } = require("../clickable-graph");
+  const graph = parseClickableGraph(profileContactActionsRowXml);
+  // Screen inferred as 2400 tall from the anchor FrameLayout.
+  const bar = explorationDriver.findStructuralBottomBar(graph, 2400);
+  assert.deepEqual(
+    bar,
+    [],
+    "action-button row at 82% height must not be misread as a bottom nav",
+  );
+});
+
+test("ExplorationDriver.decide: profile actions row does not trigger a tap (claim yields)", async () => {
+  const state = {};
+  const action = await explorationDriver.decide(
+    { xml: profileContactActionsRowXml, packageName: "com.biztoso.app" },
+    state,
+  );
+  // With no nav tab match, no homogeneous list, no structural bottom bar,
+  // and no recognised scrollable container, decide must yield.
+  assert.equal(
+    action,
+    null,
+    "no driver target should be produced for a profile action row",
+  );
+});
