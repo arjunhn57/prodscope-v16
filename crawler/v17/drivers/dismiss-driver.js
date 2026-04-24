@@ -40,6 +40,34 @@ const CLOSE_DESC_REGEX = /content-desc="[^"]*(?:close|dismiss|×|✕|✖)/i;
 const CLOSE_ID_REGEX = /resource-id="[^"]*(?:close|dismiss|skip_button|not_now|maybe_later)/i;
 
 /**
+ * Plain-text dismiss labels that appear on ordinary `android.widget.Button`
+ * or Compose `NavigationBarItem`-style clickables WITHOUT any of the
+ * structural modal-class / close-icon signals above.
+ *
+ * Production bug (run b004fbdf, 2026-04-24 09:54): biztoso's first in-app
+ * surface is a notification dialog with a "Remind me later" button. The
+ * three structural gates above all missed it — no modal class in the XML
+ * tree, no close-glyph content-desc, no matching resource-id — so
+ * DismissDriver never claimed, the screen fell through to LLMFallback,
+ * and the crawl conceded after the next step when the post-dismiss auth
+ * screen triggered the press_back guardrail. This regex captures the
+ * plain-text CTA variants we observe in the wild.
+ *
+ * Scope is deliberately narrow to dismiss-a-notification phrases only.
+ * "Cancel" and "Close" are NOT matched here because they commonly
+ * appear on legitimate auth screens (OTP "Cancel", profile-edit "Close")
+ * where the user's creds-provided intent is to log in, not to back out.
+ * Leave those to the structural CLOSE_DESC_REGEX / CLOSE_ID_REGEX checks
+ * above — those require an actual close-glyph or dismiss-named rid,
+ * which is a stronger signal than free-form label text.
+ *
+ * decide() still gates on the classifier's dismiss_button role, so a
+ * false claim here costs one classifier call, never a wrong tap.
+ */
+const DISMISS_LABEL_REGEX =
+  /(?:text|content-desc)="(?:[^"]*\s)?(?:remind\s+me\s+later|maybe\s+later|not\s+now|not\s+right\s+now|skip\s+for\s+now|no\s+thanks|no,?\s*thanks|dismiss)(?:\s[^"]*)?"/i;
+
+/**
  * @typedef {import('./clickable-graph').Clickable} Clickable
  * @typedef {import('../node-classifier').ClassifiedClickable} ClassifiedClickable
  *
@@ -64,6 +92,10 @@ function claim(observation) {
   if (MODAL_CLASS_HINTS_REGEX.test(xml)) return true;
   if (CLOSE_DESC_REGEX.test(xml)) return true;
   if (CLOSE_ID_REGEX.test(xml)) return true;
+  // Plain-text label fallback — catches "Remind me later" / "Maybe later"
+  // style CTAs on non-modal dialogs that ship without close-glyphs or
+  // matching resource-ids. See DISMISS_LABEL_REGEX comment block above.
+  if (DISMISS_LABEL_REGEX.test(xml)) return true;
   return false;
 }
 
@@ -125,4 +157,5 @@ module.exports = {
   MODAL_CLASS_HINTS_REGEX,
   CLOSE_DESC_REGEX,
   CLOSE_ID_REGEX,
+  DISMISS_LABEL_REGEX,
 };
