@@ -120,6 +120,22 @@ const DEFAULT_SUITE = [
     description: "list view + month view",
     maxSteps: 20,
   },
+  // ── Phase 3.3: framework coverage ──────────────────────────────────
+  // These apps are deliberately included to detect regressions on
+  // non-native rendering paths. If the driver suite silently only works
+  // on native Android views, Discord and Google Pay are the first to fail.
+  {
+    label: "discord",
+    pkg: "com.discord",
+    description: "React Native — ReactViewGroup clickable pattern",
+    maxSteps: 20,
+  },
+  {
+    label: "google-pay",
+    pkg: "com.google.android.apps.nbu.paisa.user",
+    description: "Flutter-dominant — CanvasDriver fallback territory",
+    maxSteps: 15,
+  },
 ];
 
 /** Packages we ALWAYS force-stop before any run so prior-run state can't leak. */
@@ -134,6 +150,8 @@ const TRACKED_PACKAGES = [
   "com.google.android.apps.maps",
   "com.google.android.apps.photos",
   "com.google.android.calendar",
+  "com.discord",
+  "com.google.android.apps.nbu.paisa.user",
 ];
 
 function adb(args, timeoutMs = 30000) {
