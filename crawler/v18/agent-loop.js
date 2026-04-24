@@ -20,7 +20,10 @@
 
 const { runAgentLoop: v17RunAgentLoop } = require("../v17/agent-loop");
 const v18Dispatcher = require("./dispatcher");
-const { createMemory: createTrajectoryMemory } = require("./trajectory-memory");
+const {
+  createMemory: createTrajectoryMemory,
+  uniqueLogicalScreensCount,
+} = require("./trajectory-memory");
 const { createBudget: createEscalationBudget } = require("./sonnet-escalation");
 const { logger } = require("../../lib/logger");
 
@@ -68,8 +71,12 @@ async function runAgentLoop(opts) {
 
   const result = await v17RunAgentLoop(mergedOpts);
 
-  // Enrich the result with V18-specific telemetry.
-  return Object.assign({}, result, {
+  // Phase 4: replace the user-facing uniqueScreens metric with the
+  // logical-fp count (position/content-insensitive). The structural-fp
+  // count inflates by ~2× on scroll-heavy apps. User saw 63 "unique"
+  // screens on run 6aa971ab; logical count was ~30-35.
+  const logicalUnique = uniqueLogicalScreensCount(trajectory);
+  const enriched = Object.assign({}, result, {
     engine: "v18",
     v18: {
       escalationsUsed: escalationBudget.used,
@@ -78,9 +85,17 @@ async function runAgentLoop(opts) {
         seenTypeCounts: Object.assign({}, trajectory.seenTypeCounts),
         hubsRemaining: Array.from(trajectory.hubsRemaining),
         fingerprintsSeen: trajectory.fingerprintsSeen.size,
+        logicalFingerprintsSeen: logicalUnique,
       },
     },
   });
+  // Override the v17-derived uniqueScreens with the honest logical count
+  // ONLY when we actually saw screens through the v18 classifier. Some
+  // early steps (pre-classifier) are tracked via structural fp only.
+  if (logicalUnique > 0) {
+    enriched.uniqueScreens = logicalUnique;
+  }
+  return enriched;
 }
 
 module.exports = { runAgentLoop };

@@ -66,6 +66,21 @@ const HORIZONTAL_PAGER_XML_REGEX =
 const MAX_HORIZONTAL_SWIPES_PER_FP = 4;
 
 /**
+ * WebView detection regex. Matches android.webkit.WebView and the
+ * Compose / androidx WebView wrappers. These screens produce few XML
+ * clickables but have scrollable HTML content beneath.
+ */
+const WEBVIEW_XML_REGEX = /class="[^"]*(?:WebView|android\.webkit\.WebView)/;
+
+/**
+ * Per-fp WebView scroll budget. Before the back ladder surrenders on a
+ * WebView-heavy screen (FAQs, Terms, embedded help content), try a few
+ * vertical scrolls so the classifier + screenshot capture surfaces
+ * deeper content.
+ */
+const MAX_WEBVIEW_SCROLLS_PER_FP = 3;
+
+/**
  * Back-edge escalation ladder for empty-frontier on safe screen types.
  * On the first empty-frontier hit we press_back; on the second (same fp
  * after press_back failed to change it) we try gesture-nav edge-swipe-back;
@@ -197,6 +212,32 @@ async function decide(observation, state, deps = {}) {
           return {
             type: "swipe_horizontal",
             direction: "left", // finger right→left = NEXT page
+            screenWidth: width,
+            screenHeight: height,
+          };
+        }
+      }
+
+      // Phase 4: WebView-heavy screens (FAQs, Terms, in-app browser
+      // content) expose few XML clickables even though there's scrollable
+      // content. Before the back ladder gives up, try 2-3 vertical scrolls
+      // to surface deeper content for the classifier + report capture.
+      if (
+        EMPTY_FRONTIER_SAFE_BACK_SCREEN_TYPES.has(screenType) &&
+        v17Memory &&
+        hasWebViewContent(observation.xml)
+      ) {
+        if (!v17Memory.webviewScrollByFp) v17Memory.webviewScrollByFp = new Map();
+        const count = v17Memory.webviewScrollByFp.get(fp) || 0;
+        if (count < MAX_WEBVIEW_SCROLLS_PER_FP) {
+          v17Memory.webviewScrollByFp.set(fp, count + 1);
+          const { width, height } = inferScreenSize(filterable);
+          log.info(
+            { fingerprint: fp, screenType, scrolls: count + 1 },
+            "ExplorationDriver: WebView detected — scrolling down before back-nav",
+          );
+          return {
+            type: "scroll_down",
             screenWidth: width,
             screenHeight: height,
           };
@@ -380,6 +421,19 @@ function hasHorizontalPager(xml) {
 }
 
 /**
+ * True when the XML includes a WebView node. These screens expose few
+ * clickables to the classifier (HTML content isn't in the accessibility
+ * tree) so "empty frontier" is misleading — there's content to scroll.
+ *
+ * @param {string|null|undefined} xml
+ * @returns {boolean}
+ */
+function hasWebViewContent(xml) {
+  if (typeof xml !== "string" || !xml) return false;
+  return WEBVIEW_XML_REGEX.test(xml);
+}
+
+/**
  * Infer screen width/height from the max bounds of the clickables in
  * graph. Fallback to common phone dimensions when the graph is empty or
  * bounds-less.
@@ -406,10 +460,13 @@ module.exports = {
   decide,
   deriveFilterable,
   hasHorizontalPager,
+  hasWebViewContent,
   inferScreenSize,
   EXPLORATION_INTENTS,
   EMPTY_FRONTIER_SAFE_BACK_SCREEN_TYPES,
   HORIZONTAL_PAGER_XML_REGEX,
+  WEBVIEW_XML_REGEX,
   MAX_HORIZONTAL_SWIPES_PER_FP,
+  MAX_WEBVIEW_SCROLLS_PER_FP,
   BACK_LADDER_ATTEMPTS,
 };

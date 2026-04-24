@@ -26,10 +26,12 @@ const AuthDriver = require("../v17/drivers/auth-driver");
 const V18ExplorationDriver = require("./drivers/exploration-driver");
 const { parseClickableGraph } = require("../v17/drivers/clickable-graph");
 const { classifyScreen } = require("./semantic-classifier");
+const { computeLogicalFingerprint } = require("../v17/node-classifier");
 const { escalate, shouldEscalate } = require("./sonnet-escalation");
 const {
   recordScreen,
   recordTap,
+  recordAction,
   summarise: summariseTrajectory,
 } = require("./trajectory-memory");
 const { findClickableAt } = require("../v17/drivers/llm-fallback");
@@ -151,8 +153,16 @@ async function dispatch(observation, state, deps = {}) {
   const { plan, clickables: classifiedClickables } = classification;
 
   // 3. Update trajectory memory.
+  // Phase 4: compute logical fp alongside structural fp so coverage
+  // tracking is position/content-insensitive. Structural fp is still
+  // used for per-fp edge tracking (drivers need position sensitivity).
+  const logicalFp = computeLogicalFingerprint(
+    graph,
+    observation.packageName,
+    observation.activity,
+  );
   if (deps.trajectory) {
-    recordScreen(deps.trajectory, plan.fingerprint, plan.screenType);
+    recordScreen(deps.trajectory, plan.fingerprint, plan.screenType, logicalFp);
   }
 
   log.info(
@@ -256,6 +266,7 @@ async function dispatch(observation, state, deps = {}) {
       "dispatcher: driver acted",
     );
     recordTapIfAny(action, classifiedClickables, plan.fingerprint, deps);
+    recordActionOnTrajectory(action, driver.name, plan.fingerprint, state, deps);
     return { driver: driver.name, action, diagnostics, plan };
   }
 
@@ -274,6 +285,7 @@ async function dispatch(observation, state, deps = {}) {
     "dispatcher: LLMFallback acted",
   );
   recordTapIfAny(fallbackAction, classifiedClickables, plan.fingerprint, deps);
+  recordActionOnTrajectory(fallbackAction, "LLMFallback", plan.fingerprint, state, deps);
   return {
     driver: "LLMFallback",
     action: fallbackAction,
@@ -308,6 +320,32 @@ function recordTapIfAny(action, classifiedClickables, fp, deps) {
     recordTap(deps.trajectory, fp, hit);
   } catch (err) {
     log.warn({ err: err.message }, "dispatcher: recordTap failed");
+  }
+}
+
+/**
+ * Phase 4 — append a recentActions entry on every dispatched action.
+ * countRecentHubTaps reads from this to detect Home/Profile bounce loops.
+ *
+ * @param {object} action
+ * @param {string} driverName
+ * @param {string} fp
+ * @param {object} state
+ * @param {object} deps
+ */
+function recordActionOnTrajectory(action, driverName, fp, state, deps) {
+  if (!action || !deps || !deps.trajectory) return;
+  try {
+    recordAction(deps.trajectory, {
+      step: (state && state.dispatchCount) || 0,
+      driver: driverName,
+      actionType: action.type,
+      targetText: action.targetText,
+      fingerprint: fp,
+      outcome: null, // populated later by caller if available — unused by summarise
+    });
+  } catch (err) {
+    log.warn({ err: err.message }, "dispatcher: recordAction failed");
   }
 }
 

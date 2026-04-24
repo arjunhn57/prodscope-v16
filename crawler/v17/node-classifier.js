@@ -169,6 +169,67 @@ function computeStructuralFingerprint(graph, packageName, activity) {
 }
 
 /**
+ * Phase 4 (2026-04-25): position- and content-insensitive LOGICAL
+ * fingerprint. The same logical screen (e.g. Home feed) produces the
+ * same logical fp regardless of scroll offset, dynamic list items, or
+ * rendered text variance.
+ *
+ * Used by v18/trajectory-memory for the "have I seen this screen?"
+ * coverage tracking. Distinct from `computeStructuralFingerprint`:
+ *   - Structural fp includes bucketed (x,y) positions → needed for
+ *     per-fp edge tracking (don't re-tap the same Reply button after
+ *     the feed re-renders) but inflates the "unique screens" count
+ *     because Home@scroll-0 and Home@scroll-500 produce different fps
+ *     despite being the same logical screen.
+ *   - Logical fp excludes positions and item counts → same logical
+ *     screen produces same fp across scroll / content variance.
+ *
+ * Keyed on:
+ *   - packageName
+ *   - activity
+ *   - DISTINCT resource-ids (sorted, deduped)
+ *   - DISTINCT className prefixes (first two dotted segments —
+ *     `com.biztoso.FeedCard` and `com.biztoso.FeedItemView` collapse
+ *     into `com.biztoso`; `androidx.compose.*` groups together)
+ *   - input-count bucket ("0" / "1" / "2+") so a form's identity
+ *     depends on having-inputs, not exact input count.
+ *
+ * @param {ClickableGraph} graph
+ * @param {string} [packageName]
+ * @param {string} [activity]
+ * @returns {string} 12-char sha256 prefix
+ */
+function computeLogicalFingerprint(graph, packageName, activity) {
+  const clickables = (graph && graph.clickables) || [];
+  const resourceIds = Array.from(
+    new Set(clickables.map((c) => c.resourceId || "").filter(Boolean)),
+  ).sort();
+  const classPrefixes = Array.from(
+    new Set(
+      clickables
+        .map((c) => c.className || "")
+        .filter(Boolean)
+        .map((cls) => {
+          const parts = cls.split(".");
+          return parts.slice(0, Math.min(2, parts.length)).join(".");
+        }),
+    ),
+  ).sort();
+  const inputCount = (graph && graph.groups && graph.groups.inputs && graph.groups.inputs.length) || 0;
+  const inputBucket = inputCount === 0 ? "0" : inputCount === 1 ? "1" : "2+";
+
+  const material = JSON.stringify({
+    pkg: packageName || "",
+    act: activity || "",
+    resourceIds,
+    classPrefixes,
+    inputBucket,
+  });
+
+  return crypto.createHash("sha256").update(material).digest("hex").slice(0, 12);
+}
+
+/**
  * Deterministic role short-circuit based on Android-standard metadata.
  * Resolves password fields (password attr), email fields (resource-id regex
  * via the parser), and dismiss buttons (content-desc/resource-id) without any
@@ -426,6 +487,7 @@ async function classify(graph, observation, deps = {}) {
 module.exports = {
   classify,
   computeStructuralFingerprint,
+  computeLogicalFingerprint,
   applyInputTypeShortCircuit,
   createCache,
   mergeRoles,

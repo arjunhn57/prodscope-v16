@@ -184,3 +184,87 @@ test("tappedLabelsOnFp: returns labels of tapped clickables in current observati
   // Should include the two tapped, not the untapped "Profile".
   assert.deepEqual(labels.sort(), ["Home", "Settings"]);
 });
+
+// ── Phase 4: logical fp + anti-loop (2026-04-25) ───────────────────────
+
+const {
+  uniqueLogicalScreensCount,
+  countRecentHubTaps,
+  LOOP_WINDOW_STEPS,
+  LOOP_WARN_THRESHOLD,
+} = require("../trajectory-memory");
+
+test("recordScreen: counts a screen once per LOGICAL fp, even if structural fp varies (scroll drift)", () => {
+  const m = createMemory();
+  // Two structural fps (different scroll offsets) but same logical fp —
+  // should count as ONE screen for coverage.
+  recordScreen(m, "structural-A", "feed", "logical-home");
+  recordScreen(m, "structural-B", "feed", "logical-home");
+  recordScreen(m, "structural-C", "feed", "logical-home");
+  assert.equal(uniqueLogicalScreensCount(m), 1);
+  assert.equal(m.seenTypeCounts.feed, 1, "feed should be counted once, not three times");
+});
+
+test("recordScreen: different logical fps are counted separately", () => {
+  const m = createMemory();
+  recordScreen(m, "s1", "feed", "logical-home");
+  recordScreen(m, "s2", "profile", "logical-profile");
+  recordScreen(m, "s3", "settings", "logical-settings");
+  assert.equal(uniqueLogicalScreensCount(m), 3);
+});
+
+test("recordScreen: logicalFingerprint omitted falls back to structural (backwards compat)", () => {
+  const m = createMemory();
+  recordScreen(m, "s1", "feed");
+  recordScreen(m, "s2", "feed");
+  assert.equal(uniqueLogicalScreensCount(m), 2);
+});
+
+test("countRecentHubTaps: counts Home/Profile taps in the recent window", () => {
+  const m = createMemory();
+  for (let i = 0; i < 4; i++) {
+    recordAction(m, { step: i * 2, driver: "LLMFallback", actionType: "tap", targetText: "Home", fingerprint: `fp${i}` });
+    recordAction(m, { step: i * 2 + 1, driver: "LLMFallback", actionType: "tap", targetText: "Profile", fingerprint: `fp${i}` });
+  }
+  const counts = countRecentHubTaps(m);
+  assert.ok(counts.get("Home") >= 3);
+  assert.ok(counts.get("Profile") >= 3);
+});
+
+test("countRecentHubTaps: non-hub labels (e.g. 'Post A') don't trigger", () => {
+  const m = createMemory();
+  for (let i = 0; i < 5; i++) {
+    recordAction(m, { step: i, driver: "ExplorationDriver", actionType: "tap", targetText: `Post ${i}`, fingerprint: `fp${i}` });
+  }
+  const counts = countRecentHubTaps(m);
+  assert.equal(counts.size, 0);
+});
+
+test("summarise: emits LOOP WARNING when a hub tap count hits the threshold", () => {
+  const m = createMemory();
+  for (let i = 0; i < LOOP_WARN_THRESHOLD; i++) {
+    recordAction(m, { step: i, driver: "LLMFallback", actionType: "tap", targetText: "Home", fingerprint: `fp${i}` });
+  }
+  const hint = summarise(m);
+  assert.ok(hint.includes("LOOP WARNING"), "expected LOOP WARNING in hint");
+  assert.ok(hint.includes("Home"), "LOOP WARNING should name the looped label");
+  assert.ok(hint.includes("Do NOT tap"), "directive should be prescriptive");
+});
+
+test("summarise: no LOOP WARNING below the threshold (2 taps only)", () => {
+  const m = createMemory();
+  for (let i = 0; i < LOOP_WARN_THRESHOLD - 1; i++) {
+    recordAction(m, { step: i, driver: "LLMFallback", actionType: "tap", targetText: "Home", fingerprint: `fp${i}` });
+  }
+  const hint = summarise(m);
+  assert.ok(!hint.includes("LOOP WARNING"), "no warning should fire below threshold");
+});
+
+test("summarise: includes logical_unique count line", () => {
+  const m = createMemory();
+  recordScreen(m, "s1", "feed", "lfp-feed");
+  recordScreen(m, "s2", "feed", "lfp-feed"); // same logical fp — no re-count
+  recordScreen(m, "s3", "settings", "lfp-settings");
+  const hint = summarise(m);
+  assert.ok(hint.includes("logical_unique: 2"));
+});

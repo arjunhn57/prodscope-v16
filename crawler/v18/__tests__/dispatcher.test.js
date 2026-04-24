@@ -414,6 +414,41 @@ test("dispatch: detail screen with ViewPager + empty frontier → emits swipe_ho
   assert.equal(r.action.direction, "left");
 });
 
+test("dispatch: WebView detail screen with empty frontier → scroll_down before back ladder", async () => {
+  const { createMemory, recordTap } = require("../trajectory-memory");
+  // WebView-heavy screen (FAQs-style). Few XML clickables, wrapped in a
+  // RecyclerView so ExplorationDriver.claim() fires (biztoso's FAQs screen
+  // uses a RecyclerView+WebView composite).
+  const xml = `<?xml version="1.0"?>\n<hierarchy rotation="0">\n` +
+    `<node class="androidx.recyclerview.widget.RecyclerView" package="com.app" clickable="false" bounds="[0,0][1080,2400]" />` +
+    `<node class="android.webkit.WebView" package="com.app" clickable="false" bounds="[0,200][1080,2200]" />` +
+    `<node text="Back" resource-id="com.app:id/back" class="android.widget.ImageButton" package="com.app" clickable="true" bounds="[40,120][160,240]" />` +
+    `<node text="Share" resource-id="com.app:id/share" class="android.widget.ImageButton" package="com.app" clickable="true" bounds="[900,120][1040,240]" />` +
+    `<node text="Reload" resource-id="com.app:id/reload" class="android.widget.ImageButton" package="com.app" clickable="true" bounds="[760,120][880,240]" />` +
+    `</hierarchy>`;
+  const plan = {
+    screen_type: "detail",
+    allowed_intents: ["navigate", "read_only"],
+    action_budget: 3,
+    confidence: 0.9,
+    nodes: Array.from({ length: 3 }, (_, i) => ({ nodeIndex: i, role: "content", intent: "navigate", priority: 5 })),
+  };
+  const trajectory = createMemory();
+  const { parseClickableGraph } = require("../../v17/drivers/clickable-graph");
+  const graph = parseClickableGraph(xml);
+  const r0 = await dispatch({ xml, packageName: "com.app" }, {}, {
+    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory,
+  });
+  const fp = r0.plan.fingerprint;
+  for (const c of graph.clickables) recordTap(trajectory, fp, c);
+  // Empty frontier on a WebView detail screen → should emit scroll_down
+  // before the back ladder.
+  const r = await dispatch({ xml, packageName: "com.app" }, {}, {
+    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory,
+  });
+  assert.equal(r.action.type, "scroll_down", "WebView content should be scrolled before back-nav");
+});
+
 test("dispatch: detail screen (no pager) empty frontier → press_back first, then edge_swipe_back on persistence, then yield", async () => {
   const { createMemory, recordTap } = require("../trajectory-memory");
   const xml = wrap(

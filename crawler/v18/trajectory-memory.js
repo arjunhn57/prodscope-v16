@@ -29,6 +29,33 @@ const DEFAULT_HUBS = [
 const RECENT_ACTIONS_CAP = 8;
 
 /**
+ * Phase 4 (2026-04-25): well-known nav / hub labels that, when tapped
+ * repeatedly in a short window, indicate a hub bounce-loop. Match is
+ * case-insensitive substring on targetText.
+ */
+const HUB_LABEL_PATTERNS = [
+  /\bhome\b/i,
+  /\bprofile\b/i,
+  /\bsettings?\b/i,
+  /\bsearch\b/i,
+  /\bnotifications?\b/i,
+  /\binbox\b/i,
+  /\bchat\b/i,
+  /\bmessages?\b/i,
+  /\bfeed\b/i,
+  /\bdiscover\b/i,
+  /\bexplore\b/i,
+  /\bshorts?\b/i,
+  /\bconnections?\b/i,
+  /\bback\b/i,
+];
+
+/** Window over which we count hub taps for loop detection. */
+const LOOP_WINDOW_STEPS = 10;
+/** Number of taps on the same label within the window before we warn. */
+const LOOP_WARN_THRESHOLD = 3;
+
+/**
  * @typedef {Object} RecentAction
  * @property {number} step
  * @property {string} driver
@@ -58,6 +85,10 @@ function createMemory() {
   return {
     seenTypeCounts: Object.create(null),
     fingerprintsSeen: new Set(),
+    // Phase 4: position- and content-insensitive unique-screen count.
+    // User-facing `uniqueScreens` metric should reflect THIS, not
+    // fingerprintsSeen which inflates on scroll-position drift.
+    logicalFingerprintsSeen: new Set(),
     hubsRemaining: new Set(DEFAULT_HUBS),
     recentActions: [],
     tappedEdgesByFp: new Map(),
@@ -181,16 +212,44 @@ function tappedLabelsOnFp(memory, fp, clickables) {
  * Record the fact that we observed a fingerprint with a given screen type.
  * Idempotent on fp — re-visits don't double-count.
  *
+ * Phase 4: `logicalFingerprint` is the primary coverage key. When provided,
+ * `seenTypeCounts` and hub visited-tracking are indexed on it (not the
+ * structural fp) so Home@scroll-0 and Home@scroll-500 count as ONE screen.
+ *
  * @param {TrajectoryMemory} memory
- * @param {string} fingerprint
+ * @param {string} fingerprint            Structural fp (backwards-compat)
  * @param {string} screenType
+ * @param {string} [logicalFingerprint]   Phase 4 — position-insensitive fp
  */
-function recordScreen(memory, fingerprint, screenType) {
+function recordScreen(memory, fingerprint, screenType, logicalFingerprint) {
   if (!memory || !fingerprint || !screenType) return;
-  if (memory.fingerprintsSeen.has(fingerprint)) return;
-  memory.fingerprintsSeen.add(fingerprint);
+
+  // Structural fp tracking (backwards-compat — drivers still use this).
+  if (!memory.fingerprintsSeen.has(fingerprint)) {
+    memory.fingerprintsSeen.add(fingerprint);
+  }
+
+  // Logical fp is the primary coverage key. First time we see the
+  // logical fp is when we count the screen for coverage.
+  if (!memory.logicalFingerprintsSeen) memory.logicalFingerprintsSeen = new Set();
+  const effectiveLogical = logicalFingerprint || fingerprint;
+  if (memory.logicalFingerprintsSeen.has(effectiveLogical)) return;
+  memory.logicalFingerprintsSeen.add(effectiveLogical);
+
   memory.seenTypeCounts[screenType] = (memory.seenTypeCounts[screenType] || 0) + 1;
   memory.hubsRemaining.delete(screenType);
+}
+
+/**
+ * Phase 4: how many unique (logical) screens have we covered? This is
+ * the honest user-facing metric — no position-drift inflation.
+ *
+ * @param {TrajectoryMemory} memory
+ * @returns {number}
+ */
+function uniqueLogicalScreensCount(memory) {
+  if (!memory || !memory.logicalFingerprintsSeen) return 0;
+  return memory.logicalFingerprintsSeen.size;
 }
 
 /**
@@ -227,6 +286,7 @@ function summarise(memory, opts) {
     .join(" | ");
   const parts = [];
   if (seenParts) parts.push(`screens_seen: ${seenParts}`);
+  parts.push(`logical_unique: ${uniqueLogicalScreensCount(memory)}`);
   parts.push(`hubs_remaining: ${hubs}`);
   if (recent) parts.push(`recent_actions: ${recent}`);
 
@@ -248,7 +308,66 @@ function summarise(memory, opts) {
     parts.push(`untapped_on_this_screen: ${untapped.length}`);
   }
 
-  return parts.join("\n").slice(0, 1400);
+  // Phase 4: anti-loop pressure. Count recent taps on well-known hub
+  // labels. If any label hits LOOP_WARN_THRESHOLD in the last
+  // LOOP_WINDOW_STEPS, emit a loud prescriptive directive so the LLM
+  // stops bouncing.
+  const hubTaps = countRecentHubTaps(memory);
+  if (hubTaps.size > 0) {
+    const summary = Array.from(hubTaps.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([label, count]) => `${label}×${count}`)
+      .join(", ");
+    parts.push(`recent_hub_taps: ${summary} in last ${LOOP_WINDOW_STEPS} steps`);
+    const maxCount = Math.max(...hubTaps.values());
+    if (maxCount >= LOOP_WARN_THRESHOLD) {
+      const loopedLabels = Array.from(hubTaps.entries())
+        .filter(([, count]) => count >= LOOP_WARN_THRESHOLD)
+        .map(([label]) => `"${label}"`)
+        .join(" and ");
+      const remainingHubs =
+        memory.hubsRemaining.size > 0
+          ? ` Unvisited hubs: ${Array.from(memory.hubsRemaining).join(", ")}.`
+          : "";
+      parts.push(
+        `LOOP WARNING: You have been bouncing between ${loopedLabels}. ` +
+          `Do NOT tap ${loopedLabels} next. ` +
+          `Try a list item, a drawer, a detail row, a "More"/overflow menu, ` +
+          `edge_swipe_back, or a previously-untapped element — even if you are ` +
+          `not certain where it leads.${remainingHubs}`,
+      );
+    }
+  }
+
+  return parts.join("\n").slice(0, 1600);
+}
+
+/**
+ * Phase 4: count taps on well-known hub labels within LOOP_WINDOW_STEPS.
+ * Returns Map<label, count>.
+ *
+ * @param {TrajectoryMemory} memory
+ * @returns {Map<string, number>}
+ */
+function countRecentHubTaps(memory) {
+  const out = new Map();
+  if (!memory || !Array.isArray(memory.recentActions)) return out;
+  const recent = memory.recentActions.slice(-LOOP_WINDOW_STEPS);
+  for (const a of recent) {
+    if (!a || a.actionType !== "tap") continue;
+    const label = typeof a.targetText === "string" ? a.targetText.trim() : "";
+    if (!label) continue;
+    let matched = null;
+    for (const re of HUB_LABEL_PATTERNS) {
+      if (re.test(label)) {
+        matched = label;
+        break;
+      }
+    }
+    if (!matched) continue;
+    out.set(matched, (out.get(matched) || 0) + 1);
+  }
+  return out;
 }
 
 function truncate(s, n) {
@@ -279,6 +398,12 @@ module.exports = {
   isTapped,
   untappedClickables,
   tappedLabelsOnFp,
+  // Phase 4 (logical fp + anti-loop):
+  uniqueLogicalScreensCount,
+  countRecentHubTaps,
+  HUB_LABEL_PATTERNS,
+  LOOP_WINDOW_STEPS,
+  LOOP_WARN_THRESHOLD,
   DEFAULT_HUBS,
   RECENT_ACTIONS_CAP,
 };

@@ -18,6 +18,7 @@ const assert = require("node:assert/strict");
 const {
   classify,
   computeStructuralFingerprint,
+  computeLogicalFingerprint,
   applyInputTypeShortCircuit,
   createCache,
   HAIKU_MODEL,
@@ -310,4 +311,53 @@ test("classify: second call with same fingerprint hits cache — zero LLM calls"
   );
   assert.ok(third);
   assert.equal(mock.calls.length, 2, "different fingerprint must trigger a fresh LLM call");
+});
+
+// ── Phase 4: logical fingerprint (2026-04-25) ──────────────────────────
+
+test("computeLogicalFingerprint: stable across scroll position / item count variance on the same screen", () => {
+  // Home feed at two different scroll positions — same clickables
+  // (resource-ids, className prefixes) but different bounds / positions.
+  const homeAtTop = parseClickableGraph(wrap(
+    node({ resourceId: "com.app:id/feed_item", cls: "com.app.FeedCard", bounds: "[40,200][1040,400]" }),
+    node({ resourceId: "com.app:id/feed_item", cls: "com.app.FeedCard", bounds: "[40,410][1040,610]" }),
+    node({ resourceId: "com.app:id/feed_item", cls: "com.app.FeedCard", bounds: "[40,620][1040,820]" }),
+    node({ resourceId: "com.app:id/nav_home", cls: "androidx.compose.material.BottomNavigationItem", bounds: "[0,2280][270,2400]" }),
+  ));
+  const homeAfterScroll = parseClickableGraph(wrap(
+    // Different number of cards visible, different y positions — same classes/rids.
+    node({ resourceId: "com.app:id/feed_item", cls: "com.app.FeedCard", bounds: "[40,800][1040,1000]" }),
+    node({ resourceId: "com.app:id/feed_item", cls: "com.app.FeedCard", bounds: "[40,1010][1040,1210]" }),
+    node({ resourceId: "com.app:id/nav_home", cls: "androidx.compose.material.BottomNavigationItem", bounds: "[0,2280][270,2400]" }),
+  ));
+  const a = computeLogicalFingerprint(homeAtTop, "com.app", "HomeActivity");
+  const b = computeLogicalFingerprint(homeAfterScroll, "com.app", "HomeActivity");
+  assert.equal(a, b, "scroll-position variance must NOT change the logical fp");
+});
+
+test("computeLogicalFingerprint: different screens produce different fps", () => {
+  const home = parseClickableGraph(wrap(
+    node({ resourceId: "com.app:id/feed_item", cls: "com.app.FeedCard", bounds: "[40,200][1040,400]" }),
+    node({ resourceId: "com.app:id/nav_home", cls: "com.app.NavTab", bounds: "[0,2280][270,2400]" }),
+  ));
+  const settings = parseClickableGraph(wrap(
+    node({ resourceId: "com.app:id/settings_row_notifications", cls: "com.app.SettingsRow", bounds: "[40,200][1040,360]" }),
+    node({ resourceId: "com.app:id/settings_row_privacy",     cls: "com.app.SettingsRow", bounds: "[40,380][1040,540]" }),
+  ));
+  const a = computeLogicalFingerprint(home, "com.app", "HomeActivity");
+  const b = computeLogicalFingerprint(settings, "com.app", "SettingsActivity");
+  assert.notEqual(a, b);
+});
+
+test("computeLogicalFingerprint: collapses className prefixes (same first-2-segments)", () => {
+  // Different exact classNames but same prefix — should produce same fp.
+  const a = parseClickableGraph(wrap(
+    node({ resourceId: "com.app:id/card", cls: "com.app.FeedCard", bounds: "[40,200][1040,400]" }),
+  ));
+  const b = parseClickableGraph(wrap(
+    node({ resourceId: "com.app:id/card", cls: "com.app.FeedItemView", bounds: "[40,200][1040,400]" }),
+  ));
+  const fpA = computeLogicalFingerprint(a, "com.app", "HomeActivity");
+  const fpB = computeLogicalFingerprint(b, "com.app", "HomeActivity");
+  assert.equal(fpA, fpB, "className prefix collapse (com.app) should yield same logical fp");
 });
