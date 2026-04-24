@@ -69,6 +69,11 @@ cacheMock(nodePath.join(jobsDir, "store"), mockStore);
 const mockEmulatorManager = {
   bootEmulator: mock.fn(async () => {}),
   installApk: mock.fn(() => {}),
+  // Sprint-Commit-1 (2026-04-24): runner.js now calls relaunchApp() for the
+  // initial launch and V17 agent-loop calls it for drift recovery. The mock
+  // needs both entry points or processJob's `relaunchApp(...)` returns
+  // undefined-is-not-a-function instead of {true}.
+  relaunchApp: mock.fn(() => true),
   killEmulator: mock.fn(() => {}),
   resetEmulator: mock.fn(async () => true),
 };
@@ -376,7 +381,7 @@ describe("runner.js — processJob", () => {
     }
   });
 
-  it("pm clear runs BEFORE 'am start' so launch observes a clean data dir", async () => {
+  it("pm clear runs BEFORE app launch so launch observes a clean data dir", async () => {
     const jobId = "test-job-ordering";
     const apkPath = nodePath.join(os.tmpdir(), "test-ordering.apk");
     fs.writeFileSync(apkPath, Buffer.from([0x50, 0x4B, 0x03, 0x04, ...Buffer.from("fake-apk")]));
@@ -384,20 +389,25 @@ describe("runner.js — processJob", () => {
     try {
       await processJob(jobId, apkPath, { email: "test@example.com" });
 
-      // pm clear goes through execFileSync; am start goes through execSync.
-      // Cross-mock order is captured in the shared `execOrder` array.
-      const pmClearIndex = execOrder.findIndex(
+      // Sprint Commit-1 (2026-04-24): app launch moved from an inline
+      // adb shell am start call into the emulator-manager helper
+      // relaunchApp(pkg, activity). Ordering is still "pm clear, then
+      // launch" per runner.js control flow, but the two calls now live
+      // in different modules. pm clear still shows up in execOrder;
+      // launch shows up on the mocked relaunchApp's call list.
+      const pmClearCall = execOrder.find(
         (e) => e.kind === "execFileSync" && e.cmd === "adb" && e.args && e.args[1] === "pm" && e.args[2] === "clear",
       );
-      const amStartIndex = execOrder.findIndex(
-        (e) => e.kind === "execSync" && typeof e.cmd === "string" && e.cmd.includes("am start"),
-      );
-
-      assert.ok(pmClearIndex >= 0, "expected a pm clear call");
-      assert.ok(amStartIndex >= 0, "expected an am start call");
+      assert.ok(pmClearCall, "expected a pm clear call in execOrder");
       assert.ok(
-        pmClearIndex < amStartIndex,
-        `pm clear (index=${pmClearIndex}) must precede am start (index=${amStartIndex})`,
+        mockEmulatorManager.relaunchApp.mock.callCount() >= 1,
+        "expected relaunchApp to be called for initial launch",
+      );
+      const launchCall = mockEmulatorManager.relaunchApp.mock.calls[0];
+      assert.equal(
+        launchCall.arguments[0],
+        "com.test.app",
+        "relaunchApp should be called with the detected package name",
       );
     } finally {
       try { fs.unlinkSync(apkPath); } catch (_) {}
