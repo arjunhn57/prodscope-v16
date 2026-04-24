@@ -43,8 +43,17 @@ const PRESS_BACK_SAFE_SCREEN_TYPES = new Set([
   "other",    // uncategorised, give the LLM benefit of the doubt
 ]);
 
-/** Phase 2b: intents LLMFallback may tap. Mirror of EXPLORATION_INTENTS. */
-const FALLBACK_ALLOWED_INTENTS = new Set(["navigate", "read_only"]);
+/**
+ * Phase 2b: intents LLMFallback may tap. Includes "unknown" — the silence-
+ * default (v18/semantic-classifier.js mergeClassifications) tags nodes the
+ * classifier didn't enumerate as unknown, and on many biztoso screens that's
+ * most of the graph. Rejecting all unknown taps blocks progress and causes
+ * wait-stacks that v17's consecutive-identical guard escalates to press_back
+ * → drift (see run 09eb85c3, 2026-04-24).
+ *
+ * Only "write" and "destructive" are definitively blocked here.
+ */
+const FALLBACK_ALLOWED_INTENTS = new Set(["navigate", "read_only", "unknown"]);
 
 /**
  * Derive a compact screen signature from the XML. The returned object is
@@ -138,27 +147,39 @@ function findClickableAt(clickables, x, y) {
 }
 
 /**
- * Pick the safest alternative action for this screen when the LLM's choice
- * violates the plan. Preference order:
- *   1. Highest-priority navigate/read_only clickable → tap it.
- *   2. Otherwise → wait (lets the next classifier pass re-plan).
+ * Pick the safest alternative tap action for this screen when the LLM's
+ * choice violates the plan. Tiered preference:
+ *   1. Highest-priority navigate-intent clickable.
+ *   2. Highest-priority read_only-intent clickable.
+ *   3. Highest-priority unknown-intent clickable (benefit of the doubt).
+ *
+ * Returns null if no non-write/destructive clickable exists. Callers should
+ * treat null as "let the original action pass through" — emitting `wait`
+ * here caused wait-stacks (3 consecutive waits → v17 forces press_back →
+ * drift, see run 09eb85c3).
  *
  * @param {Array<object>} classifiedClickables
- * @returns {{type:string, x?:number, y?:number, targetText?:string, ms?:number}}
+ * @returns {{type:'tap', x:number, y:number, targetText?:string}|null}
  */
 function pickSafeAlternative(classifiedClickables) {
   if (!Array.isArray(classifiedClickables) || classifiedClickables.length === 0) {
-    return { type: "wait", ms: 1500 };
+    return null;
   }
-  const alternatives = classifiedClickables
-    .filter((c) => c && FALLBACK_ALLOWED_INTENTS.has(c.intent))
-    .slice()
-    .sort((a, b) => (b.priority || 0) - (a.priority || 0));
-  if (alternatives.length === 0) return { type: "wait", ms: 1500 };
-  const safe = alternatives[0];
-  const action = { type: "tap", x: safe.cx, y: safe.cy };
-  if (safe.label) action.targetText = safe.label;
-  return action;
+  // Tier by intent. Within a tier, pick highest priority.
+  const tiers = ["navigate", "read_only", "unknown"];
+  for (const intent of tiers) {
+    const candidates = classifiedClickables
+      .filter((c) => c && c.intent === intent)
+      .slice()
+      .sort((a, b) => (b.priority || 0) - (a.priority || 0));
+    if (candidates.length > 0) {
+      const safe = candidates[0];
+      const action = { type: "tap", x: safe.cx, y: safe.cy };
+      if (safe.label) action.targetText = safe.label;
+      return action;
+    }
+  }
+  return null;
 }
 
 /**
@@ -180,14 +201,26 @@ function validateAgainstPlan(action, deps) {
     : [];
 
   // Rule 1: tap on a write/destructive-intent clickable → override.
+  // Pass through on unknown intent — silence-default tags many valid taps
+  // as unknown on partially-classified screens.
   if (action.type === "tap") {
     const hit = findClickableAt(classifiedClickables, action.x, action.y);
     if (hit && hit.intent && !FALLBACK_ALLOWED_INTENTS.has(hit.intent)) {
       const safe = pickSafeAlternative(classifiedClickables);
+      if (safe) {
+        return {
+          action: safe,
+          overridden: true,
+          reason: `tap_on_${hit.intent}_intent:${hit.label || hit.resourceId || "unknown"}`,
+        };
+      }
+      // No safer tap exists. Let the original pass — a single write-tap that
+      // drifts to another app is recoverable (drift guard + relaunchApp).
+      // Substituting `wait` caused wait-stacks → forced press_back → drift.
       return {
-        action: safe,
-        overridden: true,
-        reason: `tap_on_${hit.intent}_intent:${hit.label || hit.resourceId || "unknown"}`,
+        action,
+        overridden: false,
+        reason: `pass_through_no_safe_alt_after_tap_on_${hit.intent}`,
       };
     }
   }
@@ -202,10 +235,20 @@ function validateAgainstPlan(action, deps) {
     !PRESS_BACK_SAFE_SCREEN_TYPES.has(plan.screenType)
   ) {
     const safe = pickSafeAlternative(classifiedClickables);
+    if (safe) {
+      return {
+        action: safe,
+        overridden: true,
+        reason: `press_back_on_${plan.screenType}_screen`,
+      };
+    }
+    // No safer tap exists. Press_back will drift to the launcher and trip
+    // drift guard — but that's still preferable to wait-stack-loop, and
+    // the drift counter caps terminate cleanly.
     return {
-      action: safe,
-      overridden: true,
-      reason: `press_back_on_${plan.screenType}_screen`,
+      action,
+      overridden: false,
+      reason: `pass_through_no_safe_alt_for_press_back_on_${plan.screenType}`,
     };
   }
 
