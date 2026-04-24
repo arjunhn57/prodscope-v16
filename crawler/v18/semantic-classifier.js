@@ -99,6 +99,23 @@ const VALID_SCREEN_TYPES = [
 const VALID_SCREEN_TYPES_SET = new Set(VALID_SCREEN_TYPES);
 
 /**
+ * Engine-level actions — LLM-decided, evaluated by the dispatcher BEFORE
+ * drivers run. Replaces the historical DRIFT_ALLOWLIST + press_back regex
+ * guardrails. The LLM looking at a screenshot knows instantly that it's
+ * the Android launcher or Chrome; no package-name list needed.
+ *
+ * - "proceed": normal dispatch. Drivers run on the classified clickables.
+ * - "relaunch": we're on the wrong app (launcher, browser, dialer, ...).
+ *   Emit launch_app for the target package, bypass drivers.
+ * - "press_back": this screen is a dead-end or we mis-navigated here.
+ *   Emit press_back, bypass drivers.
+ * - "wait": something is loading (empty tree, spinner, splash). Emit a
+ *   short wait.
+ */
+const VALID_ENGINE_ACTIONS = ["proceed", "relaunch", "press_back", "wait"];
+const VALID_ENGINE_ACTIONS_SET = new Set(VALID_ENGINE_ACTIONS);
+
+/**
  * Anthropic tool_use schema. One call → per-node and screen-level fields.
  */
 const CLASSIFY_TOOL = {
@@ -121,6 +138,14 @@ const CLASSIFY_TOOL = {
       action_budget: { type: "integer", minimum: 1, maximum: 20 },
       exit_condition: { type: "string" },
       confidence: { type: "number" },
+      // Phase 2: engine-level decision evaluated BEFORE drivers run.
+      engine_action: {
+        type: "string",
+        enum: VALID_ENGINE_ACTIONS,
+        description:
+          "'proceed' (default) lets drivers run. 'relaunch' when this screen is NOT the target app (launcher, browser, dialer, another app). 'press_back' when this is a dead-end. 'wait' when content is still loading.",
+      },
+      engine_action_reason: { type: "string" },
       nodes: {
         type: "array",
         items: {
@@ -197,6 +222,21 @@ Intent rules:
 
 ── Per-node priority ──
 - priority: 0-10, higher = tap-first. Assign 8-10 to promising navigate targets (nav tabs, feed items, new hubs). Assign 0 to write / destructive items so the filter drops them early.
+
+── Engine action (engine_action) — CRITICAL ──
+You ALSO decide what the engine should do BEFORE drivers run. Pick ONE:
+
+- "relaunch": the screen is NOT the target app. This happens when the user pressed back out of the app, or an intent handoff took us to a browser / launcher / dialer / another app entirely. Obvious signals: home-screen launcher dock (3-5 rows of app icons, "Google app" pill), Chrome address bar, Google Discover feed with news headlines, dialer number pad, the generic Android "All apps" drawer. The target package is provided — compare it to what you see. If they don't match, relaunch.
+
+- "press_back": the current screen is a dead-end (empty state, error page, "content not available", end-of-list with no navigation) AND we reached it by mistake (e.g., tapped a broken link). This is rare — prefer "proceed" and let the driver decide whether to back-nav.
+
+- "wait": the screen shows a loading indicator, splash, or transient empty tree. Give the UI a moment to settle.
+
+- "proceed" (DEFAULT): normal case. Drivers should run on this screen.
+
+Rule of thumb: if the screen IS the target app (any screen, any depth), use "proceed". Only deviate when the screen is structurally wrong (not the target app) or temporarily invalid (loading, dead-end). When in doubt, "proceed" — drivers and LLMFallback can recover.
+
+Output engine_action_reason as one short sentence. Not a full paragraph.
 
 Be conservative on budgets (small numbers) — the dispatcher will re-plan when budgets run out. Be generous on classifications — mark every clickable.`;
 
@@ -388,6 +428,21 @@ function validatePlan(toolInput, clickableCount, fingerprint) {
     }
   }
 
+  // Phase 2: engine_action — LLM decides what the engine should do BEFORE
+  // drivers run. Optional with "proceed" default to preserve backwards-compat
+  // with older Haiku responses that predate the schema extension.
+  let engineAction = "proceed";
+  if (typeof toolInput.engine_action === "string") {
+    if (VALID_ENGINE_ACTIONS_SET.has(toolInput.engine_action)) {
+      engineAction = toolInput.engine_action;
+    }
+    // Silently ignore invalid values — default "proceed" is the safe choice.
+  }
+  const engineActionReason =
+    typeof toolInput.engine_action_reason === "string"
+      ? toolInput.engine_action_reason.slice(0, 200)
+      : undefined;
+
   return {
     screenType: toolInput.screen_type,
     screenSummary: typeof toolInput.screen_summary === "string" ? toolInput.screen_summary.slice(0, 240) : undefined,
@@ -395,6 +450,8 @@ function validatePlan(toolInput, clickableCount, fingerprint) {
     actionBudget,
     exitCondition: typeof toolInput.exit_condition === "string" ? toolInput.exit_condition.slice(0, 200) : undefined,
     confidence,
+    engineAction,
+    engineActionReason,
     fingerprint,
     nodeClassifications,
   };
@@ -402,9 +459,10 @@ function validatePlan(toolInput, clickableCount, fingerprint) {
 
 /**
  * Build the Haiku request. Includes:
- *   - System prompt (intent + role + screen type rules).
- *   - User content: XML (truncated to ~8k), screenshot (optional), trajectory
- *     summary (optional, ≤300 tokens).
+ *   - System prompt (intent + role + screen type + engine action rules).
+ *   - User content: target package (for engine_action=relaunch comparison),
+ *     XML (truncated to ~8k), screenshot (optional), trajectory summary
+ *     (optional, ≤300 tokens).
  *
  * @param {ClickableGraph} graph
  * @param {string} xmlText
@@ -435,8 +493,12 @@ function buildRequest(graph, xmlText, observation, screenshotBlock) {
   const textBlock = {
     type: "text",
     text: JSON.stringify({
+      // Current observed package — derived from adb / XML fallback.
       package: (observation && observation.packageName) || "",
       activity: (observation && observation.activity) || "",
+      // Target package the crawl is supposed to stay in. Compare this to
+      // `package` above when deciding engine_action (relaunch if mismatched).
+      targetPackage: (observation && observation.targetPackage) || "",
       trajectorySummary,
       nodes: nodesForPrompt,
       xmlExcerpt: truncatedXml,
@@ -553,6 +615,7 @@ function buildDefaultPlan(clickables, fingerprint) {
     actionBudget: 3,
     exitCondition: "explore conservatively, then move to next hub",
     confidence: 0.0, // forces Sonnet escalation if anyone checks
+    engineAction: "proceed", // default — let drivers + LLMFallback handle it
     fingerprint,
     nodeClassifications: shortCircuited,
   };
@@ -602,6 +665,7 @@ async function classifyScreen(graph, observation, xmlText, deps = {}) {
       // These screens are benign and the cost of a wrong intent tag is nil
       // because no homogeneous write-shaped clusters are present to filter.
       confidence: 1.0,
+      engineAction: "proceed",
       fingerprint,
       nodeClassifications: shortCircuited,
     };
@@ -669,4 +733,6 @@ module.exports = {
   VALID_INTENTS_SET,
   VALID_SCREEN_TYPES,
   VALID_SCREEN_TYPES_SET,
+  VALID_ENGINE_ACTIONS,
+  VALID_ENGINE_ACTIONS_SET,
 };

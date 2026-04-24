@@ -406,6 +406,78 @@ test("applyInputTypeShortCircuit: deterministic classification of password/email
 
 // ── Fingerprint stability (regression guard shared with v17) ──────────
 
+// ── Phase 2: engine_action round-trip (2026-04-24) ─────────────────────
+
+test("classifyScreen: engine_action=relaunch round-trips from Haiku response", async () => {
+  const graph = parseClickableGraph(biztosoCommentListXml);
+  const planFromHaiku = {
+    screen_type: "other",
+    screen_summary: "Android launcher home screen (drifted out of target app)",
+    allowed_intents: ["navigate"],
+    action_budget: 1,
+    confidence: 0.95,
+    engine_action: "relaunch",
+    engine_action_reason: "observed package is com.google.android.apps.nexuslauncher, not the target",
+    nodes: graph.clickables.map((c, i) => ({ nodeIndex: i, role: "content", intent: "navigate", priority: 3 })),
+  };
+  const client = makeMockClient([planFromHaiku]);
+  const { plan } = await classifyScreen(
+    graph,
+    { packageName: "com.google.android.apps.nexuslauncher", targetPackage: "com.biztoso.app" },
+    biztosoCommentListXml,
+    { anthropic: client, cache: createCache() },
+  );
+  assert.equal(plan.engineAction, "relaunch");
+  assert.ok(plan.engineActionReason && plan.engineActionReason.length > 0);
+});
+
+test("classifyScreen: engine_action omitted → defaults to 'proceed' (backwards compat)", async () => {
+  const graph = parseClickableGraph(biztosoCommentListXml);
+  const planWithoutEngineAction = {
+    screen_type: "feed",
+    allowed_intents: ["navigate", "read_only"],
+    action_budget: 3,
+    confidence: 0.9,
+    nodes: graph.clickables.map((c, i) => ({ nodeIndex: i, role: "content", intent: "navigate", priority: 5 })),
+    // no engine_action
+  };
+  const client = makeMockClient([planWithoutEngineAction]);
+  const { plan } = await classifyScreen(
+    graph,
+    { packageName: "com.biztoso", targetPackage: "com.biztoso" },
+    biztosoCommentListXml,
+    { anthropic: client, cache: createCache() },
+  );
+  assert.equal(plan.engineAction, "proceed");
+});
+
+test("classifyScreen: invalid engine_action value is silently coerced to 'proceed'", async () => {
+  const graph = parseClickableGraph(biztosoCommentListXml);
+  const plan = {
+    screen_type: "feed",
+    allowed_intents: ["navigate"],
+    action_budget: 3,
+    confidence: 0.9,
+    engine_action: "launch_nukes", // invalid
+    nodes: [],
+  };
+  const client = makeMockClient([plan]);
+  const { plan: parsed } = await classifyScreen(
+    graph,
+    { packageName: "com.biztoso", targetPackage: "com.biztoso" },
+    biztosoCommentListXml,
+    { anthropic: client, cache: createCache() },
+  );
+  assert.equal(parsed.engineAction, "proceed");
+});
+
+test("buildDefaultPlan: sets engineAction='proceed' so dispatcher runs drivers normally on fallback", () => {
+  const plan = buildDefaultPlan([], "abc123");
+  assert.equal(plan.engineAction, "proceed");
+});
+
+// ── Legacy regression guard ────────────────────────────────────────────
+
 test("computeStructuralFingerprint: stable across different dynamic text", () => {
   const a = parseClickableGraph(
     wrap(

@@ -151,6 +151,135 @@ test("dispatch: mixed intents → navigate-tagged Home is picked, write-tagged P
 
 // ── 4. Compose sheet with "Close sheet" → DismissDriver takes it ──
 
+// ── Phase 2: engine_action routing — LLM-decided, BEFORE drivers run ──
+
+test("dispatch: engine_action=relaunch → emits launch_app, drivers never run", async () => {
+  // Screen is the Android launcher (we've drifted). Haiku decides relaunch.
+  const xml = wrap(
+    n({ text: "Phone",    rid: "com.google.android.apps.nexuslauncher:id/phone",    bounds: "[0,2280][216,2400]", cls: "android.widget.TextView" }),
+    n({ text: "Messages", rid: "com.google.android.apps.nexuslauncher:id/messages", bounds: "[216,2280][432,2400]", cls: "android.widget.TextView" }),
+    n({ text: "Chrome",   rid: "com.google.android.apps.nexuslauncher:id/chrome",   bounds: "[432,2280][648,2400]", cls: "android.widget.TextView" }),
+    n({ text: "Camera",   rid: "com.google.android.apps.nexuslauncher:id/camera",   bounds: "[648,2280][864,2400]", cls: "android.widget.TextView" }),
+    n({ text: "Settings", rid: "com.google.android.apps.nexuslauncher:id/settings", bounds: "[864,2280][1080,2400]", cls: "android.widget.TextView" }),
+  );
+  const plan = {
+    screen_type: "other",
+    screen_summary: "Android home launcher — drifted out of target app",
+    allowed_intents: ["navigate"],
+    action_budget: 1,
+    confidence: 0.95,
+    engine_action: "relaunch",
+    engine_action_reason: "launcher package, not target",
+    nodes: [],
+  };
+  const anthropic = makeMockAnthropic([plan]);
+  const driverCalls = [];
+  const spyDriver = {
+    name: "SpyDriver",
+    claim: () => { driverCalls.push("claim"); return true; },
+    decide: () => { driverCalls.push("decide"); return { type: "tap", x: 0, y: 0 }; },
+  };
+  const r = await dispatch(
+    { xml, packageName: "com.google.android.apps.nexuslauncher", targetPackage: "com.biztoso.app" },
+    {},
+    {
+      anthropic,
+      classifierCache: new Map(),
+      targetPackage: "com.biztoso.app",
+      drivers: [spyDriver],
+    },
+  );
+  assert.equal(r.action.type, "launch_app");
+  assert.equal(r.driver, "EngineAction:relaunch");
+  assert.deepEqual(driverCalls, [], "drivers must NOT be consulted when engineAction=relaunch");
+});
+
+test("dispatch: engine_action=press_back → emits press_back, drivers never run", async () => {
+  const xml = wrap(
+    n({ text: "Page not found", rid: "com.app:id/error", bounds: "[40,400][1040,600]", cls: "android.widget.TextView" }),
+    n({ text: "OK", rid: "com.app:id/ok", bounds: "[400,800][680,900]" }),
+    n({ text: "Retry", rid: "com.app:id/retry", bounds: "[400,950][680,1050]" }),
+  );
+  const plan = {
+    screen_type: "error",
+    allowed_intents: ["navigate"],
+    action_budget: 1,
+    confidence: 0.9,
+    engine_action: "press_back",
+    engine_action_reason: "dead-end error screen with no new navigation",
+    nodes: [],
+  };
+  const anthropic = makeMockAnthropic([plan]);
+  let driverClaimCalled = false;
+  const spyDriver = {
+    name: "SpyDriver",
+    claim: () => { driverClaimCalled = true; return true; },
+    decide: () => ({ type: "tap", x: 0, y: 0 }),
+  };
+  const r = await dispatch(
+    { xml, packageName: "com.app", targetPackage: "com.app" },
+    {},
+    { anthropic, classifierCache: new Map(), targetPackage: "com.app", drivers: [spyDriver] },
+  );
+  assert.equal(r.action.type, "press_back");
+  assert.equal(r.driver, "EngineAction:press_back");
+  assert.equal(driverClaimCalled, false, "drivers must NOT be consulted when engineAction=press_back");
+});
+
+test("dispatch: engine_action=wait → emits wait action", async () => {
+  const xml = wrap(
+    n({ text: "Loading", rid: "com.app:id/loader", bounds: "[0,0][1080,2400]", cls: "android.widget.ProgressBar" }),
+    n({ text: "Please wait", rid: "com.app:id/msg", bounds: "[100,1000][980,1100]" }),
+    n({ text: "", rid: "com.app:id/spinner", bounds: "[480,1200][600,1320]" }),
+  );
+  const plan = {
+    screen_type: "other",
+    allowed_intents: ["navigate"],
+    action_budget: 1,
+    confidence: 0.95,
+    engine_action: "wait",
+    engine_action_reason: "loading spinner visible",
+    nodes: [],
+  };
+  const anthropic = makeMockAnthropic([plan]);
+  const r = await dispatch(
+    { xml, packageName: "com.app", targetPackage: "com.app" },
+    {},
+    { anthropic, classifierCache: new Map(), targetPackage: "com.app" },
+  );
+  assert.equal(r.action.type, "wait");
+  assert.equal(r.action.ms, 1500);
+  assert.equal(r.driver, "EngineAction:wait");
+});
+
+test("dispatch: engine_action=proceed (default) → drivers dispatch normally", async () => {
+  const xml = wrap(
+    n({ text: "Home",    rid: "com.app:id/nav_home",    cls: "com.google.android.material.bottomnavigation.BottomNavigationItemView", bounds: "[0,2280][270,2400]" }),
+    n({ text: "Search",  rid: "com.app:id/nav_search",  cls: "com.google.android.material.bottomnavigation.BottomNavigationItemView", bounds: "[270,2280][540,2400]" }),
+    n({ text: "Profile", rid: "com.app:id/nav_profile", cls: "com.google.android.material.bottomnavigation.BottomNavigationItemView", bounds: "[540,2280][810,2400]" }),
+  );
+  const plan = {
+    screen_type: "feed",
+    allowed_intents: ["navigate", "read_only"],
+    action_budget: 3,
+    confidence: 0.9,
+    engine_action: "proceed",
+    nodes: [
+      { nodeIndex: 0, role: "nav_tab", intent: "navigate", priority: 9 },
+      { nodeIndex: 1, role: "nav_tab", intent: "navigate", priority: 9 },
+      { nodeIndex: 2, role: "nav_tab", intent: "navigate", priority: 9 },
+    ],
+  };
+  const anthropic = makeMockAnthropic([plan]);
+  const r = await dispatch(
+    { xml, packageName: "com.app", targetPackage: "com.app" },
+    {},
+    { anthropic, classifierCache: new Map(), targetPackage: "com.app" },
+  );
+  assert.equal(r.driver, "ExplorationDriver");
+  assert.equal(r.action.type, "tap");
+});
+
 test("dispatch: compose sheet with a close affordance → DismissDriver acts, not Exploration", async () => {
   const xml = wrap(
     n({ text: "Close sheet", rid: "com.app:id/close", desc: "Close sheet", cls: "android.widget.Button", bounds: "[40,100][200,180]" }),
