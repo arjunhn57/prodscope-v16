@@ -23,7 +23,23 @@ module.exports = {
   COVERED_UNIQUE_SCREENS: 2,      // unique screens needed for "covered" status
 
   // Oracle/triage thresholds (Week 4)
-  MAX_AI_TRIAGE_SCREENS: 5,       // max screens sent to AI vision analysis (reduced from 8 — most apps have 3-4 distinct screen types)
+  // MAX_AI_TRIAGE_SCREENS is the legacy cap on per-screen deep analysis.
+  // Phase 3.1 introduced a 3-stage oracle: Stage 1 ranks all screens cheaply
+  // (no image), Stage 2 deep-analyzes the top K (with image), Stage 3
+  // synthesizes. MAX_DEEP_ANALYZE_SCREENS is the new Stage 2 cap.
+  // MAX_AI_TRIAGE_SCREENS stays as a fallback for the pre-Stage-1 code path
+  // until everything's wired — do NOT delete yet.
+  MAX_AI_TRIAGE_SCREENS: 5,
+  MAX_DEEP_ANALYZE_SCREENS: Number(process.env.MAX_DEEP_ANALYZE_SCREENS) || 10,
+  // Feature flag: setting ORACLE_STAGE1_ENABLED=false bypasses Stage 1 and
+  // the Stage 3 high-signal router, falling back to the legacy unconditional
+  // Sonnet pipeline. This is the documented rollback path for Phase 3.1.
+  ORACLE_STAGE1_ENABLED: process.env.ORACLE_STAGE1_ENABLED !== "false",
+  // If every published critical_bug has confidence >= this threshold AND
+  // there are at least 3 of them, Stage 3 skips Sonnet and renders a
+  // deterministic narrative from the Stage 2 tool-use schema.
+  SONNET_SKIP_CONFIDENCE_THRESHOLD: Number(process.env.SONNET_SKIP_CONFIDENCE_THRESHOLD) || 0.8,
+  SONNET_SKIP_MIN_CRITICAL_BUGS: Number(process.env.SONNET_SKIP_MIN_CRITICAL_BUGS) || 3,
   ACCESSIBILITY_MIN_TAP_DP: 48,   // minimum tap target size in dp
   SLOW_RESPONSE_THRESHOLD_MS: 12000, // screen transition > 12s = slow (emulator is inherently slow)
 
