@@ -167,11 +167,32 @@ function installApk(apkPath) {
     // Second attempt: if it's still failing, try an explicit uninstall of
     // the target package first to defeat stubborn signature / test-only /
     // profile-owner collisions that -r -d alone can't resolve.
-    const pkgMatch = err && err.message && err.message.match(/INSTALL_FAILED[^/]*\b([a-z][a-z0-9_.]+)\b/i);
-    if (pkgMatch) {
+    //
+    // Extraction: adb writes messages like `Existing package org.wikipedia
+    // signatures do not match` or `Package com.foo.bar is already installed`.
+    // Require a java-style DOTTED identifier so we can't mis-extract ordinary
+    // English words ("ignoring", "signatures", etc.). Falls back to parsing
+    // the APK manifest if no dotted package name is found in the error.
+    const dottedPkgRe = /\b([a-z][a-z0-9_]+(?:\.[a-z0-9_]+)+)\b/i;
+    let blockingPkg = null;
+    const errStr = (err && err.message) || "";
+    const pkgFromErr = errStr.match(dottedPkgRe);
+    if (pkgFromErr) blockingPkg = pkgFromErr[1];
+    // Manifest fallback — if the error didn't name a package, parse the APK
+    // we're about to install. Cheap aapt2 call, authoritative answer.
+    if (!blockingPkg) {
       try {
-        execFileSync("adb", ["uninstall", pkgMatch[1]], { timeout: 15000, stdio: "ignore" });
-        log.info({ package: pkgMatch[1] }, "Force-uninstalled blocking package before retry");
+        const badging = execFileSync("aapt2", ["dump", "badging", apkPath], {
+          timeout: 15000, encoding: "utf-8",
+        });
+        const m = badging.match(/package:\s+name='([^']+)'/);
+        if (m) blockingPkg = m[1];
+      } catch (_) { /* aapt2 may not be on PATH on every box — swallow */ }
+    }
+    if (blockingPkg) {
+      try {
+        execFileSync("adb", ["uninstall", blockingPkg], { timeout: 15000, stdio: "ignore" });
+        log.info({ package: blockingPkg }, "Force-uninstalled blocking package before retry");
       } catch (_) {}
     }
     execFileSync("adb", args, { timeout: 120000 });
