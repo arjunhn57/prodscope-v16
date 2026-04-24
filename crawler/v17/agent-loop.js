@@ -91,18 +91,22 @@ const AUTH_LOOP_FP_THRESHOLD = 4;
 // genuinely belongs outside itself (e.g. pure launcher wrapper) terminates
 // cleanly with `package_drift_unrecoverable` instead of looping forever.
 const MAX_PACKAGE_DRIFT_RECOVERIES = 4;
-// Packages that can legitimately be foreground without counting as drift:
-// system permission dialogs, the home launcher (brief transit), IME.
-// PermissionDriver already handles the permission controller; we just don't
-// want the drift guard to fire on it.
+// Packages that legitimately overlay the target app without counting as
+// drift: permission dialogs, IME, systemui. PermissionDriver handles the
+// permission controller; we just don't want the drift guard to fire on it.
+//
+// The Android launchers are DELIBERATELY EXCLUDED (was a bug pre-2026-04-24,
+// run cf973bc5): every actual observation of the launcher means we're
+// parked there, not passing through — the "brief transit" the original
+// comment invoked is <500ms and never captured by a step. Allowing the
+// launcher let the structural-bottom-bar detector tap dock icons (Google
+// app / Chrome / etc), bouncing the crawl between biztoso and Google
+// Discover until the drift-recovery cap terminated the run.
 const DRIFT_ALLOWLIST = new Set([
   "com.google.android.permissioncontroller",
   "com.android.permissioncontroller",
   "com.google.android.packageinstaller",
   "com.android.packageinstaller",
-  "com.google.android.apps.nexuslauncher", // Pixel launcher
-  "com.android.launcher",
-  "com.android.launcher3",
   "com.google.android.inputmethod.latin", // Gboard
   "com.android.inputmethod.latin",
   "com.android.systemui",
