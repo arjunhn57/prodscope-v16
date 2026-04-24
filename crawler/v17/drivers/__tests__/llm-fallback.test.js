@@ -186,19 +186,57 @@ test("validateAgainstPlan: press_back when engine_action=press_back → passes (
   assert.equal(r.overridden, false);
 });
 
-test("validateAgainstPlan: no safe alternative → falls back to wait action", () => {
-  // Only write-intent clickables on screen.
+test("validateAgainstPlan: no safe alternative → pass through original (no wait-stack)", () => {
+  // Only write-intent clickables on screen — no safer tap exists.
+  // Regression for run 09eb85c3 (2026-04-24): returning `wait` here stacked
+  // three consecutive waits, tripped v17's consecutive-identical guard,
+  // forced press_back, drifted to launcher. Now we pass the original tap
+  // through; a single write-tap drift is recoverable via drift guard.
   const classifiedClickables = [
     makeClickable({ x1: 40, y1: 400, x2: 240, y2: 680, intent: "write", label: "Post" }),
     makeClickable({ x1: 300, y1: 400, x2: 500, y2: 680, intent: "write", label: "Like" }),
   ];
   const plan = { screenType: "compose", allowedIntents: ["navigate"], engineAction: "proceed" };
+  const original = { type: "tap", x: 140, y: 540, targetText: "Post" };
+  const r = validateAgainstPlan(original, { plan, classifiedClickables });
+  assert.equal(r.overridden, false, "must not substitute wait when no safer tap exists");
+  assert.deepEqual(r.action, original);
+  assert.ok(r.reason && r.reason.startsWith("pass_through_no_safe_alt"));
+});
+
+test("validateAgainstPlan: unknown-intent tap passes through (not overridden)", () => {
+  // Silence-default tags un-enumerated clickables as unknown. Rejecting
+  // them all blocked progress (run 09eb85c3). Now they pass.
+  const classifiedClickables = [
+    makeClickable({ x1: 40, y1: 400, x2: 1040, y2: 600, intent: "unknown", label: "Some card" }),
+  ];
+  const plan = { screenType: "feed", allowedIntents: ["navigate", "read_only"], engineAction: "proceed" };
   const r = validateAgainstPlan(
-    { type: "tap", x: 140, y: 540, targetText: "Post" },
+    { type: "tap", x: 540, y: 500, targetText: "Some card" },
     { plan, classifiedClickables },
   );
-  assert.equal(r.overridden, true);
-  assert.equal(r.action.type, "wait");
+  assert.equal(r.overridden, false);
+});
+
+test("pickSafeAlternative: prefers navigate, then read_only, then unknown — never write", () => {
+  const list = [
+    makeClickable({ x1: 0, y1: 0, x2: 100, y2: 100, intent: "write", priority: 10, label: "Send" }),
+    makeClickable({ x1: 0, y1: 200, x2: 100, y2: 300, intent: "unknown", priority: 9, label: "Mystery" }),
+    makeClickable({ x1: 0, y1: 400, x2: 100, y2: 500, intent: "read_only", priority: 5, label: "Expand" }),
+    makeClickable({ x1: 0, y1: 600, x2: 100, y2: 700, intent: "navigate", priority: 3, label: "Home" }),
+  ];
+  const r = pickSafeAlternative(list);
+  // Navigate tier comes first even though its priority is lowest.
+  assert.equal(r.targetText, "Home");
+});
+
+test("pickSafeAlternative: returns null when only write/destructive present (no wait fallback)", () => {
+  const list = [
+    makeClickable({ x1: 0, y1: 0, x2: 100, y2: 100, intent: "write", label: "Post" }),
+    makeClickable({ x1: 200, y1: 0, x2: 300, y2: 100, intent: "destructive", label: "Delete" }),
+  ];
+  const r = pickSafeAlternative(list);
+  assert.equal(r, null);
 });
 
 test("validateAgainstPlan: tap on navigate-intent clickable → passes", () => {
@@ -223,7 +261,8 @@ test("findClickableAt: locates clickable by bounds containment", () => {
   assert.equal(findClickableAt(list, 500, 500), null);
 });
 
-test("pickSafeAlternative: picks highest-priority navigate/read_only clickable", () => {
+test("pickSafeAlternative: picks highest-priority within navigate tier first", () => {
+  // Navigate tier comes before read_only regardless of priority.
   const list = [
     makeClickable({ x1: 0, y1: 0, x2: 100, y2: 100, intent: "write", priority: 10, label: "Send" }),
     makeClickable({ x1: 0, y1: 200, x2: 100, y2: 300, intent: "navigate", priority: 5, label: "Home" }),
@@ -231,5 +270,5 @@ test("pickSafeAlternative: picks highest-priority navigate/read_only clickable",
   ];
   const r = pickSafeAlternative(list);
   assert.equal(r.type, "tap");
-  assert.equal(r.targetText, "Expand"); // highest priority among navigate/read_only
+  assert.equal(r.targetText, "Home"); // navigate tier wins over higher-priority read_only
 });
