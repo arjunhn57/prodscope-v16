@@ -60,10 +60,7 @@ const DEFAULT_SUITE = [
     label: "biztoso",
     pkg: "com.biztoso.app",
     description: "auth-walled; AuthDriver email flow pin",
-    credentials: {
-      email: process.env.GOLDEN_TEST_EMAIL || "aetdummyaccount@gmail.com",
-      password: process.env.GOLDEN_TEST_PASSWORD || "Test@1234",
-    },
+    credentialsFromEnv: true,
     maxSteps: 25,
   },
   {
@@ -295,9 +292,43 @@ function computeSummary(label, pkg, result, durationMs, note) {
   };
 }
 
+/**
+ * Resolve an entry's credentials from env vars when `credentialsFromEnv: true`
+ * is set on the suite entry. No inline plaintext fallback — operators must
+ * set GOLDEN_TEST_EMAIL / GOLDEN_TEST_PASSWORD (or EMAIL / PASSWORD for
+ * backcompat) before invoking the suite. Returns either a credential object
+ * or a skip-note string if the env is not populated.
+ *
+ * Backported from the removed inline fallback (sprint-4.6) so the harness
+ * fails loudly on a missing config rather than silently using a stale
+ * test account that may have been locked or password-rotated.
+ */
+function resolveCredentials(entry) {
+  if (entry.credentials) return { credentials: entry.credentials };
+  if (!entry.credentialsFromEnv) return { credentials: null };
+  const email = process.env.GOLDEN_TEST_EMAIL || process.env.EMAIL;
+  const password = process.env.GOLDEN_TEST_PASSWORD || process.env.PASSWORD;
+  if (!email || !password) {
+    return {
+      credentials: null,
+      skipNote:
+        `credentialsFromEnv: true but GOLDEN_TEST_EMAIL / GOLDEN_TEST_PASSWORD are not set — skipping ${entry.label}`,
+    };
+  }
+  return { credentials: { email, password } };
+}
+
 async function runOneApp(entry) {
-  const { label, pkg, credentials, maxSteps = 20 } = entry;
+  const { label, pkg, maxSteps = 20 } = entry;
   const started = Date.now();
+
+  const credResolution = resolveCredentials(entry);
+  if (credResolution.skipNote) {
+    console.log(`[suite] ${label}: SKIP (${credResolution.skipNote})`);
+    return computeSummary(label, pkg, null, 0, credResolution.skipNote);
+  }
+  const credentials = credResolution.credentials;
+
   const health = await ensureEmulator(label);
   if (!health.ok) {
     const note = "emulator unreachable — adb devices empty after restart attempts";

@@ -3,10 +3,7 @@
     "label": "biztoso",
     "pkg": "com.biztoso.app",
     "description": "auth-walled; AuthDriver email flow",
-    "credentials": {
-      "email": "aetdummyaccount@gmail.com",
-      "password": "Test@1234"
-    },
+    "credentialsFromEnv": true,
     "maxSteps": 25
   },
   {
