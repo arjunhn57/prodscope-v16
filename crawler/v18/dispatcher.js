@@ -1,0 +1,210 @@
+"use strict";
+
+/**
+ * v18/dispatcher.js
+ *
+ * V18 driver-priority dispatcher. One structural change from v17:
+ *
+ *   Before dispatching, we run the v18 semantic classifier ONCE per step.
+ *   Its output (a ScreenPlan + per-node {role, intent, priority}) is
+ *   threaded into each driver via `deps.plan` and `deps.classifiedClickables`.
+ *
+ * V17 drivers that expect `deps.classify` (AuthDriver, DismissDriver)
+ * receive a cached shim that returns the pre-classified clickables in v17's
+ * shape — they keep working unchanged. V18's ExplorationDriver consumes
+ * the new fields directly so it can filter out write/destructive candidates.
+ *
+ * Sonnet escalation fires when plan confidence is low OR when the
+ * stuck-detector reports the crawler is spinning on the same fp-family.
+ * Budget enforced via deps.escalationBudget.
+ */
+
+const PermissionDriver = require("../v17/drivers/permission-driver");
+const CanvasDriver = require("../v17/drivers/canvas-driver");
+const DismissDriver = require("../v17/drivers/dismiss-driver");
+const AuthDriver = require("../v17/drivers/auth-driver");
+const V18ExplorationDriver = require("./drivers/exploration-driver");
+const { parseClickableGraph } = require("../v17/drivers/clickable-graph");
+const { classifyScreen } = require("./semantic-classifier");
+const { escalate, shouldEscalate } = require("./sonnet-escalation");
+const { recordScreen, summarise: summariseTrajectory } = require("./trajectory-memory");
+const { logger } = require("../../lib/logger");
+
+const log = logger.child({ component: "v18-dispatcher" });
+
+/**
+ * Default V18 driver priority. Same shape as v17 — Permission → Canvas →
+ * Dismiss → Auth → Exploration — but Exploration is the v18 variant.
+ */
+const DEFAULT_DRIVERS = [
+  PermissionDriver,
+  CanvasDriver,
+  DismissDriver,
+  AuthDriver,
+  V18ExplorationDriver,
+];
+
+/**
+ * Phase-A placeholder. The real LLMFallback wraps v16 decideNextAction.
+ */
+async function defaultLlmFallback() {
+  return { type: "done", reason: "blocked:v18_llm_fallback_not_implemented" };
+}
+
+/**
+ * @typedef {Object} DispatchDeps
+ * @property {Array<object>} [drivers]
+ * @property {Function} [llmFallback]
+ * @property {any} [anthropic]
+ * @property {Map<string, any>} [classifierCache]
+ * @property {object} [trajectory]
+ * @property {object} [escalationBudget]
+ * @property {boolean} [stuckFingerprintFamily]
+ * @property {number} [timeoutMs]
+ */
+
+/**
+ * Dispatch one step. Classifier runs first; drivers see the classified output.
+ *
+ * @param {{xml?:string, packageName?:string, activity?:string, screenshotPath?:string}} observation
+ * @param {object} state
+ * @param {DispatchDeps} [deps]
+ */
+async function dispatch(observation, state, deps = {}) {
+  const drivers = Array.isArray(deps.drivers) ? deps.drivers : DEFAULT_DRIVERS;
+  const llmFallback = deps.llmFallback || defaultLlmFallback;
+
+  if (state) {
+    state.dispatchCount =
+      typeof state.dispatchCount === "number" ? state.dispatchCount + 1 : 1;
+  }
+
+  // 1. Run the semantic classifier (Haiku). One call per unique fp; cached.
+  const graph = parseClickableGraph(observation.xml || "");
+  const classifierObs = Object.assign({}, observation, {
+    trajectorySummary: deps.trajectory ? summariseTrajectory(deps.trajectory) : "",
+  });
+  let classification = await classifyScreen(graph, classifierObs, observation.xml || "", {
+    anthropic: deps.anthropic,
+    cache: deps.classifierCache,
+    timeoutMs: deps.timeoutMs,
+  });
+
+  // 2. Sonnet escalation on low confidence or stuck loop.
+  if (shouldEscalate(classification.plan, { stuckFingerprintFamily: !!deps.stuckFingerprintFamily })) {
+    const escalated = await escalate(graph, observation, observation.xml || "", classification.plan, {
+      anthropic: deps.anthropic,
+      escalationBudget: deps.escalationBudget,
+      cache: deps.classifierCache,
+      reason: deps.stuckFingerprintFamily ? "stuck_family" : "low_confidence",
+      timeoutMs: deps.timeoutMs,
+    });
+    if (escalated) classification = escalated;
+  }
+
+  const { plan, clickables: classifiedClickables } = classification;
+
+  // 3. Update trajectory memory.
+  if (deps.trajectory) {
+    recordScreen(deps.trajectory, plan.fingerprint, plan.screenType);
+  }
+
+  log.info(
+    {
+      fingerprint: plan.fingerprint,
+      screenType: plan.screenType,
+      allowedIntents: plan.allowedIntents.join(","),
+      confidence: plan.confidence,
+      clickables: classifiedClickables.length,
+    },
+    "dispatcher: semantic plan ready",
+  );
+
+  // 4. Build the driver deps object. v17 drivers get a classify() shim that
+  //    serves the cached classification in v17 shape (just `.role`).
+  const diagnostics = {
+    claimedButNull: [],
+    claimThrew: [],
+    decideThrew: [],
+  };
+
+  const driverDeps = {
+    anthropic: deps.anthropic,
+    classifierCache: deps.classifierCache,
+    classify: async (_graph /* , _obs, _deps */) => classifiedClickables,
+    plan,
+    classifiedClickables,
+    timeoutMs: deps.timeoutMs,
+  };
+
+  // 5. Dispatch, same priority loop as v17.
+  for (const driver of drivers) {
+    if (!driver || typeof driver.claim !== "function" || typeof driver.decide !== "function") {
+      log.warn({ driver: driver && driver.name }, "dispatcher: skipping malformed driver");
+      continue;
+    }
+
+    let claimed = false;
+    try {
+      claimed = Boolean(driver.claim(observation, state));
+    } catch (err) {
+      log.warn({ driver: driver.name, err: err.message }, "dispatcher: driver.claim threw");
+      diagnostics.claimThrew.push({ driver: driver.name, err: err.message });
+      continue;
+    }
+    if (!claimed) continue;
+
+    let action = null;
+    try {
+      action = await driver.decide(observation, state, driverDeps);
+    } catch (err) {
+      log.warn({ driver: driver.name, err: err.message }, "dispatcher: driver.decide threw");
+      diagnostics.decideThrew.push({ driver: driver.name, err: err.message });
+      continue;
+    }
+    if (!action) {
+      diagnostics.claimedButNull.push({ driver: driver.name, reason: "decide_returned_null" });
+      continue;
+    }
+
+    log.info(
+      {
+        driver: driver.name,
+        action: action.type,
+        dispatchCount: state && state.dispatchCount,
+        screenType: plan.screenType,
+      },
+      "dispatcher: driver acted",
+    );
+    return { driver: driver.name, action, diagnostics, plan };
+  }
+
+  // 6. LLMFallback (unchanged contract).
+  const fallbackDeps = Object.assign({}, driverDeps, {
+    getDiagnostics: () => diagnostics,
+  });
+  const fallbackAction = await llmFallback(observation, state, fallbackDeps);
+  log.info(
+    {
+      action: fallbackAction && fallbackAction.type,
+      dispatchCount: state && state.dispatchCount,
+      fallbackReason: fallbackDeps.lastLlmFallbackReason || null,
+      screenType: plan.screenType,
+    },
+    "dispatcher: LLMFallback acted",
+  );
+  return {
+    driver: "LLMFallback",
+    action: fallbackAction,
+    diagnostics,
+    plan,
+    llmFallbackReason: fallbackDeps.lastLlmFallbackReason || null,
+    llmFallbackSignature: fallbackDeps.lastLlmFallbackSignature || null,
+  };
+}
+
+module.exports = {
+  dispatch,
+  DEFAULT_DRIVERS,
+  defaultLlmFallback,
+};

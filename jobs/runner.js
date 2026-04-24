@@ -30,6 +30,7 @@ const { logger, createJobLogger } = require("../lib/logger");
 // so a run can be steered via CRAWL_ENGINE env var without restarting.
 const { runAgentLoop: runAgentLoopV16 } = require("../crawler/v16/agent-loop");
 const { runAgentLoop: runAgentLoopV17 } = require("../crawler/v17/agent-loop");
+const { runAgentLoop: runAgentLoopV18 } = require("../crawler/v18/agent-loop");
 const { parseApk } = require("../ingestion/manifest-parser");
 const { assessCompatibility } = require("../lib/app-compatibility");
 const adb = require("../crawler/adb");
@@ -259,14 +260,22 @@ async function processJob(jobId, apkPath, opts) {
 
       // Engine selection. V17 is the default (ecosystem.config.js pins it);
       // setting CRAWL_ENGINE=v16 in .env + `pm2 restart --update-env` is the
-      // rollback path documented in V17_LAUNCH_CHECKLIST §3. That 14-day
-      // fallback window expires when V17 retires V16 per checklist §5.
-      if (CRAWL_ENGINE !== "v16" && CRAWL_ENGINE !== "v17") {
+      // rollback path documented in V17_LAUNCH_CHECKLIST §3.
+      //
+      // V18 is the LLM-first engine (Phase 1: semantic classifier + intent
+      // filter + Sonnet escalation). Opt-in via CRAWL_ENGINE=v18 until the
+      // biztoso validation bar is met; then promote to default.
+      if (!["v16", "v17", "v18"].includes(CRAWL_ENGINE)) {
         throw new Error(
-          `Unknown CRAWL_ENGINE "${CRAWL_ENGINE}". Supported: "v16" (legacy fallback) or "v17" (driver-first, default).`,
+          `Unknown CRAWL_ENGINE "${CRAWL_ENGINE}". Supported: "v16" (legacy), "v17" (driver-first, default), "v18" (LLM-first — opt-in).`,
         );
       }
-      const runAgentLoop = CRAWL_ENGINE === "v17" ? runAgentLoopV17 : runAgentLoopV16;
+      const runAgentLoop =
+        CRAWL_ENGINE === "v18"
+          ? runAgentLoopV18
+          : CRAWL_ENGINE === "v17"
+          ? runAgentLoopV17
+          : runAgentLoopV16;
       log.info({ engine: CRAWL_ENGINE }, "crawl: selected agent loop engine");
       const crawlPromise = runAgentLoop({
         jobId,
