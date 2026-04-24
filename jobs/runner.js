@@ -267,6 +267,10 @@ async function processJob(jobId, apkPath, opts) {
 
       await sleep(3000);
 
+      // Engine selection. V17 is the default (ecosystem.config.js pins it);
+      // setting CRAWL_ENGINE=v16 in .env + `pm2 restart --update-env` is the
+      // rollback path documented in V17_LAUNCH_CHECKLIST §3. That 14-day
+      // fallback window expires when V17 retires V16 per checklist §5.
       if (CRAWL_ENGINE !== "v16" && CRAWL_ENGINE !== "v17") {
         throw new Error(
           `Unknown CRAWL_ENGINE "${CRAWL_ENGINE}". Supported: "v16" (legacy fallback) or "v17" (driver-first, default).`,

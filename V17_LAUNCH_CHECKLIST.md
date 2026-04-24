@@ -30,9 +30,12 @@ Driver histogram (biztoso): `{PermissionDriver:1, CanvasDriver:1, DismissDriver:
 
 - [ ] On `prodscope-vm`, in `/home/arjunhn/prodscope-backend-live/.env`,
       set `CRAWL_ENGINE=v17`. (If the key is absent, add it.)
-- [ ] Confirm the backend loop loads V17:
-      `grep -n CRAWL_ENGINE /home/arjunhn/prodscope-backend-live/crawler/run.js`
-      should still show the dispatch switch honoring the env var.
+- [ ] Confirm the backend loop loads V17. The engine-selection switch
+      lives in `jobs/runner.js` (search for `CRAWL_ENGINE`, ~line 270),
+      NOT in `crawler/run.js` (that path doesn't exist — it was removed
+      in sprint-4.4). Additionally, `ecosystem.config.js` now pins
+      `CRAWL_ENGINE: "v17"` in the pm2 env block, so even without a
+      `.env` override the default deploy selects V17.
 - [ ] Reload pm2: `npx pm2 restart backend --update-env`.
 - [ ] Smoke: tail `npx pm2 logs backend` for 1 min and confirm
       `component: "v17-loop"` appears on the next run.

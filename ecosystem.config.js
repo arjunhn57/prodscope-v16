@@ -19,6 +19,12 @@ module.exports = {
       restart_delay: 3000,       // 3s between restarts
 
       // Environment
+      //
+      // CRAWL_ENGINE is pinned to "v17" here (sprint-1 commit 381bae6).
+      // Pm2's env block takes precedence over dotenv, so this is the
+      // authoritative default for production. The legacy v16 path is
+      // still reachable by flipping .env:CRAWL_ENGINE=v16 + pm2 restart
+      // --update-env, per the V17_LAUNCH_CHECKLIST §3 rollback plan.
       env: {
         NODE_ENV: "production",
         PORT: 8080,
