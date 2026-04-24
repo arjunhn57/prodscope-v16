@@ -239,7 +239,25 @@ test("classifyScreen: empty clickables → trivial plan, zero LLM calls", async 
   assert.equal(clickables.length, 0);
   assert.equal(plan.screenType, "other");
   assert.equal(plan.actionBudget, 1);
-  assert.deepEqual(plan.allowedIntents, ["navigate"]);
+  assert.deepEqual(plan.allowedIntents, ["navigate", "read_only"]);
+});
+
+// Regression: run d0bbce69 (2026-04-24) hit a WebView-only screen with a
+// single clickable. The old classifier burned a Haiku call + Sonnet
+// escalation on it and timed out on both, consuming escalation budget on a
+// benign screen. Threshold short-circuit prevents the waste.
+test("classifyScreen: tiny graph (<3 clickables) → skipped, zero LLM calls", async () => {
+  const tinyXml = wrap(
+    node({ text: "Loading", resourceId: "com.app:id/webview", cls: "android.webkit.WebView", pkg: "com.app", bounds: "[0,0][1080,2400]" }),
+  );
+  const graph = parseClickableGraph(tinyXml);
+  assert.ok(graph.clickables.length >= 1 && graph.clickables.length < 3, "fixture must have 1-2 clickables");
+  const client = makeMockClient([]);
+  const { plan, clickables } = await classifyScreen(graph, { packageName: "com.app" }, tinyXml, { anthropic: client });
+  assert.equal(client.calls.length, 0, "tiny graph must not trigger a Haiku call");
+  assert.equal(plan.confidence, 1.0, "high confidence so Sonnet escalation does NOT fire");
+  assert.equal(plan.screenType, "other");
+  assert.equal(clickables.length, graph.clickables.length);
 });
 
 // ── 6. Timeout → default plan ─────────────────────────────────────────

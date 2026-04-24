@@ -28,7 +28,12 @@ const {
 const log = logger.child({ component: "v18-sonnet-escalation" });
 
 const SONNET_MODEL = "claude-sonnet-4-6";
-const SONNET_TIMEOUT_MS = 8000;
+// 25s (was 8s 2026-04-24) — production run d0bbce69 showed Sonnet timing out
+// at 8s consistently when asked to process a full screenshot. Sonnet with
+// vision + 2000-token output typically needs 12-20s; 25s gives headroom.
+// Timeouts still consume the per-crawl escalation budget so we don't loop
+// forever on a pathological screen.
+const SONNET_TIMEOUT_MS = 25000;
 const SONNET_MAX_TOKENS = 2000;
 
 /** Hard cap per crawl. */

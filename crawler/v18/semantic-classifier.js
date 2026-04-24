@@ -41,9 +41,20 @@ const { logger } = require("../../lib/logger");
 const log = logger.child({ component: "v18-semantic-classifier" });
 
 const HAIKU_MODEL = "claude-haiku-4-5-20251001";
-const HAIKU_TIMEOUT_MS = 5000; // higher than v17's 3s — screenshot bumps token budget
+// 15s (was 5s 2026-04-24) — first production run d0bbce69 timed out on every
+// step at 5000ms because a full 1080×2400 base64 PNG pushes Haiku vision
+// latency to ~8-12s on the hot path. Empirical P95 ~10s, so 15s gives
+// comfortable headroom while still short-circuiting genuinely broken calls.
+const HAIKU_TIMEOUT_MS = 15000;
 const HAIKU_MAX_TOKENS = 1200; // larger because plan + per-node fields
 const BOUNDS_BUCKET = 32;
+
+/**
+ * Skip Haiku entirely on near-empty graphs — WebView covers, cold splashes,
+ * and trivial modals with a single close icon. LLMFallback handles those
+ * fine and it's wasteful to pay vision-API latency for a 1-element plan.
+ */
+const MIN_CLICKABLES_FOR_CLASSIFICATION = 3;
 
 /** Confidence below this triggers Sonnet escalation (see sonnet-escalation.js). */
 const LOW_CONFIDENCE_THRESHOLD = 0.5;
@@ -559,20 +570,30 @@ async function classifyScreen(graph, observation, xmlText, deps = {}) {
     return { plan: cached, clickables: mergeClassifications(clickables, cached.nodeClassifications) };
   }
 
-  // No clickables → return a trivial plan without burning a Haiku call.
-  if (clickables.length === 0) {
+  // Tiny graphs → trivial plan without burning a Haiku call.
+  //
+  // Production run d0bbce69 (2026-04-24): step 2 had 1 clickable (a WebView
+  // cover). Classifier timed out at 5s, Sonnet escalation timed out at 8s,
+  // escalation budget burned before any real screen was reached. Waste.
+  // Tiny graphs rarely need semantic planning — LLMFallback + specialist
+  // drivers handle them well. Short-circuit below MIN_CLICKABLES_FOR_CLASSIFICATION.
+  if (clickables.length < MIN_CLICKABLES_FOR_CLASSIFICATION) {
+    const shortCircuited = applyInputTypeShortCircuit(clickables);
     const plan = {
       screenType: "other",
-      screenSummary: "empty screen (no clickables)",
-      allowedIntents: ["navigate"],
+      screenSummary: `trivial screen (${clickables.length} clickables) — classifier skipped`,
+      allowedIntents: ["navigate", "read_only"],
       actionBudget: 1,
-      exitCondition: "wait briefly for content, then move on",
+      exitCondition: "let specialist drivers or LLMFallback route one action",
+      // High confidence on purpose — don't trigger Sonnet escalation here.
+      // These screens are benign and the cost of a wrong intent tag is nil
+      // because no homogeneous write-shaped clusters are present to filter.
       confidence: 1.0,
       fingerprint,
-      nodeClassifications: new Map(),
+      nodeClassifications: shortCircuited,
     };
     if (cache) cache.set(fingerprint, plan);
-    return { plan, clickables: [] };
+    return { plan, clickables: mergeClassifications(clickables, shortCircuited) };
   }
 
   const anthropic = deps.anthropic || getDefaultClient();
