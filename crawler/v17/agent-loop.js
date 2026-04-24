@@ -30,6 +30,8 @@ const path = require("path");
 const adb = require("../adb");
 const readiness = require("../readiness");
 const { logger } = require("../../lib/logger");
+const { relaunchApp: defaultRelaunchApp } = require("../../emulator/manager");
+const { sleep: defaultSleep } = require("../../utils/sleep");
 
 // V16 reuses (still-good primitives): capture, state graph, budget, executor,
 // and — for LLMFallback — the full v16 agent decision pipeline.
@@ -81,6 +83,30 @@ const RECENT_FP_BUFFER = 10;
 // ORBIT_REPEATS window (5-in-8); catches cross-orbit loops stagnationStreak
 // resets through.
 const AUTH_LOOP_FP_THRESHOLD = 4;
+
+// ── Package-drift recovery ──
+// Max times we'll relaunch the target app mid-crawl before conceding. Set to
+// 4 (user spec 2026-04-24) — enough to recover from a few intent handoffs
+// (biztoso → dialer, app → browser → back) but bounded so an app that
+// genuinely belongs outside itself (e.g. pure launcher wrapper) terminates
+// cleanly with `package_drift_unrecoverable` instead of looping forever.
+const MAX_PACKAGE_DRIFT_RECOVERIES = 4;
+// Packages that can legitimately be foreground without counting as drift:
+// system permission dialogs, the home launcher (brief transit), IME.
+// PermissionDriver already handles the permission controller; we just don't
+// want the drift guard to fire on it.
+const DRIFT_ALLOWLIST = new Set([
+  "com.google.android.permissioncontroller",
+  "com.android.permissioncontroller",
+  "com.google.android.packageinstaller",
+  "com.android.packageinstaller",
+  "com.google.android.apps.nexuslauncher", // Pixel launcher
+  "com.android.launcher",
+  "com.android.launcher3",
+  "com.google.android.inputmethod.latin", // Gboard
+  "com.android.inputmethod.latin",
+  "com.android.systemui",
+]);
 
 /**
  * @typedef {Object} RunOptions
@@ -375,7 +401,19 @@ async function runAgentLoop(opts) {
     credentials: opts.credentials || null,
     userSeededGoogleAccount: Boolean(opts.userSeededGoogleAccount),
     stateGraph,
+    // Counter for package-drift recovery attempts in this run. Bumped every
+    // time the observation lands outside opts.targetPackage; when > cap the
+    // loop terminates with stopReason = "package_drift_unrecoverable".
+    driftRecoveryAttempts: 0,
   };
+  // Expose relaunchApp + sleep via deps so tests can inject stubs without
+  // spinning up a real adb connection. Default to production implementations.
+  const relaunchApp = (deps && deps.relaunchApp) || defaultRelaunchApp;
+  const driftSleep = (deps && deps.sleep) || defaultSleep;
+  // Launcher activity for recovery — runner.js threads it through opts if the
+  // APK's manifest had a launchable-activity declared, null otherwise
+  // (monkey fallback in relaunchApp handles that case).
+  const targetLauncherActivity = opts.launcherActivity || null;
   const classifierCache = createClassifierCache();
 
   let prevObservation = null;
@@ -442,6 +480,51 @@ async function runAgentLoop(opts) {
     }
     const { observation, feedback, fingerprintChanged } = capture;
     lastFeedback = feedback;
+
+    // ── Package-drift guard ──
+    // If an intent handoff dropped us into a different app (biztoso → dialer
+    // on a "sign up with phone" tap, app → browser on a privacy-policy link,
+    // etc.), try to recover by relaunching the target. After MAX_PACKAGE_DRIFT_
+    // RECOVERIES unsuccessful attempts, concede with a clear stopReason instead
+    // of letting the crawler keep exploring the wrong app.
+    if (detectPackageDrift(observation, opts.targetPackage)) {
+      driverState.driftRecoveryAttempts += 1;
+      const attempt = driverState.driftRecoveryAttempts;
+      log.warn(
+        {
+          jobId: opts.jobId,
+          step,
+          from: opts.targetPackage,
+          to: observation.packageName,
+          activity: observation.activity,
+          driftRecoveryAttempts: attempt,
+        },
+        "package drift detected — attempting recovery",
+      );
+      if (attempt > MAX_PACKAGE_DRIFT_RECOVERIES) {
+        stopReason = "package_drift_unrecoverable";
+        log.error(
+          {
+            jobId: opts.jobId,
+            step,
+            maxAttempts: MAX_PACKAGE_DRIFT_RECOVERIES,
+            lastObservedPackage: observation.packageName,
+          },
+          "package drift exceeded recovery cap — terminating",
+        );
+        break;
+      }
+      // Kick the agent back into the target app. The next iteration's
+      // captureObservation will pick up the new foreground; if that call
+      // ALSO shows drift, the attempt counter ticks again. Normal 2 s
+      // post-launch settle window mirrors runner.js:268.
+      relaunchApp(opts.targetPackage, targetLauncherActivity);
+      try { await driftSleep(2000); } catch (_) {}
+      // Consume a budget step so a runaway drift loop still hits max_steps.
+      budget.step();
+      prevObservation = observation;
+      continue;
+    }
 
     // Also compute a structural fingerprint (layout-only). It is attached to
     // the observation for logging + downstream debugging, but we DO NOT use
@@ -812,7 +895,7 @@ async function runAgentLoop(opts) {
         targetText: actionToExecute.targetText || null,
         x: actionToExecute.x,
         y: actionToExecute.y,
-        pkg: observation.activity && observation.activity.split("/")[0],
+        pkg: observation.packageName || "unknown",
         fp: observation.fingerprint,
         feedback: lastFeedback,
         ok: execResult.ok,
@@ -877,6 +960,26 @@ async function runAgentLoop(opts) {
   };
 }
 
+/**
+ * Pure helper — returns true when the observation indicates the crawler has
+ * drifted into a non-target, non-allowlisted package and recovery should fire.
+ *
+ * Extracted so the drift-detection rules can be unit-tested without spinning
+ * up a full runAgentLoop. Used inside the step loop at the point just after
+ * captureObservation succeeds.
+ *
+ * @param {{packageName?: string|null}|null} observation
+ * @param {string|null|undefined} targetPackage
+ * @returns {boolean}
+ */
+function detectPackageDrift(observation, targetPackage) {
+  if (!observation || !targetPackage) return false;
+  if (!observation.packageName) return false;
+  if (observation.packageName === targetPackage) return false;
+  if (DRIFT_ALLOWLIST.has(observation.packageName)) return false;
+  return true;
+}
+
 module.exports = {
   runAgentLoop,
   // exported for tests
@@ -884,4 +987,7 @@ module.exports = {
   formatActionLabel,
   buildLivePayload,
   maskSecrets,
+  detectPackageDrift,
+  DRIFT_ALLOWLIST,
+  MAX_PACKAGE_DRIFT_RECOVERIES,
 };

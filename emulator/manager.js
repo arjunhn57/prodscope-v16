@@ -201,6 +201,46 @@ function installApk(apkPath) {
 }
 
 /**
+ * Launch (or re-launch) a target app on the running emulator. Tries the
+ * explicit activity first, falls back to `monkey -p <pkg> -c LAUNCHER`.
+ *
+ * Used both by the initial crawl start (jobs/runner.js) and by the V17
+ * agent-loop's package-drift recovery path: if mid-crawl an intent
+ * handoff takes us out of the target package (e.g. biztoso → Dialer),
+ * relaunchApp gets us back to the target's launcher activity.
+ *
+ * @param {string} packageName
+ * @param {string|null} [launcherActivity]
+ * @returns {boolean} true if the adb call didn't throw; false on failure
+ */
+function relaunchApp(packageName, launcherActivity) {
+  if (!packageName) {
+    log.warn("relaunchApp called without packageName");
+    return false;
+  }
+  try {
+    if (launcherActivity) {
+      execFileSync(
+        "adb",
+        ["shell", "am", "start", "-n", `${packageName}/${launcherActivity}`],
+        { timeout: 15000, stdio: "pipe" },
+      );
+    } else {
+      execFileSync(
+        "adb",
+        ["shell", "monkey", "-p", packageName, "-c", "android.intent.category.LAUNCHER", "1"],
+        { timeout: 15000, stdio: "pipe" },
+      );
+    }
+    log.info({ package: packageName, activity: launcherActivity || "(monkey fallback)" }, "relaunchApp: am start issued");
+    return true;
+  } catch (e) {
+    log.warn({ err: e.message, package: packageName }, "relaunchApp failed");
+    return false;
+  }
+}
+
+/**
  * Kill the running emulator. Swallows errors (best-effort cleanup).
  */
 function killEmulator() {
@@ -251,4 +291,4 @@ async function resetEmulator(previousPackage) {
   }
 }
 
-module.exports = { bootEmulator, saveSnapshot, installApk, killEmulator, resetEmulator };
+module.exports = { bootEmulator, saveSnapshot, installApk, relaunchApp, killEmulator, resetEmulator };

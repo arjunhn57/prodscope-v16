@@ -7,7 +7,7 @@ const os = require("os");
 const path = require("path");
 
 const store = require("./store");
-const { bootEmulator, installApk, killEmulator, resetEmulator } = require("../emulator/manager");
+const { bootEmulator, installApk, relaunchApp, killEmulator, resetEmulator } = require("../emulator/manager");
 const { sendReportEmail } = require("../output/email-sender");
 const magicLink = require("../lib/magic-link");
 const { sleep } = require("../utils/sleep");
@@ -248,21 +248,11 @@ async function processJob(jobId, apkPath, opts) {
         }
       }
 
-      // Launch app using launcher activity from manifest, or monkey fallback
-      try {
-        if (appProfile.launcherActivity) {
-          execSync(
-            `adb shell am start -n ${packageName}/${appProfile.launcherActivity}`,
-          );
-        } else {
-          execSync(
-            "adb shell monkey -p " +
-              packageName +
-              " -c android.intent.category.LAUNCHER 1",
-          );
-        }
-      } catch (e) {
-        log.error({ err: e }, "Could not launch app");
+      // Launch app via shared helper (same code path agent-loop uses for
+      // package-drift recovery, so launch + relaunch stay semantically
+      // identical).
+      if (!relaunchApp(packageName, appProfile.launcherActivity || null)) {
+        log.error({ packageName }, "Could not launch app");
       }
 
       await sleep(3000);
@@ -281,6 +271,9 @@ async function processJob(jobId, apkPath, opts) {
       const crawlPromise = runAgentLoop({
         jobId,
         targetPackage: packageName,
+        // Forwarded so V17's package-drift recovery can relaunch via the
+        // same launcher activity that runner.js used for the initial start.
+        launcherActivity: appProfile.launcherActivity || null,
         screenshotDir,
         credentials: opts.credentials,
         staticInputs: opts.staticInputs || null,
