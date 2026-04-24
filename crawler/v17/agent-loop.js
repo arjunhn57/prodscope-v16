@@ -673,6 +673,10 @@ async function runAgentLoop(opts) {
           discoveryDelta5,
           recentFingerprints: recentFingerprints.slice(),
           authEscape: findAuthEscapeButton(obs),
+          // V18 Phase 3: trajectory hint computed by llm-fallback.js from
+          // deps.trajectory (v18/trajectory-memory.js). Null on v17 runs
+          // (no trajectory memory threaded in).
+          trajectoryHint: (driverDeps && driverDeps.trajectoryHint) || null,
         },
         { anthropic: driverDeps.anthropic || deps.anthropic },
       );

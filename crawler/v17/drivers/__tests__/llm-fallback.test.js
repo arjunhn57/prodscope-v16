@@ -239,6 +239,40 @@ test("pickSafeAlternative: returns null when only write/destructive present (no 
   assert.equal(r, null);
 });
 
+// ── V18 Phase 3: trajectory hint threaded into inner ────────────────
+
+test("createLlmFallback: computes trajectoryHint from deps.trajectory and sets it on deps", async () => {
+  let capturedDeps = null;
+  const inner = async (_obs, _state, deps) => {
+    capturedDeps = deps;
+    return { type: "wait" };
+  };
+  const handler = createLlmFallback(inner);
+  // Build a minimal TrajectoryMemory matching v18/trajectory-memory.js shape.
+  const trajectory = {
+    seenTypeCounts: { feed: 2, profile: 1 },
+    fingerprintsSeen: new Set(["a", "b", "c"]),
+    hubsRemaining: new Set(["settings", "search", "notifications"]),
+    recentActions: [],
+  };
+  const xml = '<?xml version="1.0"?><hierarchy />';
+  const deps = { trajectory, getDiagnostics: () => ({ claimedButNull: [], claimThrew: [] }) };
+  await handler({ xml, packageName: "com.app" }, {}, deps);
+  assert.ok(typeof deps.trajectoryHint === "string" && deps.trajectoryHint.length > 0);
+  assert.ok(deps.trajectoryHint.includes("settings"), "hint should mention unvisited hubs");
+  assert.ok(deps.trajectoryHint.includes("feed"), "hint should mention visited types");
+  // Inner received the same deps — can pass to v16 agent's decideNextAction.
+  assert.ok(capturedDeps === deps);
+});
+
+test("createLlmFallback: no trajectory → no hint, no error (backwards compat)", async () => {
+  const handler = createLlmFallback(async () => ({ type: "wait" }));
+  const xml = '<?xml version="1.0"?><hierarchy />';
+  const deps = { getDiagnostics: () => ({ claimedButNull: [], claimThrew: [] }) };
+  await handler({ xml, packageName: "com.app" }, {}, deps);
+  assert.equal(deps.trajectoryHint, undefined);
+});
+
 test("validateAgainstPlan: tap on navigate-intent clickable → passes", () => {
   const classifiedClickables = [
     makeClickable({ x1: 40, y1: 2280, x2: 270, y2: 2400, intent: "navigate", label: "Home" }),

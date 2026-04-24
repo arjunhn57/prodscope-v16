@@ -234,6 +234,21 @@ function buildStepSuffix(ctx) {
     lines.push(`RecentFP: ${fps}`);
   }
 
+  // V18 Phase 3 slice (2026-04-24): trajectory hint from v18/trajectory-memory.js
+  // via v18 dispatcher → llm-fallback → innerLlmDecision. Tells the agent
+  // which hub screen-types are still unexplored so its tap choices can
+  // prefer gear icons / hamburgers / tabs that lead to settings, notifications,
+  // search, etc. Run 537c4ec4 hit budget_exhausted at 29 screens having
+  // never touched Settings — LLMFallback kept tapping Home and profile
+  // because nothing told it to branch out.
+  if (ctx.trajectoryHint && typeof ctx.trajectoryHint === "string") {
+    const hint = ctx.trajectoryHint.slice(0, 1000);
+    lines.push(`Trajectory: ${hint}`);
+    lines.push(
+      "Coverage priority: if any clickable on this screen plausibly leads to a screen type in `hubs_remaining` above (drawer menu, gear icon, 'Settings', 'Notifications', 'Search', '...' / 'More'), strongly prefer tapping that over re-tapping already-visited hubs.",
+    );
+  }
+
   if (ctx.authEscape && typeof ctx.authEscape === "object" && ctx.authEscape.label) {
     // Injected when auth-escape.js finds a Skip/Guest button on the current screen.
     // Giving pixel-perfect coords lets the agent tap without a vision round-trip.

@@ -214,6 +214,13 @@ function buildRequest(ctx, modelKind) {
     discoveryDelta5: ctx.discoveryDelta5,
     recentFingerprints: ctx.recentFingerprints,
     authEscape: ctx.authEscape || null,
+    // V18 Phase 3: trajectory hint from v18/trajectory-memory.js — tells
+    // the LLM which hub screen-types are still unexplored so its tap
+    // choices can prefer drawer menus / gear icons / "..." buttons that
+    // lead there. Populated by v17/drivers/llm-fallback.js when
+    // deps.trajectory is provided by the v18 dispatcher.
+    trajectoryHint: ctx.trajectoryHint || null,
+    pressBackBlockedOnAuth: ctx.pressBackBlockedOnAuth || null,
   });
 
   const contentParts = [];

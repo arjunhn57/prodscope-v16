@@ -28,6 +28,19 @@ const { logger } = require("../../../lib/logger");
 
 const log = logger.child({ component: "v17-llm-fallback" });
 
+// V18 Phase 3: lazy-loaded to avoid a require cycle with v18 modules on
+// v17-only test paths. The summariser is a pure function of memory state.
+let _summariseTrajectory = null;
+function getTrajectorySummariser() {
+  if (_summariseTrajectory) return _summariseTrajectory;
+  try {
+    _summariseTrajectory = require("../../v18/trajectory-memory").summarise;
+  } catch (_) {
+    _summariseTrajectory = () => "";
+  }
+  return _summariseTrajectory;
+}
+
 /** Max node-type buckets we log so the line stays readable. */
 const MAX_CLASS_BUCKETS = 8;
 
@@ -280,6 +293,22 @@ function createLlmFallback(inner) {
 
     const reason = deriveReason({ claimedButNull, claimThrew, signature });
 
+    // V18 Phase 3: compute trajectory hint from the v18 trajectory-memory
+    // (seen types + hubs remaining + recent actions). Threaded into the
+    // inner v16 agent via deps.trajectoryHint so its prompt can bias tap
+    // choices toward unexplored hubs.
+    let trajectoryHint = null;
+    if (deps && deps.trajectory) {
+      try {
+        trajectoryHint = getTrajectorySummariser()(deps.trajectory) || null;
+      } catch (err) {
+        log.warn({ err: err.message }, "llm-fallback: trajectory summarise failed");
+      }
+    }
+    if (trajectoryHint && typeof deps === "object") {
+      deps.trajectoryHint = trajectoryHint;
+    }
+
     log.info(
       {
         reason,
@@ -288,6 +317,7 @@ function createLlmFallback(inner) {
         packageName: obs && obs.packageName,
         activity: obs && obs.activity,
         signature,
+        hasTrajectoryHint: !!trajectoryHint,
       },
       "llm-fallback: escalating",
     );
