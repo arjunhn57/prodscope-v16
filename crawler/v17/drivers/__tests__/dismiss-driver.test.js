@@ -221,3 +221,125 @@ test("DismissDriver.decide: returns null when classifier finds no dismiss_button
   );
   assert.equal(action, null);
 });
+
+// ── 2026-04-24: plain-text label claim (biztoso run b004fbdf regression) ────
+//
+// Upsell / reminder dialogs that ship as ordinary Buttons with a
+// "Remind me later" / "Maybe later" / "Not now" label — no modal-class
+// parent, no close-glyph, no matching resource-id. DismissDriver must
+// still claim these so the downstream classifier + decide() can dismiss
+// them deterministically. Before this fix the crawl fell through to
+// LLMFallback and hit the press_back guardrail on step 4.
+
+test("DismissDriver.claim: true on 'Remind me later' plain Button (biztoso-style)", () => {
+  // No modal class, no close-glyph, no dismiss-y resource-id.
+  const xml = wrap(
+    node({
+      text: "Upgrade to Premium",
+      resourceId: "com.biztoso.app:id/cta_upgrade",
+      pkg: "com.biztoso.app",
+      bounds: "[40,1400][1040,1520]",
+    }),
+    node({
+      text: "Remind me later",
+      resourceId: "com.biztoso.app:id/reminder_snooze",
+      pkg: "com.biztoso.app",
+      cls: "android.widget.Button",
+      bounds: "[40,1600][1040,1720]",
+    }),
+  );
+  assert.equal(dismissDriver.claim({ xml }), true);
+});
+
+test("DismissDriver.claim: true on 'Not now' plain Button", () => {
+  const xml = wrap(
+    node({
+      text: "Turn on notifications",
+      resourceId: "com.app:id/cta",
+      pkg: "com.app",
+      bounds: "[40,1400][1040,1520]",
+    }),
+    node({
+      text: "Not now",
+      resourceId: "com.app:id/later_button",
+      pkg: "com.app",
+      bounds: "[40,1600][1040,1720]",
+    }),
+  );
+  assert.equal(dismissDriver.claim({ xml }), true);
+});
+
+test("DismissDriver.claim: true on 'Skip for now' plain Button", () => {
+  const xml = wrap(
+    node({
+      text: "Skip for now",
+      pkg: "com.app",
+      bounds: "[40,1600][1040,1720]",
+    }),
+  );
+  assert.equal(dismissDriver.claim({ xml }), true);
+});
+
+test("DismissDriver.claim: true on 'No thanks' content-desc", () => {
+  // Some apps put the dismiss label in content-desc for accessibility.
+  const xml = wrap(
+    node({
+      desc: "No thanks",
+      cls: "android.view.View",
+      pkg: "com.app",
+      bounds: "[40,1600][1040,1720]",
+    }),
+  );
+  assert.equal(dismissDriver.claim({ xml }), true);
+});
+
+test("DismissDriver.claim: false on 'Skip navigation' accessibility label (not a dismiss CTA)", () => {
+  // Accessibility labels like "Skip navigation" should NOT trigger claim —
+  // the phrase isn't in our allowlist. Bare "skip" was intentionally
+  // excluded from DISMISS_LABEL_REGEX for this reason.
+  const xml = wrap(
+    node({
+      desc: "Skip navigation",
+      cls: "android.widget.TextView",
+      pkg: "org.wikipedia",
+      clickable: false,
+      bounds: "[0,0][100,40]",
+    }),
+    node({
+      text: "Article title",
+      pkg: "org.wikipedia",
+      clickable: false,
+      bounds: "[40,100][1040,200]",
+    }),
+  );
+  assert.equal(dismissDriver.claim({ xml }), false);
+});
+
+test("DismissDriver.claim: false on auth screen with 'Cancel' button (cancel is NOT a dismiss CTA — login creds may be present)", () => {
+  // Critical: DismissDriver runs BEFORE AuthDriver. If "Cancel" triggered
+  // claim here, we'd back out of the login form even when the user
+  // provided credentials. Cancel / Close are deliberately excluded from
+  // DISMISS_LABEL_REGEX for this reason; they're only matched via the
+  // stricter CLOSE_DESC_REGEX / CLOSE_ID_REGEX structural paths.
+  const xml = wrap(
+    node({
+      text: "Password",
+      cls: "android.widget.EditText",
+      pkg: "com.example",
+      bounds: "[40,800][1040,900]",
+    }),
+    node({
+      text: "Cancel",
+      cls: "android.widget.Button",
+      pkg: "com.example",
+      bounds: "[40,1600][520,1720]",
+    }),
+    node({
+      text: "Sign in",
+      cls: "android.widget.Button",
+      pkg: "com.example",
+      bounds: "[560,1600][1040,1720]",
+    }),
+  );
+  assert.equal(dismissDriver.claim({ xml }), false);
+});
