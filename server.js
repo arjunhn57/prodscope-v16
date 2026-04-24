@@ -32,41 +32,22 @@ const { sendApplicationNotification } = require("./output/application-email");
 const { z: zod } = require("zod");
 
 // ─── Environment validation ──────────────────────────────────────────────────
-const REQUIRED_ENV_VARS = ["ANTHROPIC_API_KEY"];
-const OPTIONAL_ENV_VARS = [
-  "JWT_SECRET",
-  "PRODSCOPE_API_KEY",
-  "CORS_ALLOWED_ORIGINS",
-  "GOOGLE_CLIENT_ID",
-  "ADMIN_EMAILS",
-  "MAGIC_LINK_SECRET",
-  "PUBLIC_APP_URL",
-  "RESEND_API_KEY",
-];
+// Extracted into config/env-validator.js so it's unit-testable. The validator
+// is a pure function; this file is responsible for acting on the result —
+// logging warnings and exiting on fatal misconfigurations.
+const { validateEnvironment } = require("./config/env-validator");
 
-function validateEnvironment() {
-  const missing = REQUIRED_ENV_VARS.filter((v) => !process.env[v]);
-  if (missing.length > 0) {
-    logger.error({ missing }, "FATAL: Missing required environment variables");
-    logger.error("See .env.example for the full list of required variables.");
-    process.exit(1);
-  }
-
-  // Warn about missing optional security vars
-  const missingOptional = OPTIONAL_ENV_VARS.filter((v) => !process.env[v]);
-  if (missingOptional.length > 0) {
-    logger.warn({ missingOptional }, "Missing optional env vars");
-    if (!process.env.JWT_SECRET && !process.env.PRODSCOPE_API_KEY) {
-      if (process.env.NODE_ENV === "production") {
-        logger.error("FATAL: No JWT_SECRET or PRODSCOPE_API_KEY set in production mode.");
-        process.exit(1);
-      }
-      logger.warn("No JWT_SECRET or PRODSCOPE_API_KEY — auth disabled (dev mode)");
-    }
-  }
+const envResult = validateEnvironment(process.env);
+for (const warning of envResult.warnings) {
+  logger.warn(warning);
 }
-
-validateEnvironment();
+if (!envResult.ok) {
+  for (const error of envResult.fatal) {
+    logger.error(error);
+  }
+  logger.error("See .env.example for the full list of required variables.");
+  process.exit(1);
+}
 
 // ─── Express app ─────────────────────────────────────────────────────────────
 
