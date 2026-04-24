@@ -67,6 +67,21 @@ const NAV_OR_LIST_XML_REGEX = /class="[^"]*(?:BottomNavigation|NavigationBarItem
 const SCROLL_VERTICAL_MARGIN_PCT = 0.25;
 
 /**
+ * Max scrolls per fingerprint before yielding to LLMFallback. User ask
+ * (2026-04-24): "scroll for sometime not till the end […] maybe 3 to 4
+ * times and then assess the screens."
+ *
+ * The structural fingerprint in node-classifier.js excludes text/content,
+ * so a homogeneous feed (RecyclerView with same-class cards) keeps the
+ * same fp across scrolls — the earlier `count >= 1` threshold treated
+ * that as "scroll did nothing" and gave up after one scroll. Raising to
+ * 4 lets us surface the 3-4 screenfuls below the fold that most feed
+ * UIs need for meaningful coverage, while bounding wall-time to ~4s of
+ * extra swipes per feed fp (no LLM cost).
+ */
+const MAX_SCROLLS_PER_FP = 4;
+
+/**
  * Structural bottom-bar parameters. A Jetpack Compose app typically renders
  * NavigationBar children as plain `android.view.View` leaves with no
  * recognisable className, so the class-match path can't see them. Instead we
@@ -156,6 +171,30 @@ function elementKey(c) {
   const bx = Math.floor(((c && c.cx) || 0) / 32);
   const by = Math.floor(((c && c.cy) || 0) / 32);
   return `bb:${label}:${bx},${by}`;
+}
+
+/**
+ * Per-fp key for list items. Feed cards overwhelmingly share a single
+ * container resource-id (e.g. "com.biztoso:id/feed_item",
+ * "com.linkedin:id/feed_card_root"), so the rid-first elementKey above
+ * collapses every card on screen into one key — after tapping card 1,
+ * cards 2-N all look "already visited" and we yield to scroll. Append
+ * the label (card title / author / snippet) so visually distinct cards
+ * remain individually tappable.
+ *
+ * Nav tabs (isNavElement) still use elementKey so the Home/Profile/etc.
+ * tabs dedup on rid alone even when their labels are localised.
+ */
+function listItemKey(c) {
+  const rid = (c && c.resourceId) || "";
+  const label = (c && c.label) || "";
+  if (rid && label) return `rid:${rid}|lbl:${label}`;
+  if (rid) {
+    const bx = Math.floor(((c && c.cx) || 0) / 32);
+    const by = Math.floor(((c && c.cy) || 0) / 32);
+    return `rid:${rid}|bb:${bx},${by}`;
+  }
+  return elementKey(c);
 }
 
 // ── List-item heuristic (no AI) ─────────────────────────────────────────
@@ -302,18 +341,24 @@ async function decide(observation, state) {
   );
 
   // First, interpret what happened since our last action: if we scrolled and
-  // the fingerprint is unchanged, the scroll was a no-op → mark exhausted.
+  // the fingerprint is unchanged, increment the per-fp scroll count.
   if (
     memory.lastActionKind === "scroll" &&
     memory.lastFingerprint === fp
   ) {
     const count = (memory.scrollRetryByFp.get(fp) || 0) + 1;
     memory.scrollRetryByFp.set(fp, count);
-    // One repeat is enough — a second scroll at the same fingerprint means the
-    // first didn't advance content. Don't waste budget on a third try.
-    if (count >= 1) {
+    // Scroll budget is deliberately permissive — feeds have identical fp
+    // across scrolls by design (see MAX_SCROLLS_PER_FP comment). We only
+    // mark exhausted after hitting the budget so the driver actually
+    // surfaces below-the-fold content, which is where most unique list
+    // items on feed screens live.
+    if (count >= MAX_SCROLLS_PER_FP) {
       memory.scrollExhausted.add(fp);
-      log.info({ fingerprint: fp }, "ExplorationDriver: scroll exhausted");
+      log.info(
+        { fingerprint: fp, scrolls: count },
+        "ExplorationDriver: scroll budget reached",
+      );
     }
   }
 
@@ -415,7 +460,7 @@ function pickListItem(graph, memory, fp) {
   const items = findListItemTargets(graph);
   const visited = memory.listItemsByFp.get(fp) || new Set();
   for (const item of items) {
-    const key = elementKey(item);
+    const key = listItemKey(item);
     if (!visited.has(key)) return { item, key };
   }
   return null;
@@ -453,6 +498,8 @@ module.exports = {
   pickNavTab,
   pickListItem,
   elementKey,
+  listItemKey,
+  MAX_SCROLLS_PER_FP,
   isNavElement,
   isBottomNavItem,
   isTabItem,

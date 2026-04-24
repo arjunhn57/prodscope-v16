@@ -355,21 +355,27 @@ test("ExplorationDriver.decide: after all nav tabs tapped → picks an unvisited
   assert.equal(action.y, 600);
 });
 
-test("ExplorationDriver.decide: scroll-exhaustion — unchanged fingerprint after scroll → null on next call", async () => {
+test("ExplorationDriver.decide: scroll-exhaustion — after MAX_SCROLLS_PER_FP same-fp scrolls, fp is marked exhausted and decide returns null", async () => {
   const state = {};
   // Pre-populate memory so nav + list are "visited", forcing scroll path.
   explorationDriver.initMemory(state);
   const obs = { xml: articleBodyXml, packageName: "org.wikipedia" };
 
-  // Directly simulate: last action was scroll on this same fingerprint.
+  // Directly simulate: last action was scroll on this same fingerprint,
+  // and the driver has already scrolled MAX_SCROLLS_PER_FP - 1 times
+  // without progress. One more same-fp scroll trips the budget.
   const { computeStructuralFingerprint } = require("../../node-classifier");
   const { parseClickableGraph } = require("../clickable-graph");
   const graph = parseClickableGraph(articleBodyXml);
   const fp = computeStructuralFingerprint(graph, "org.wikipedia", undefined);
   state.explorationMemory.lastActionKind = "scroll";
   state.explorationMemory.lastFingerprint = fp;
+  state.explorationMemory.scrollRetryByFp.set(
+    fp,
+    explorationDriver.MAX_SCROLLS_PER_FP - 1,
+  );
 
-  // First decide() after a stale scroll: detects unchanged fp → marks exhausted.
+  // Next decide() after the stale scroll: increments to the budget → exhausted.
   const firstAction = await explorationDriver.decide(obs, state);
   // Since there are no nav items and no homogeneous list in articleBodyXml,
   // and scroll is now exhausted for this fp, decide must return null.
@@ -431,4 +437,114 @@ test("ExplorationDriver.decide: emits scroll on scrollable content when nothing 
   assert.ok(action.y1 > action.y2, "scroll-down swipe goes from lower y to upper y");
   // State memory updated to track this scroll
   assert.equal(state.explorationMemory.lastActionKind, "scroll");
+});
+
+// ── Scroll budget + feed list-item dedup (2026-04-24) ──────────────────
+//
+// Feed-type screens (Biztoso home feed, LinkedIn timeline, Twitter For
+// You) were under-explored because:
+//   1. elementKey returned rid-first → all feed cards sharing a container
+//      rid collapsed into one key → only 1 card tapped per fp.
+//   2. The scroll-exhaustion threshold was 1 → after a single scroll with
+//      an identical fp (typical for homogeneous feeds, where the
+//      structural fingerprint ignores text and so is stable across
+//      scrolls), we marked the fp exhausted and yielded before surfacing
+//      below-the-fold content.
+// listItemKey appends the label so visually distinct cards remain
+// individually tappable, and MAX_SCROLLS_PER_FP=4 gives feeds room to
+// scroll through 3-4 screenfuls of content.
+
+// 5 RecyclerView children all sharing the same container rid but distinct
+// text labels — the real-world pattern in Biztoso / LinkedIn / Twitter.
+const feedXml = wrap(
+  node({
+    resourceId: "com.biztoso:id/feed_item",
+    cls: "com.biztoso.FeedItemView",
+    pkg: "com.biztoso",
+    text: "Post from Alice",
+    bounds: "[40,400][1040,560]",
+  }),
+  node({
+    resourceId: "com.biztoso:id/feed_item",
+    cls: "com.biztoso.FeedItemView",
+    pkg: "com.biztoso",
+    text: "Post from Bob",
+    bounds: "[40,580][1040,740]",
+  }),
+  node({
+    resourceId: "com.biztoso:id/feed_item",
+    cls: "com.biztoso.FeedItemView",
+    pkg: "com.biztoso",
+    text: "Post from Carol",
+    bounds: "[40,760][1040,920]",
+  }),
+  node({
+    resourceId: "com.biztoso:id/feed_item",
+    cls: "com.biztoso.FeedItemView",
+    pkg: "com.biztoso",
+    text: "Post from Dave",
+    bounds: "[40,940][1040,1100]",
+  }),
+  node({
+    resourceId: "com.biztoso:id/feed_item",
+    cls: "com.biztoso.FeedItemView",
+    pkg: "com.biztoso",
+    text: "Post from Eve",
+    bounds: "[40,1120][1040,1280]",
+  }),
+);
+
+test("ExplorationDriver.decide: feed cards with shared rid but distinct labels are tapped individually (listItemKey)", async () => {
+  const state = {};
+  const obs = { xml: feedXml, packageName: "com.biztoso" };
+  const tappedY = [];
+  for (let i = 0; i < 5; i++) {
+    const a = await explorationDriver.decide(obs, state);
+    assert.ok(a, `iteration ${i}: should produce a tap action`);
+    assert.equal(a.type, "tap", `iteration ${i}: expected tap`);
+    tappedY.push(a.y);
+  }
+  // 5 distinct y-coords → 5 distinct cards tapped despite shared rid.
+  assert.equal(
+    new Set(tappedY).size,
+    5,
+    "expected 5 distinct card taps, not 1 tap + 4 scrolls",
+  );
+});
+
+test("ExplorationDriver.decide: scroll budget per fp is MAX_SCROLLS_PER_FP", async () => {
+  const state = {};
+  const obs = { xml: articleBodyXml, packageName: "org.wikipedia" };
+  const actions = [];
+  // Drive decide() past the budget. Expect exactly MAX swipes, then nulls.
+  for (let i = 0; i < explorationDriver.MAX_SCROLLS_PER_FP + 2; i++) {
+    actions.push(await explorationDriver.decide(obs, state));
+  }
+  const swipes = actions.filter((a) => a && a.type === "swipe");
+  const nulls = actions.filter((a) => a === null);
+  assert.equal(
+    swipes.length,
+    explorationDriver.MAX_SCROLLS_PER_FP,
+    "should emit exactly MAX_SCROLLS_PER_FP swipes before yielding",
+  );
+  assert.equal(nulls.length, 2, "decide should return null after the budget is hit");
+});
+
+test("ExplorationDriver.decide: nav tabs dedup on resource-id alone, not label (listItemKey is list-only)", async () => {
+  const state = {};
+  const obs = { xml: wikipediaBottomNavXml, packageName: "org.wikipedia" };
+  // Tap all 4 bottom-nav tabs — each should be recorded as a separate key.
+  for (let i = 0; i < 4; i++) {
+    const a = await explorationDriver.decide(obs, state);
+    assert.ok(a, `iteration ${i}: should tap a nav tab`);
+    assert.equal(a.type, "tap");
+  }
+  assert.equal(state.explorationMemory.tabsTapped.size, 4);
+  for (const key of state.explorationMemory.tabsTapped) {
+    assert.ok(key.startsWith("rid:"), `tab key should start with "rid:", got: ${key}`);
+    assert.ok(
+      !key.includes("|lbl:"),
+      `tab key should not carry a label suffix (that's listItemKey's job); got: ${key}`,
+    );
+  }
 });
