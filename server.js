@@ -24,6 +24,8 @@ const {
 const { createAuthMiddleware, generateToken } = require("./middleware/auth");
 const { validateStartJob, MAX_FILE_SIZE_BYTES } = require("./middleware/validate");
 const { wrapSuccess, wrapError, errorHandler } = require("./middleware/error-handler");
+const { multerErrorHandler } = require("./middleware/multer-error-handler");
+const { sendApiError } = require("./lib/api-errors");
 const { logger, requestLogger } = require("./lib/logger");
 const metrics = require("./lib/metrics");
 const magicLink = require("./lib/magic-link");
@@ -619,10 +621,52 @@ app.get("/metrics", (req, res) => {
  * POST /api/start-job — Upload APK and enqueue a test job.
  * Returns immediately with jobId. Job runs in background via queue.
  */
+// Route-scoped middleware — multer errors (file too large, ENOENT on /tmp/uploads)
+// must be translated into the structured api-errors shape BEFORE the route
+// handler runs, otherwise Express's default handler swallows them as HTML.
+function uploadApkMiddleware(req, res, next) {
+  upload.single("apk")(req, res, (err) => {
+    if (err) return multerErrorHandler(err, req, res, next);
+    next();
+  });
+}
+
+// APK sanity check — at minimum, the file must have the PK zip magic.
+// aapt2 would fail later with an inscrutable error; better to fail fast
+// with the INVALID_APK code so the UI can tell the user exactly what's wrong.
+function validateApkMagicBytes(req, res, next) {
+  if (!req.file || !req.file.path) return next();
+  try {
+    const fd = fs.openSync(req.file.path, "r");
+    const buf = Buffer.alloc(4);
+    fs.readSync(fd, buf, 0, 4, 0);
+    fs.closeSync(fd);
+    // APK/AAB/XAPK are ZIPs — must start with "PK\x03\x04" or "PK\x05\x06" (empty zip).
+    const isZip =
+      buf[0] === 0x50 && buf[1] === 0x4b &&
+      ((buf[2] === 0x03 && buf[3] === 0x04) || (buf[2] === 0x05 && buf[3] === 0x06));
+    if (!isZip) {
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
+      return sendApiError(res, "INVALID_APK", {
+        details: {
+          reason: "file does not start with PK zip magic bytes",
+          firstBytes: [...buf].map((b) => b.toString(16).padStart(2, "0")).join(" "),
+        },
+      });
+    }
+  } catch (e) {
+    return sendApiError(res, "INVALID_APK", {
+      message: `Could not read uploaded file: ${e.message}`,
+    });
+  }
+  next();
+}
+
 app.post(
   "/api/v1/start-job",
   jobLimiter,
-  upload.single("apk"),
+  uploadApkMiddleware,
+  validateApkMagicBytes,
   validateStartJob,
   async (req, res) => {
     const jobId = uuidv4();

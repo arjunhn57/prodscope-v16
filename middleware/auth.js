@@ -12,6 +12,7 @@
  */
 
 const crypto = require("crypto");
+const { apiError } = require("../lib/api-errors");
 
 // Lazy-require jsonwebtoken so the module loads even if jwt isn't installed yet
 let jwt;
@@ -136,9 +137,16 @@ function createAuthMiddleware(config) {
       });
     }
 
+    // Track whether the caller *presented* any credential at all. If not,
+    // they get MISSING_API_KEY; if they did and it was wrong, INVALID_API_KEY.
+    // This distinction lets the UI prompt the user to supply a key vs.
+    // telling them the one they supplied is bad.
+    let credentialPresented = false;
+
     // Try Bearer JWT first
     const authHeader = req.headers.authorization;
     if (authHeader && authHeader.startsWith("Bearer ")) {
+      credentialPresented = true;
       const token = authHeader.slice(7);
       if (jwtSecret) {
         const result = validateJwt(token, jwtSecret);
@@ -151,8 +159,9 @@ function createAuthMiddleware(config) {
 
     // Try API key (header)
     const providedKey = req.headers["x-api-key"];
-    if (providedKey && apiKey) {
-      if (validateApiKey(providedKey, apiKey)) {
+    if (providedKey) {
+      credentialPresented = true;
+      if (apiKey && validateApiKey(providedKey, apiKey)) {
         req.user = { type: "api_key" };
         return next();
       }
@@ -162,6 +171,7 @@ function createAuthMiddleware(config) {
     // (EventSource and <img> tags cannot set custom headers)
     const queryKey = req.query?.api_key;
     if (queryKey && QUERY_AUTH_PREFIXES.some((p) => req.path.startsWith(p))) {
+      credentialPresented = true;
       if (jwtSecret) {
         const result = validateJwt(queryKey, jwtSecret);
         if (result.valid) {
@@ -175,11 +185,8 @@ function createAuthMiddleware(config) {
       }
     }
 
-    return res.status(401).json({
-      success: false,
-      error: "Authentication required",
-      hint: "Provide a Bearer JWT token or X-API-Key header",
-    });
+    const code = credentialPresented ? "INVALID_API_KEY" : "MISSING_API_KEY";
+    return res.status(401).json(apiError(code));
   };
 }
 

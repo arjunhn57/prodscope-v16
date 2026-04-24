@@ -44,6 +44,7 @@ const {
   computeDriverHits,
   crossedFirstDecisionBoundary,
 } = require("../lib/crawl-health");
+const { apiError } = require("../lib/api-errors");
 
 // ---------------------------------------------------------------------------
 // C8: Pre-crawl disk check and auto-cleanup
@@ -671,7 +672,22 @@ async function processJob(jobId, apkPath, opts) {
     try { fs.unlinkSync(apkPath); } catch (e) {}
   } catch (err) {
     log.error({ err }, "Job failed with uncaught exception");
-    store.updateJob(jobId, { status: "failed", error: err.message, costUsd: 0 });
+    // Classify known failure modes into the structured api-errors shape so
+    // the frontend can show a sensible message + retry hint instead of a
+    // raw stack trace. Unknown errors still write `error.message` for ops.
+    const msg = String(err && err.message || "");
+    let errorDetails = null;
+    if (/crawl timeout exceeded|crawl exceeded.*limit|timeout/i.test(msg)) {
+      errorDetails = apiError("JOB_TIMEOUT");
+    } else if (/no idle emulators|emulator.*unavailable|emulator.*not.*found/i.test(msg)) {
+      errorDetails = apiError("EMULATOR_UNAVAILABLE");
+    }
+    store.updateJob(jobId, {
+      status: "failed",
+      error: err.message,
+      costUsd: 0,
+      ...(errorDetails ? { errorDetails } : {}),
+    });
     metrics.recordCrawl({
       stopReason: "uncaught_exception",
       durationMs: Date.now() - crawlStartTime,
