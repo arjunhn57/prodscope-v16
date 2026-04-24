@@ -294,13 +294,21 @@ function createLlmFallback(inner) {
     const reason = deriveReason({ claimedButNull, claimThrew, signature });
 
     // V18 Phase 3: compute trajectory hint from the v18 trajectory-memory
-    // (seen types + hubs remaining + recent actions). Threaded into the
-    // inner v16 agent via deps.trajectoryHint so its prompt can bias tap
-    // choices toward unexplored hubs.
+    // (seen types + hubs remaining + recent actions + per-fp tapped/
+    // untapped frontier). Threaded into the inner v16 agent via
+    // deps.trajectoryHint so its prompt can bias tap choices toward
+    // unexplored hubs AND untapped edges on the current screen.
     let trajectoryHint = null;
     if (deps && deps.trajectory) {
       try {
-        trajectoryHint = getTrajectorySummariser()(deps.trajectory) || null;
+        const summariseOpts = {};
+        if (deps.plan && deps.plan.fingerprint) {
+          summariseOpts.currentFp = deps.plan.fingerprint;
+        }
+        if (Array.isArray(deps.classifiedClickables)) {
+          summariseOpts.currentClickables = deps.classifiedClickables;
+        }
+        trajectoryHint = getTrajectorySummariser()(deps.trajectory, summariseOpts) || null;
       } catch (err) {
         log.warn({ err: err.message }, "llm-fallback: trajectory summarise failed");
       }

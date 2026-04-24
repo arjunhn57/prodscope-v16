@@ -234,18 +234,25 @@ function buildStepSuffix(ctx) {
     lines.push(`RecentFP: ${fps}`);
   }
 
-  // V18 Phase 3 slice (2026-04-24): trajectory hint from v18/trajectory-memory.js
-  // via v18 dispatcher → llm-fallback → innerLlmDecision. Tells the agent
-  // which hub screen-types are still unexplored so its tap choices can
-  // prefer gear icons / hamburgers / tabs that lead to settings, notifications,
-  // search, etc. Run 537c4ec4 hit budget_exhausted at 29 screens having
-  // never touched Settings — LLMFallback kept tapping Home and profile
-  // because nothing told it to branch out.
+  // V18 Phase 3 (2026-04-24/25): trajectory hint from v18/trajectory-memory.js
+  // via v18 dispatcher → llm-fallback → innerLlmDecision. Provides:
+  //   - screens_seen (counts by screenType)
+  //   - hubs_remaining (screen types we haven't visited yet)
+  //   - recent_actions (short trail)
+  //   - tapped_on_this_screen (edges already tried on current fp)
+  //   - untapped_on_this_screen (remaining frontier count)
+  //
+  // The crawler is now explicitly a graph-exploration agent:
+  //   nodes = screen fingerprints, edges = clickables,
+  //   goal = maximize unique nodes visited in the step budget.
+  // The prompt guidance below steers the agent toward untapped edges
+  // that plausibly lead to NEW screens, with back-nav as the
+  // frontier-empty backstop.
   if (ctx.trajectoryHint && typeof ctx.trajectoryHint === "string") {
-    const hint = ctx.trajectoryHint.slice(0, 1000);
+    const hint = ctx.trajectoryHint.slice(0, 1400);
     lines.push(`Trajectory: ${hint}`);
     lines.push(
-      "Coverage priority: if any clickable on this screen plausibly leads to a screen type in `hubs_remaining` above (drawer menu, gear icon, 'Settings', 'Notifications', 'Search', '...' / 'More'), strongly prefer tapping that over re-tapping already-visited hubs.",
+      "Graph exploration strategy: the crawler is doing BFS/DFS over screens. Prefer UNTAPPED clickables on this screen that plausibly lead to a NEW screen (feed items → detail, menu items, drawer/hamburger, settings gear, unvisited nav tabs, pagination, 'More'). Avoid re-tapping elements in `tapped_on_this_screen` — they've already been tried from this fp. If any clickable plausibly leads to a screen type in `hubs_remaining`, strongly prefer that. When the frontier is empty (every clickable tapped) emit `press_back` on detail/dialog/error screens, or tap a nav tab / drawer item toward an unvisited hub on feed/profile/settings/search screens.",
     );
   }
 

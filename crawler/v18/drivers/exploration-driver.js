@@ -23,6 +23,7 @@
 
 const { parseClickableGraph } = require("../../v17/drivers/clickable-graph");
 const v17Exploration = require("../../v17/drivers/exploration-driver");
+const { untappedClickables } = require("../trajectory-memory");
 const { logger } = require("../../../lib/logger");
 
 const log = logger.child({ component: "v18-exploration-driver" });
@@ -33,6 +34,25 @@ const log = logger.child({ component: "v18-exploration-driver" });
  * run.
  */
 const EXPLORATION_INTENTS = new Set(["navigate", "read_only"]);
+
+/**
+ * Phase 3 graph exploration: screen types where an empty frontier
+ * (every clickable already tapped on this fp) can safely emit press_back
+ * without exiting the target app. Detail / dialog / error / other are
+ * dead-ends where back-nav is the natural backtrack.
+ *
+ * Feed / profile / settings / search / compose / auth / permission /
+ * onboarding / profile screen-types are hubs — if their frontier empties,
+ * yield to LLMFallback so its trajectory-hint prompt can navigate to an
+ * unvisited hub (via drawer, nav tab, etc.) rather than press_back out
+ * of the app.
+ */
+const EMPTY_FRONTIER_SAFE_BACK_SCREEN_TYPES = new Set([
+  "detail",
+  "dialog",
+  "error",
+  "other",
+]);
 
 /**
  * Build the filtered clickable graph the v17 heuristics will operate on.
@@ -114,11 +134,54 @@ async function decide(observation, state, deps = {}) {
     );
   }
 
+  // Phase 3 graph exploration: drop clickables we've already tapped on
+  // this fp (the frontier is the set of untried edges). When the frontier
+  // is empty the driver yields — dispatcher's post-driver fallback either
+  // emits press_back on safe screen types or lets LLMFallback pick an
+  // unvisited hub via trajectory hint.
+  const fp = (deps.plan && deps.plan.fingerprint) || null;
+  const trajectory = deps.trajectory || null;
+  let frontierGraph = filterable;
+  if (fp && trajectory) {
+    const frontier = untappedClickables(trajectory, fp, filterable.clickables);
+    const frontierDropped = filterable.clickables.length - frontier.length;
+    if (frontierDropped > 0) {
+      log.info(
+        {
+          frontierDropped,
+          frontierSize: frontier.length,
+          kept: filterable.clickables.length,
+          fingerprint: fp,
+        },
+        "ExplorationDriver: frontier filter dropped already-tapped edges",
+      );
+    }
+    frontierGraph = { clickables: frontier, groups: filterable.groups || {} };
+
+    if (frontier.length === 0 && filterable.clickables.length > 0) {
+      const screenType = deps.plan && deps.plan.screenType;
+      if (EMPTY_FRONTIER_SAFE_BACK_SCREEN_TYPES.has(screenType)) {
+        log.info(
+          { fingerprint: fp, screenType },
+          "ExplorationDriver: frontier empty on safe screen — emitting press_back",
+        );
+        return { type: "press_back" };
+      }
+      // Hub screen with empty frontier → yield so LLMFallback can route
+      // to an unvisited hub via trajectory hint.
+      log.info(
+        { fingerprint: fp, screenType },
+        "ExplorationDriver: frontier empty on hub screen — yielding to LLMFallback",
+      );
+      return null;
+    }
+  }
+
   // Stash a wrapper observation that exposes the filtered graph. v17's
   // driver reads observation.xml and reparses, which means it'll see the
   // raw clickables again. To keep the heuristics on the filtered set we
   // instead inline v17's decide logic against our graph.
-  return decideOnFilteredGraph(observation, state, filterable, deps);
+  return decideOnFilteredGraph(observation, state, frontierGraph, deps);
 }
 
 /**
@@ -241,4 +304,5 @@ module.exports = {
   decide,
   deriveFilterable,
   EXPLORATION_INTENTS,
+  EMPTY_FRONTIER_SAFE_BACK_SCREEN_TYPES,
 };

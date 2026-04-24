@@ -27,7 +27,12 @@ const V18ExplorationDriver = require("./drivers/exploration-driver");
 const { parseClickableGraph } = require("../v17/drivers/clickable-graph");
 const { classifyScreen } = require("./semantic-classifier");
 const { escalate, shouldEscalate } = require("./sonnet-escalation");
-const { recordScreen, summarise: summariseTrajectory } = require("./trajectory-memory");
+const {
+  recordScreen,
+  recordTap,
+  summarise: summariseTrajectory,
+} = require("./trajectory-memory");
+const { findClickableAt } = require("../v17/drivers/llm-fallback");
 const { logger } = require("../../lib/logger");
 
 const log = logger.child({ component: "v18-dispatcher" });
@@ -205,6 +210,10 @@ async function dispatch(observation, state, deps = {}) {
     plan,
     classifiedClickables,
     timeoutMs: deps.timeoutMs,
+    // Phase 3: v18 ExplorationDriver uses this to filter already-tapped
+    // edges from the frontier before running structural heuristics.
+    // LLMFallback's wrapper also reads it to compute the trajectory hint.
+    trajectory: deps.trajectory,
   };
 
   // 5. Dispatch, same priority loop as v17.
@@ -246,6 +255,7 @@ async function dispatch(observation, state, deps = {}) {
       },
       "dispatcher: driver acted",
     );
+    recordTapIfAny(action, classifiedClickables, plan.fingerprint, deps);
     return { driver: driver.name, action, diagnostics, plan };
   }
 
@@ -263,6 +273,7 @@ async function dispatch(observation, state, deps = {}) {
     },
     "dispatcher: LLMFallback acted",
   );
+  recordTapIfAny(fallbackAction, classifiedClickables, plan.fingerprint, deps);
   return {
     driver: "LLMFallback",
     action: fallbackAction,
@@ -271,6 +282,33 @@ async function dispatch(observation, state, deps = {}) {
     llmFallbackReason: fallbackDeps.lastLlmFallbackReason || null,
     llmFallbackSignature: fallbackDeps.lastLlmFallbackSignature || null,
   };
+}
+
+/**
+ * Phase 3 — if the dispatched action is a tap AND we can find which
+ * clickable was tapped via bounds containment, record the edge as
+ * visited in the graph-exploration state.
+ *
+ * Silently no-op on non-tap actions, missing trajectory, or taps that
+ * don't hit any classified clickable (e.g. v16 agent abstract-coord
+ * taps — those already fell through the intent validator).
+ *
+ * @param {object} action
+ * @param {object[]} classifiedClickables
+ * @param {string} fp
+ * @param {object} deps
+ */
+function recordTapIfAny(action, classifiedClickables, fp, deps) {
+  if (!action || action.type !== "tap") return;
+  if (!fp || !deps || !deps.trajectory) return;
+  if (!Array.isArray(classifiedClickables) || classifiedClickables.length === 0) return;
+  const hit = findClickableAt(classifiedClickables, action.x, action.y);
+  if (!hit) return;
+  try {
+    recordTap(deps.trajectory, fp, hit);
+  } catch (err) {
+    log.warn({ err: err.message }, "dispatcher: recordTap failed");
+  }
 }
 
 module.exports = {

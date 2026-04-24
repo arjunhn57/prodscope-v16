@@ -76,13 +76,18 @@ const DISCOVERY_WINDOW_STEPS = 5;
 // Recent-fingerprint buffer length — shown to the agent so it knows which
 // fingerprints to avoid revisiting.
 const RECENT_FP_BUFFER = 10;
-// Auth-loop exit — if the SAME fingerprint has been observed this many times
-// total and the agent is still not choosing to exit (e.g. biztoso 6f926f08:
-// tapped (352,1006) at steps #09/#16/#22/#29 on the same login FP across a
-// launcher-orbit), force-terminate with blocked_by_auth. Wider net than the
-// ORBIT_REPEATS window (5-in-8); catches cross-orbit loops stagnationStreak
-// resets through.
-const AUTH_LOOP_FP_THRESHOLD = 4;
+// fp_revisit guard — terminates the run when the SAME fingerprint has been
+// observed this many times. Originally sized to 4 to catch auth-loop bounces
+// where the agent orbits a login screen; raised to 8 on 2026-04-25 after
+// Phase 3 graph-exploration landed.
+//
+// Why 8 now: with per-fp edge tracking, a legitimate BFS on a hub screen
+// (feed / settings / search) will re-visit the fp multiple times to pick
+// up different untapped edges. Threshold=4 forced premature termination
+// (run 2bb0b6f0 at step 28 with only 21 screens). 8 gives each hub up to
+// 7 back-and-forth trips before giving up — still a safety net, not a
+// ceiling on legitimate exploration.
+const AUTH_LOOP_FP_THRESHOLD = 8;
 
 // ── Package-drift recovery ──
 // Max times we'll relaunch the target app mid-crawl before conceding. Set to

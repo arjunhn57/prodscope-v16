@@ -280,6 +280,144 @@ test("dispatch: engine_action=proceed (default) → drivers dispatch normally", 
   assert.equal(r.action.type, "tap");
 });
 
+// ── Phase 3: dispatcher records tapped edges into trajectory memory ──
+
+test("dispatch: after driver emits a tap, the tapped clickable is recorded in trajectory memory", async () => {
+  const { createMemory, isTapped } = require("../trajectory-memory");
+  const xml = wrap(
+    n({ text: "Post by Alice", rid: "com.app:id/feed_item", cls: "com.app.FeedCard", bounds: "[40,400][1040,560]" }),
+    n({ text: "Post by Bob",   rid: "com.app:id/feed_item", cls: "com.app.FeedCard", bounds: "[40,580][1040,740]" }),
+    n({ text: "Post by Carol", rid: "com.app:id/feed_item", cls: "com.app.FeedCard", bounds: "[40,760][1040,920]" }),
+  );
+  const plan = {
+    screen_type: "feed",
+    allowed_intents: ["navigate", "read_only"],
+    action_budget: 3,
+    confidence: 0.9,
+    nodes: [
+      { nodeIndex: 0, role: "content", intent: "navigate", priority: 8 },
+      { nodeIndex: 1, role: "content", intent: "navigate", priority: 8 },
+      { nodeIndex: 2, role: "content", intent: "navigate", priority: 8 },
+    ],
+  };
+  const anthropic = makeMockAnthropic([plan]);
+  const trajectory = createMemory();
+  const r = await dispatch(
+    { xml, packageName: "com.app" },
+    {},
+    { anthropic, classifierCache: new Map(), trajectory },
+  );
+  assert.equal(r.action.type, "tap");
+  // One of the 3 cards is now marked tapped on this fp.
+  const fp = r.plan.fingerprint;
+  assert.ok(trajectory.tappedEdgesByFp.has(fp));
+  assert.equal(trajectory.tappedEdgesByFp.get(fp).size, 1);
+});
+
+test("dispatch: classifier cache hit on second call — second tap records second edge (frontier BFS)", async () => {
+  const { createMemory } = require("../trajectory-memory");
+  // 5 cards — large enough that after tapping one, findListItemTargets
+  // still sees ≥3 aligned siblings and keeps picking.
+  const xml = wrap(
+    n({ text: "Post A", rid: "com.app:id/feed_item", cls: "com.app.FeedCard", bounds: "[40,400][1040,560]" }),
+    n({ text: "Post B", rid: "com.app:id/feed_item", cls: "com.app.FeedCard", bounds: "[40,580][1040,740]" }),
+    n({ text: "Post C", rid: "com.app:id/feed_item", cls: "com.app.FeedCard", bounds: "[40,760][1040,920]" }),
+    n({ text: "Post D", rid: "com.app:id/feed_item", cls: "com.app.FeedCard", bounds: "[40,940][1040,1100]" }),
+    n({ text: "Post E", rid: "com.app:id/feed_item", cls: "com.app.FeedCard", bounds: "[40,1120][1040,1280]" }),
+  );
+  const plan = {
+    screen_type: "feed",
+    allowed_intents: ["navigate", "read_only"],
+    action_budget: 5,
+    confidence: 0.9,
+    nodes: Array.from({ length: 5 }, (_, i) => ({ nodeIndex: i, role: "content", intent: "navigate", priority: 8 })),
+  };
+  const anthropic = makeMockAnthropic([plan]); // Only ONE scripted plan — subsequent calls must be cache hits.
+  const cache = new Map();
+  const trajectory = createMemory();
+  const r1 = await dispatch({ xml, packageName: "com.app" }, {}, { anthropic, classifierCache: cache, trajectory });
+  const r2 = await dispatch({ xml, packageName: "com.app" }, {}, { anthropic, classifierCache: cache, trajectory });
+  const fp = r1.plan.fingerprint;
+  assert.notEqual(r1.action.y, r2.action.y, "second call must pick a different card via frontier filter");
+  assert.equal(trajectory.tappedEdgesByFp.get(fp).size, 2);
+});
+
+test("dispatch: frontier empty on detail screen → ExplorationDriver emits press_back (safe back-edge)", async () => {
+  const { createMemory, recordTap } = require("../trajectory-memory");
+  const xml = wrap(
+    n({ text: "Item A", rid: "com.app:id/row", cls: "com.app.DetailRow", bounds: "[40,200][1040,360]" }),
+    n({ text: "Item B", rid: "com.app:id/row", cls: "com.app.DetailRow", bounds: "[40,380][1040,540]" }),
+    n({ text: "Item C", rid: "com.app:id/row", cls: "com.app.DetailRow", bounds: "[40,560][1040,720]" }),
+  );
+  const plan = {
+    screen_type: "detail",
+    allowed_intents: ["navigate", "read_only"],
+    action_budget: 3,
+    confidence: 0.9,
+    nodes: Array.from({ length: 3 }, (_, i) => ({ nodeIndex: i, role: "content", intent: "navigate", priority: 5 })),
+  };
+  const anthropic = makeMockAnthropic([plan]);
+  const trajectory = createMemory();
+  // Pre-seed the trajectory: all 3 rows tapped (frontier is empty).
+  const { parseClickableGraph } = require("../../v17/drivers/clickable-graph");
+  const graph = parseClickableGraph(xml);
+  const fakeFp = "pre-seed-fp";
+  for (const c of graph.clickables) recordTap(trajectory, fakeFp, c);
+
+  // Dispatch — classifier will compute its own fp. We need both pre-seed and
+  // live fp to match. Simpler: dispatch first to learn the fp, then pre-seed
+  // trajectory on that fp and dispatch again.
+  const r1 = await dispatch({ xml, packageName: "com.app" }, {}, { anthropic, classifierCache: new Map(), trajectory });
+  const fp = r1.plan.fingerprint;
+  // Pre-seed all graph clickables as tapped on the real fp.
+  for (const c of graph.clickables) recordTap(trajectory, fp, c);
+  // Dispatch again with the same xml + fresh anthropic (need a second plan scripted).
+  const anthropic2 = makeMockAnthropic([plan]);
+  const cache2 = new Map();
+  const r2 = await dispatch({ xml, packageName: "com.app" }, {}, { anthropic: anthropic2, classifierCache: cache2, trajectory });
+  // r2 should emit press_back because frontier is empty on a detail screen.
+  assert.equal(r2.action.type, "press_back");
+  assert.equal(r2.driver, "ExplorationDriver");
+});
+
+test("dispatch: frontier empty on feed screen → ExplorationDriver yields to LLMFallback (hub routing)", async () => {
+  const { createMemory, recordTap } = require("../trajectory-memory");
+  const xml = wrap(
+    n({ text: "Post A", rid: "com.app:id/feed_item", cls: "com.app.FeedCard", bounds: "[40,400][1040,560]" }),
+    n({ text: "Post B", rid: "com.app:id/feed_item", cls: "com.app.FeedCard", bounds: "[40,580][1040,740]" }),
+    n({ text: "Post C", rid: "com.app:id/feed_item", cls: "com.app.FeedCard", bounds: "[40,760][1040,920]" }),
+  );
+  const plan = {
+    screen_type: "feed",
+    allowed_intents: ["navigate", "read_only"],
+    action_budget: 3,
+    confidence: 0.9,
+    nodes: Array.from({ length: 3 }, (_, i) => ({ nodeIndex: i, role: "content", intent: "navigate", priority: 8 })),
+  };
+  const trajectory = createMemory();
+  const { parseClickableGraph } = require("../../v17/drivers/clickable-graph");
+  const graph = parseClickableGraph(xml);
+  // Discover fp via a dry-run dispatch, then pre-seed all cards.
+  const r0 = await dispatch({ xml, packageName: "com.app" }, {}, {
+    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory,
+  });
+  const fp = r0.plan.fingerprint;
+  for (const c of graph.clickables) recordTap(trajectory, fp, c);
+  // Now dispatch with empty frontier on a feed screen → should hit LLMFallback.
+  let fallbackCalled = false;
+  const llmFallback = async () => {
+    fallbackCalled = true;
+    return { type: "press_back" };
+  };
+  const r = await dispatch(
+    { xml, packageName: "com.app" },
+    {},
+    { anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory, llmFallback },
+  );
+  assert.equal(fallbackCalled, true, "LLMFallback should be invoked when frontier is empty on a feed screen");
+  assert.equal(r.driver, "LLMFallback");
+});
+
 test("dispatch: compose sheet with a close affordance → DismissDriver acts, not Exploration", async () => {
   const xml = wrap(
     n({ text: "Close sheet", rid: "com.app:id/close", desc: "Close sheet", cls: "android.widget.Button", bounds: "[40,100][200,180]" }),
