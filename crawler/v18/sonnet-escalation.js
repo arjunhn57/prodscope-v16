@@ -36,8 +36,11 @@ const SONNET_MODEL = "claude-sonnet-4-6";
 const SONNET_TIMEOUT_MS = 25000;
 const SONNET_MAX_TOKENS = 2000;
 
-/** Hard cap per crawl. */
-const MAX_SONNET_ESCALATIONS_PER_CRAWL = 2;
+/** Hard cap per crawl. 2026-04-25 v6: raised from 2 to 6 — feature-rich
+ *  apps need more escalations to navigate ambiguous hubs. The cost cap
+ *  ($0.20) and novelty-stall stop are the actual brakes; this is a
+ *  ceiling, not a target. */
+const MAX_SONNET_ESCALATIONS_PER_CRAWL = 6;
 
 const SYSTEM_PROMPT = `You are the senior-QA-engineer escalation layer for a mobile app crawler.
 

@@ -664,6 +664,29 @@ async function runAgentLoop(opts) {
     const discoveryDelta5 =
       uniqueCountByStep[step] - (uniqueCountByStep[baselineStep] || 0);
 
+    // 2026-04-25 v6: novelty-aware stop. If the agent hasn't found any new
+    // unique screens in the last NOVELTY_STALL_LIMIT steps, the remaining
+    // budget will only be burned on hub-bouncing — stop now. This is the
+    // safety valve that lets us raise cost ceilings without runaway cost
+    // on small apps; small apps stop here, big apps keep going as long as
+    // they keep earning coverage.
+    const NOVELTY_STALL_LIMIT = 15;
+    if (step >= NOVELTY_STALL_LIMIT) {
+      const lookback = uniqueCountByStep[step - NOVELTY_STALL_LIMIT] || 0;
+      if (uniqueCountByStep[step] === lookback) {
+        stopReason = "novelty_stalled";
+        log.info(
+          {
+            step,
+            uniqueScreens: uniqueCountByStep[step],
+            stallWindow: NOVELTY_STALL_LIMIT,
+          },
+          "agent-loop: novelty stalled — no new screens in last 15 steps",
+        );
+        break;
+      }
+    }
+
     // ── Decide (V17 driver-first) ──
     const budgetSnap = budget.snapshot();
 

@@ -23,10 +23,20 @@
 
 const { parseClickableGraph } = require("../../v17/drivers/clickable-graph");
 const v17Exploration = require("../../v17/drivers/exploration-driver");
-const { untappedClickables } = require("../trajectory-memory");
+const { untappedClickables, countActivityVisits } = require("../trajectory-memory");
 const { logger } = require("../../../lib/logger");
 
 const log = logger.child({ component: "v18-exploration-driver" });
+
+/**
+ * 2026-04-25 v6: drill-down preference threshold. After we've recorded
+ * `HUB_REVISIT_THRESHOLD` actions on the current activity, prefer a list
+ * item (which usually opens a different activity / detail screen) over
+ * tapping yet another nav tab in the same activity. Below the threshold,
+ * the existing nav-first ordering stays — agent tabs the bottom nav
+ * normally, only flipping when it's clearly camped in one hub.
+ */
+const HUB_REVISIT_THRESHOLD = 3;
 
 /**
  * The intents that ExplorationDriver is allowed to act on. Anything outside
@@ -321,6 +331,42 @@ async function decideOnFilteredGraph(observation, state, graph, deps) {
     if (count >= 4) {
       memory.scrollExhausted.add(fp);
       log.info({ fingerprint: fp, scrolls: count }, "ExplorationDriver: scroll budget reached");
+    }
+  }
+
+  // 2026-04-25 v6: drill-down preference. If the current activity has
+  // been recorded ≥ HUB_REVISIT_THRESHOLD times, the agent has already
+  // tabbed through the bottom nav enough — prefer a list item that opens
+  // a detail / new activity over yet another nav tab. This is the load-
+  // bearing fix for biztoso-class apps where each nav tap is a different
+  // targetText so no targetText-bucketed loop detector ever fires.
+  const trajectory2 = deps.trajectory || null;
+  const currentActivity = observation && observation.activity;
+  if (trajectory2 && currentActivity) {
+    const activityVisits = countActivityVisits(trajectory2, currentActivity);
+    if (activityVisits >= HUB_REVISIT_THRESHOLD) {
+      const listTapEarly = v17Exploration.pickListItem(graph, memory, fp);
+      if (listTapEarly) {
+        let visited2 = memory.listItemsByFp.get(fp);
+        if (!visited2) {
+          visited2 = new Set();
+          memory.listItemsByFp.set(fp, visited2);
+        }
+        visited2.add(listTapEarly.key);
+        memory.lastActionKind = "tap_item";
+        memory.lastFingerprint = fp;
+        log.info(
+          {
+            activityVisits,
+            currentActivity,
+            label: listTapEarly.item.label || "",
+            fingerprint: fp,
+            intent: listTapEarly.item.intent,
+          },
+          "ExplorationDriver: drill-down preference — list item over nav (camped in hub)",
+        );
+        return tapAction(listTapEarly.item);
+      }
     }
   }
 

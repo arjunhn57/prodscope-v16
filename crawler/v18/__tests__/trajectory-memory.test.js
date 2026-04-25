@@ -683,3 +683,138 @@ test("summarise: includes logical_unique count line", () => {
   const hint = summarise(m);
   assert.ok(hint.includes("logical_unique: 2"));
 });
+
+// ── 2026-04-25 v6: activity coverage + hub-revisit detector ──────────
+
+const {
+  uniqueActivitiesCount,
+  countActivityVisits,
+  detectHubRevisit,
+} = require("../trajectory-memory");
+
+test("uniqueActivitiesCount: tracks distinct activities passed to recordScreen", () => {
+  const m = createMemory();
+  recordScreen(m, "fp1", "feed", "lfp1", "com.app/.HomeActivity");
+  recordScreen(m, "fp2", "feed", "lfp2", "com.app/.HomeActivity"); // same activity
+  recordScreen(m, "fp3", "profile", "lfp3", "com.app/.ProfileActivity");
+  recordScreen(m, "fp4", "settings", "lfp4", "com.app/.SettingsActivity");
+  assert.equal(uniqueActivitiesCount(m), 3);
+});
+
+test("uniqueActivitiesCount: tolerates missing/empty activity arg", () => {
+  const m = createMemory();
+  recordScreen(m, "fp1", "feed", "lfp1");
+  recordScreen(m, "fp2", "feed", "lfp2", "");
+  recordScreen(m, "fp3", "feed", "lfp3", null);
+  assert.equal(uniqueActivitiesCount(m), 0);
+});
+
+test("countActivityVisits: counts recentActions matching the activity", () => {
+  const m = createMemory();
+  for (let i = 0; i < 5; i++) {
+    recordAction(m, { step: i, driver: "X", actionType: "tap", fingerprint: `f${i}`, activity: "com.app/.Home" });
+  }
+  for (let i = 0; i < 2; i++) {
+    recordAction(m, { step: 5 + i, driver: "X", actionType: "tap", fingerprint: `f${i}`, activity: "com.app/.Profile" });
+  }
+  assert.equal(countActivityVisits(m, "com.app/.Home"), 5);
+  assert.equal(countActivityVisits(m, "com.app/.Profile"), 2);
+  assert.equal(countActivityVisits(m, "com.app/.NotVisited"), 0);
+  assert.equal(countActivityVisits(m, ""), 0);
+});
+
+test("detectHubRevisit: fires on bottom-nav-bouncing pattern (different labels, same activity+screenType)", () => {
+  const m = createMemory();
+  // 14 actions all on the same (activity, screenType=feed) but with different
+  // targetText each time — exactly the biztoso bottom-nav pattern that the
+  // targetText-bucketed detectors miss.
+  const labels = ["Feed", "Shorts", "Chat", "Connections", "Feed", "Shorts", "Chat", "Connections", "Feed", "Shorts", "Chat", "Connections", "Feed", "Shorts"];
+  for (let i = 0; i < labels.length; i++) {
+    recordAction(m, {
+      step: i,
+      driver: "ExplorationDriver",
+      actionType: "tap",
+      targetText: labels[i],
+      fingerprint: `fp${i}`,
+      screenType: "feed",
+      activity: "com.app/.MainActivity",
+    });
+  }
+  const r = detectHubRevisit(m);
+  assert.ok(r, "should detect hub revisit");
+  assert.equal(r.key, "com.app/.MainActivity::feed");
+  assert.ok(r.share > 0.5, `share should exceed 50%, got ${r.share}`);
+  assert.equal(r.count, 14);
+});
+
+test("detectHubRevisit: returns null when actions span multiple activities", () => {
+  const m = createMemory();
+  // 12 actions split 4-4-4 across three activities — no single bucket
+  // dominates, no hub revisit.
+  for (let i = 0; i < 4; i++) {
+    recordAction(m, { step: i, driver: "X", actionType: "tap", targetText: "X", fingerprint: `f${i}`, screenType: "feed", activity: "com.app/.Home" });
+  }
+  for (let i = 0; i < 4; i++) {
+    recordAction(m, { step: 4 + i, driver: "X", actionType: "tap", targetText: "X", fingerprint: `f${i}`, screenType: "detail", activity: "com.app/.Detail" });
+  }
+  for (let i = 0; i < 4; i++) {
+    recordAction(m, { step: 8 + i, driver: "X", actionType: "tap", targetText: "X", fingerprint: `f${i}`, screenType: "settings", activity: "com.app/.Settings" });
+  }
+  assert.equal(detectHubRevisit(m), null);
+});
+
+test("detectHubRevisit: returns null below the minimum action threshold", () => {
+  const m = createMemory();
+  // Only 11 actions — below the 12-action minimum even if all on same hub.
+  for (let i = 0; i < 11; i++) {
+    recordAction(m, { step: i, driver: "X", actionType: "tap", targetText: "X", fingerprint: `f${i}`, screenType: "feed", activity: "com.app/.Home" });
+  }
+  assert.equal(detectHubRevisit(m), null);
+});
+
+test("summarise: emits HUB REVISIT WARNING when hub-revisit detector fires + suppressed by louder detectors", () => {
+  // Camped pattern, different labels each tap. Use unique labels so the
+  // targetText-bucketed detectors (rapid/alt/slow) all stay quiet — that
+  // is the exact biztoso-class blind spot the hub-revisit detector exists
+  // to cover.
+  const m = createMemory();
+  for (let i = 0; i < 14; i++) {
+    recordAction(m, {
+      step: i,
+      driver: "ExplorationDriver",
+      actionType: "tap",
+      targetText: `Item_${i}`, // every label distinct — no targetText bucket ever fills
+      fingerprint: `fp${i}`,
+      screenType: "feed",
+      activity: "com.app/.MainActivity",
+    });
+  }
+  const hint = summarise(m);
+  assert.ok(hint.includes("HUB REVISIT WARNING"), "expected HUB REVISIT WARNING");
+  assert.ok(hint.includes("com.app/.MainActivity"));
+
+  // Now add 3 of the same label — rapid loop fires; hub-revisit should be suppressed.
+  for (let i = 14; i < 18; i++) {
+    recordAction(m, {
+      step: i,
+      driver: "ExplorationDriver",
+      actionType: "tap",
+      targetText: "RepeatedLabel",
+      fingerprint: `fp${i}`,
+      screenType: "feed",
+      activity: "com.app/.MainActivity",
+    });
+  }
+  const hint2 = summarise(m);
+  assert.ok(hint2.includes("LOOP WARNING"), "rapid LOOP should fire");
+  assert.ok(!hint2.includes("HUB REVISIT WARNING"), "hub revisit should be suppressed when louder detector fires");
+});
+
+test("recordScreen: backward compatible — works without activity arg", () => {
+  const m = createMemory();
+  // Old call shape (4 args) must still work.
+  recordScreen(m, "fp1", "feed", "lfp1");
+  recordScreen(m, "fp2", "settings", "lfp2");
+  assert.equal(m.logicalFingerprintsSeen.size, 2);
+  assert.equal(uniqueActivitiesCount(m), 0);
+});

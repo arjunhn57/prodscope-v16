@@ -23,6 +23,7 @@ const v18Dispatcher = require("./dispatcher");
 const {
   createMemory: createTrajectoryMemory,
   uniqueLogicalScreensCount,
+  uniqueActivitiesCount,
 } = require("./trajectory-memory");
 const { createBudget: createEscalationBudget } = require("./sonnet-escalation");
 const { logger } = require("../../lib/logger");
@@ -86,6 +87,12 @@ async function runAgentLoop(opts) {
         hubsRemaining: Array.from(trajectory.hubsRemaining),
         fingerprintsSeen: trajectory.fingerprintsSeen.size,
         logicalFingerprintsSeen: logicalUnique,
+        // 2026-04-25 v6: distinct Android activities visited. Honest
+        // "feature areas explored" signal — admin telemetry uses this to
+        // distinguish a 60-step crawl that touched 6 activities from one
+        // that bounced 60 times in a single hub.
+        uniqueActivities: uniqueActivitiesCount(trajectory),
+        activitiesSeen: Array.from(trajectory.activitiesSeen || []),
       },
     },
   });

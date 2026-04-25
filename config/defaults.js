@@ -8,7 +8,7 @@ module.exports = {
   SKIP_AI_FOR_TESTS: process.env.SKIP_AI_FOR_TESTS === "true",
   UPLOAD_DEST: "/tmp/uploads/",
   SCREENSHOT_DIR_PREFIX: "/tmp/screenshots-",
-  MAX_CRAWL_STEPS: 80,
+  MAX_CRAWL_STEPS: 120,
   EMULATOR_AVD: "prodscope-test",
   SNAPSHOT_NAME: process.env.SNAPSHOT_NAME || "prodscope-ready",
   SNAPSHOT_BOOT_TIMEOUT: 30,   // seconds — snapshot restore should be fast
@@ -84,6 +84,11 @@ module.exports = {
   // CRAWL_ENGINE=v15 still works for rollback, but the V15 sources live in
   // crawler/_v15-archive/ and are only reachable via that path.
   CRAWL_ENGINE: process.env.CRAWL_ENGINE || "v16",
-  V16_MAX_COST_USD: Number(process.env.V16_MAX_COST_USD) || 0.12, // ₹10 hard ceiling
-  V16_MAX_SONNET_ESCALATIONS: Number(process.env.V16_MAX_SONNET_ESCALATIONS) || 3,
+  // 2026-04-25 v6: cost ceiling raised from $0.12 to $0.20. Diligence
+  // reports priced $99-$499 — $0.20 is a tight cap that still gives
+  // feature-rich apps (biztoso-class) room to drill past the bottom-nav.
+  // Drill-down preference + hub-revisit detector do the heavy lifting on
+  // efficiency; this only adds a modest budget cushion.
+  V16_MAX_COST_USD: Number(process.env.V16_MAX_COST_USD) || 0.20,
+  V16_MAX_SONNET_ESCALATIONS: Number(process.env.V16_MAX_SONNET_ESCALATIONS) || 6,
 };

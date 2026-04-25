@@ -136,6 +136,6 @@ test("escalate: counts budget even when Sonnet returns malformed output", async 
   assert.equal(budget.used, 1, "budget still consumed so we don't retry the same bad screen");
 });
 
-test("MAX_SONNET_ESCALATIONS_PER_CRAWL default is 2", () => {
-  assert.equal(MAX_SONNET_ESCALATIONS_PER_CRAWL, 2);
+test("MAX_SONNET_ESCALATIONS_PER_CRAWL default is 6 (raised 2026-04-25 v6)", () => {
+  assert.equal(MAX_SONNET_ESCALATIONS_PER_CRAWL, 6);
 });

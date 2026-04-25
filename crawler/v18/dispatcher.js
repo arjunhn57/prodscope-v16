@@ -172,7 +172,13 @@ async function dispatch(observation, state, deps = {}) {
   // re-computing.
   plan.logicalFingerprint = logicalFp;
   if (deps.trajectory) {
-    recordScreen(deps.trajectory, plan.fingerprint, plan.screenType, logicalFp);
+    recordScreen(
+      deps.trajectory,
+      plan.fingerprint,
+      plan.screenType,
+      logicalFp,
+      observation.activity,
+    );
   }
 
   log.info(
@@ -276,7 +282,7 @@ async function dispatch(observation, state, deps = {}) {
       "dispatcher: driver acted",
     );
     recordTapIfAny(action, classifiedClickables, logicalFp, deps);
-    recordActionOnTrajectory(action, driver.name, plan.fingerprint, state, deps);
+    recordActionOnTrajectory(action, driver.name, plan.fingerprint, state, deps, plan.screenType, observation.activity);
     return { driver: driver.name, action, diagnostics, plan };
   }
 
@@ -295,7 +301,7 @@ async function dispatch(observation, state, deps = {}) {
     "dispatcher: LLMFallback acted",
   );
   recordTapIfAny(fallbackAction, classifiedClickables, logicalFp, deps);
-  recordActionOnTrajectory(fallbackAction, "LLMFallback", plan.fingerprint, state, deps);
+  recordActionOnTrajectory(fallbackAction, "LLMFallback", plan.fingerprint, state, deps, plan.screenType, observation.activity);
   return {
     driver: "LLMFallback",
     action: fallbackAction,
@@ -342,13 +348,21 @@ function recordTapIfAny(action, classifiedClickables, fp, deps) {
  * Phase 4 — append a recentActions entry on every dispatched action.
  * countRecentHubTaps reads from this to detect Home/Profile bounce loops.
  *
+ * 2026-04-25 v6: also persist screenType + activity so detectHubRevisit
+ * can bucket recent actions at the (activity, screenType) level. The
+ * targetText-bucketed detectors miss bottom-nav-bouncing patterns where
+ * the agent re-tabs Feed/Shorts/Chat/Connections — each tap is a different
+ * label so no targetText bucket fires.
+ *
  * @param {object} action
  * @param {string} driverName
  * @param {string} fp
  * @param {object} state
  * @param {object} deps
+ * @param {string} [screenType]
+ * @param {string} [activity]
  */
-function recordActionOnTrajectory(action, driverName, fp, state, deps) {
+function recordActionOnTrajectory(action, driverName, fp, state, deps, screenType, activity) {
   if (!action || !deps || !deps.trajectory) return;
   try {
     recordAction(deps.trajectory, {
@@ -357,6 +371,8 @@ function recordActionOnTrajectory(action, driverName, fp, state, deps) {
       actionType: action.type,
       targetText: action.targetText,
       fingerprint: fp,
+      screenType: typeof screenType === "string" ? screenType : undefined,
+      activity: typeof activity === "string" ? activity : undefined,
       outcome: null, // populated later by caller if available — unused by summarise
     });
   } catch (err) {

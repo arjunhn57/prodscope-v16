@@ -110,6 +110,12 @@ function createMemory() {
     // User-facing `uniqueScreens` metric should reflect THIS, not
     // fingerprintsSeen which inflates on scroll-position drift.
     logicalFingerprintsSeen: new Set(),
+    // 2026-04-25 v6: distinct Android activity names. Loop detectors
+    // bucketing by targetText miss bottom-nav-bouncing patterns where
+    // each tap is a different label but the agent stays in the same
+    // 1-2 activities. Activity coverage is the honest "feature areas
+    // explored" signal.
+    activitiesSeen: new Set(),
     hubsRemaining: new Set(DEFAULT_HUBS),
     recentActions: [],
     tappedEdgesByFp: new Map(),
@@ -242,12 +248,21 @@ function tappedLabelsOnFp(memory, fp, clickables) {
  * @param {string} screenType
  * @param {string} [logicalFingerprint]   Phase 4 — position-insensitive fp
  */
-function recordScreen(memory, fingerprint, screenType, logicalFingerprint) {
+function recordScreen(memory, fingerprint, screenType, logicalFingerprint, activity) {
   if (!memory || !fingerprint || !screenType) return;
 
   // Structural fp tracking (backwards-compat — drivers still use this).
   if (!memory.fingerprintsSeen.has(fingerprint)) {
     memory.fingerprintsSeen.add(fingerprint);
+  }
+
+  // 2026-04-25 v6: track activity at every observation (NOT only at first
+  // logical fp seen). Same activity can appear across many fps (different
+  // tabs, scroll positions). Set stays bounded by the OS — typical app
+  // has 10-30 activities.
+  if (!memory.activitiesSeen) memory.activitiesSeen = new Set();
+  if (typeof activity === "string" && activity.length > 0) {
+    memory.activitiesSeen.add(activity);
   }
 
   // Logical fp is the primary coverage key. First time we see the
@@ -271,6 +286,81 @@ function recordScreen(memory, fingerprint, screenType, logicalFingerprint) {
 function uniqueLogicalScreensCount(memory) {
   if (!memory || !memory.logicalFingerprintsSeen) return 0;
   return memory.logicalFingerprintsSeen.size;
+}
+
+/**
+ * 2026-04-25 v6: how many distinct Android activities have we touched?
+ * The "feature areas explored" signal — if a 60-step crawl on a social
+ * app returns 1 activity, you spent the whole budget bouncing in a hub.
+ *
+ * @param {TrajectoryMemory} memory
+ * @returns {number}
+ */
+function uniqueActivitiesCount(memory) {
+  if (!memory || !memory.activitiesSeen) return 0;
+  return memory.activitiesSeen.size;
+}
+
+/**
+ * 2026-04-25 v6: how many of the last RECENT_ACTIONS_CAP recorded actions
+ * landed on the given activity? Used by ExplorationDriver's drill-down
+ * preference gate — when an activity has been visited many times, prefer
+ * tapping a list item (which usually opens a different activity) over
+ * tapping yet another nav tab in the same activity.
+ *
+ * @param {TrajectoryMemory} memory
+ * @param {string} activity
+ * @returns {number}
+ */
+function countActivityVisits(memory, activity) {
+  if (!memory || !Array.isArray(memory.recentActions)) return 0;
+  if (typeof activity !== "string" || activity.length === 0) return 0;
+  let count = 0;
+  for (const a of memory.recentActions) {
+    if (a && a.activity === activity) count += 1;
+  }
+  return count;
+}
+
+/**
+ * 2026-04-25 v6: hub-revisit detector at (activity, screenType) granularity.
+ *
+ * The classic three loop detectors (rapid-bounce, alternation, slow-loop)
+ * all bucket by `targetText` and miss bottom-nav-bouncing patterns where
+ * the agent re-tabs Feed/Shorts/Chat/Connections — each tap is a different
+ * label so no `targetText` bucket ever holds enough mass to fire.
+ *
+ * This detector buckets recent actions by `(activity, screenType)`. When
+ * any bucket holds > 50% of recent actions AND total recent actions ≥ 12,
+ * the agent has been re-visiting the same hub repeatedly without making
+ * progress. Returns the dominant bucket or null.
+ *
+ * @param {TrajectoryMemory} memory
+ * @returns {{key: string, share: number, count: number, total: number} | null}
+ */
+function detectHubRevisit(memory) {
+  if (!memory || !Array.isArray(memory.recentActions)) return null;
+  const recent = memory.recentActions.slice(-SLOW_LOOP_WINDOW_STEPS);
+  if (recent.length < 12) return null;
+  const counts = new Map();
+  let total = 0;
+  for (const a of recent) {
+    if (!a) continue;
+    const activity = typeof a.activity === "string" ? a.activity : "";
+    const screenType = typeof a.screenType === "string" ? a.screenType : "";
+    if (!activity || !screenType) continue;
+    const key = `${activity}::${screenType}`;
+    counts.set(key, (counts.get(key) || 0) + 1);
+    total += 1;
+  }
+  if (total < 12) return null;
+  for (const [key, count] of counts) {
+    const share = count / total;
+    if (share > 0.5) {
+      return { key, share, count, total };
+    }
+  }
+  return null;
 }
 
 /**
@@ -404,6 +494,7 @@ function summarise(memory, opts) {
   // pattern: 5 taps on the same CTA across 41 steps that the rapid-bounce
   // detector missed. Suppressed when LOOP WARNING or ALTERNATION already
   // fired — the louder/more-specific directives subsume the milder slow one.
+  let slowLoopFired = false;
   if (!rapidBounceFired && !alternationFired) {
     const spacedTaps = countSpacedRepeatedTargets(memory);
     if (spacedTaps.size > 0) {
@@ -411,6 +502,7 @@ function summarise(memory, opts) {
         .filter(([, count]) => count >= SLOW_LOOP_WARN_THRESHOLD)
         .sort((a, b) => b[1] - a[1]);
       if (overSlow.length > 0) {
+        slowLoopFired = true;
         const summary = overSlow
           .map(([label, count]) => `${label}×${count}`)
           .join(", ");
@@ -426,6 +518,31 @@ function summarise(memory, opts) {
             "where you already were.",
         );
       }
+    }
+  }
+
+  // 2026-04-25 v6: hub-revisit detector at (activity, screenType) level.
+  // Catches bottom-nav-bouncing patterns the targetText-bucketed detectors
+  // above miss (Feed→Shorts→Chat→Connections cycle on the same activity).
+  // Suppressed when any louder directive already fired — they cover the
+  // text-level case which dominates the visual signal.
+  if (!rapidBounceFired && !alternationFired && !slowLoopFired) {
+    const hubRevisit = detectHubRevisit(memory);
+    if (hubRevisit) {
+      const [activity, screenType] = hubRevisit.key.split("::");
+      const sharePct = Math.round(hubRevisit.share * 100);
+      parts.push(
+        `recent_hub_concentration: ${activity}/${screenType} ` +
+        `${hubRevisit.count}/${hubRevisit.total} (${sharePct}%) in last ${SLOW_LOOP_WINDOW_STEPS} steps`,
+      );
+      parts.push(
+        "HUB REVISIT WARNING: You have been bouncing within " + activity + " (" +
+        screenType + ") for " + sharePct + "% of recent actions without " +
+        "drilling deeper. Open a list item, a profile from the feed, a " +
+        "detail row, a settings sub-page — anything that opens a NEW activity " +
+        "or screen type. Tapping another nav tab in this same hub will not " +
+        "earn new coverage.",
+      );
     }
   }
 
@@ -614,6 +731,10 @@ module.exports = {
   countSpacedRepeatedTargets,
   detectAlternatingPair,
   countRecentHubTaps,
+  // 2026-04-25 v6 (activity coverage + hub-revisit):
+  uniqueActivitiesCount,
+  countActivityVisits,
+  detectHubRevisit,
   HUB_LABEL_PATTERNS,
   LOOP_WINDOW_STEPS,
   LOOP_WARN_THRESHOLD,
