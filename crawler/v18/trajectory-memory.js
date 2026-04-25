@@ -24,9 +24,9 @@ const DEFAULT_HUBS = [
   "detail",
 ];
 
-/** Cap on recent action history — must be ≥ LOOP_WINDOW_STEPS so the loop
- *  detector can scan a full window. */
-const RECENT_ACTIONS_CAP = 12;
+/** Cap on recent action history — must be ≥ SLOW_LOOP_WINDOW_STEPS so the
+ *  longer-window slow-loop detector can scan a full window. */
+const RECENT_ACTIONS_CAP = 44;
 
 /**
  * Phase 4 (2026-04-25): well-known nav / hub labels — kept for the legacy
@@ -53,10 +53,21 @@ const HUB_LABEL_PATTERNS = [
   /\bback\b/i,
 ];
 
-/** Window over which we count repeated taps for loop detection. */
+/** Rapid-bounce window — short window catches tight ping-pong loops. */
 const LOOP_WINDOW_STEPS = 10;
-/** Number of taps on the same target within the window before we warn. */
+/** Number of taps on the same target within the rapid window before we warn. */
 const LOOP_WARN_THRESHOLD = 3;
+
+/**
+ * Slow-loop window — longer window catches spaced repetition. Run 11380697
+ * tapped "Add a bio to introduce yourself" 5× across 41 steps; never 3 in
+ * any 10-step window so the rapid-bounce LOOP WARNING never fired. The
+ * slow-loop counter scans 40 steps with the same threshold (3) and emits
+ * a milder REPEAT WARNING so the LLM sees the spaced repetition.
+ */
+const SLOW_LOOP_WINDOW_STEPS = 40;
+/** Number of taps on the same target across the slow window before we warn. */
+const SLOW_LOOP_WARN_THRESHOLD = 3;
 
 /**
  * @typedef {Object} RecentAction
@@ -335,6 +346,7 @@ function summarise(memory, opts) {
   // count badges, localized hub text). We now bucket by raw targetText so
   // any element tapped LOOP_WARN_THRESHOLD+ times in LOOP_WINDOW_STEPS
   // surfaces as a loop — generalised, no keyword list to maintain.
+  let rapidBounceFired = false;
   const repeatedTaps = countRecentRepeatedTargets(memory);
   if (repeatedTaps.size > 0) {
     // Only surface entries that hit the threshold — single-tap labels would
@@ -343,6 +355,7 @@ function summarise(memory, opts) {
       .filter(([, count]) => count >= LOOP_WARN_THRESHOLD)
       .sort((a, b) => b[1] - a[1]);
     if (overThreshold.length > 0) {
+      rapidBounceFired = true;
       const summary = overThreshold
         .map(([label, count]) => `${label}×${count}`)
         .join(", ");
@@ -361,6 +374,36 @@ function summarise(memory, opts) {
           `edge_swipe_back, or a previously-untapped element — even if you are ` +
           `not certain where it leads.${remainingHubs}`,
       );
+    }
+  }
+
+  // 2026-04-25 v4: slow-loop pressure. Same bucketing as above but with a
+  // wider window (40 vs 10) to catch spaced repetition like the run-11380697
+  // pattern: 5 taps on the same CTA across 41 steps that the rapid-bounce
+  // detector missed. Suppressed when LOOP WARNING already fired for the
+  // same labels — the louder rapid directive subsumes the milder slow one.
+  if (!rapidBounceFired) {
+    const spacedTaps = countSpacedRepeatedTargets(memory);
+    if (spacedTaps.size > 0) {
+      const overSlow = Array.from(spacedTaps.entries())
+        .filter(([, count]) => count >= SLOW_LOOP_WARN_THRESHOLD)
+        .sort((a, b) => b[1] - a[1]);
+      if (overSlow.length > 0) {
+        const summary = overSlow
+          .map(([label, count]) => `${label}×${count}`)
+          .join(", ");
+        parts.push(
+          `recent_spaced_taps: ${summary} in last ${SLOW_LOOP_WINDOW_STEPS} steps`,
+        );
+        const repeatLabels = overSlow.map(([label]) => `"${label}"`).join(" and ");
+        parts.push(
+          "REPEAT WARNING: You keep returning to " + repeatLabels + " every " +
+            "few steps without finding new screens through it. Pick a " +
+            "different list item or hub instead — re-entering the same " +
+            "element across a long horizon usually means it leads back to " +
+            "where you already were.",
+        );
+      }
     }
   }
 
@@ -399,6 +442,29 @@ function buildDriftDirective(memory) {
     );
   }
   return null;
+}
+
+/**
+ * Slow-loop variant of countRecentRepeatedTargets — same bucketing but a
+ * wider window so spaced repetition surfaces (2026-04-25 v4). Run 11380697
+ * tapped one CTA at steps 38, 42, 56, 64, 79 — the rapid-bounce window
+ * (10 steps) only ever saw ≤2 of those at once. The slow window (40)
+ * sees ≥3 at any of steps 56+, so REPEAT WARNING fires there.
+ *
+ * @param {TrajectoryMemory} memory
+ * @returns {Map<string, number>}
+ */
+function countSpacedRepeatedTargets(memory) {
+  const out = new Map();
+  if (!memory || !Array.isArray(memory.recentActions)) return out;
+  const recent = memory.recentActions.slice(-SLOW_LOOP_WINDOW_STEPS);
+  for (const a of recent) {
+    if (!a || a.actionType !== "tap") continue;
+    const label = typeof a.targetText === "string" ? a.targetText.trim() : "";
+    if (!label) continue;
+    out.set(label, (out.get(label) || 0) + 1);
+  }
+  return out;
 }
 
 /**
@@ -489,10 +555,13 @@ module.exports = {
   // Phase 4 (logical fp + anti-loop):
   uniqueLogicalScreensCount,
   countRecentRepeatedTargets,
+  countSpacedRepeatedTargets,
   countRecentHubTaps,
   HUB_LABEL_PATTERNS,
   LOOP_WINDOW_STEPS,
   LOOP_WARN_THRESHOLD,
+  SLOW_LOOP_WINDOW_STEPS,
+  SLOW_LOOP_WARN_THRESHOLD,
   DEFAULT_HUBS,
   RECENT_ACTIONS_CAP,
 };

@@ -191,8 +191,11 @@ const {
   uniqueLogicalScreensCount,
   countRecentHubTaps,
   countRecentRepeatedTargets,
+  countSpacedRepeatedTargets,
   LOOP_WINDOW_STEPS,
   LOOP_WARN_THRESHOLD,
+  SLOW_LOOP_WINDOW_STEPS,
+  SLOW_LOOP_WARN_THRESHOLD,
 } = require("../trajectory-memory");
 
 test("recordScreen: counts a screen once per LOGICAL fp, even if structural fp varies (scroll drift)", () => {
@@ -428,6 +431,126 @@ test("summarise: stale recovery (>2 entries ago) does not trigger DRIFT WARNING"
   recordAction(m, { step: 4, driver: "X", actionType: "tap", targetText: "Settings", fingerprint: "fp", outcome: "changed" });
   const hint = summarise(m);
   assert.ok(!hint.includes("DRIFT WARNING"), "stale recovery must not retrigger the warning");
+});
+
+// ── 2026-04-25 v4: slow-loop detector (spaced repetition) ──────────────
+//
+// Run 11380697 reproduced a pattern Fix A's rapid-bounce detector misses:
+// the same CTA tapped 5× across 41 steps (steps 38, 42, 56, 64, 79). At
+// no point were 3 of those taps within any single 10-step window, so
+// LOOP WARNING never fired. countSpacedRepeatedTargets uses a 40-step
+// window with the same threshold so the spaced repetition surfaces, and
+// summarise emits a milder REPEAT WARNING instead of LOOP WARNING when
+// only the slow detector fires.
+//
+// All fixtures use generic action labels (no app-specific text).
+
+test("countSpacedRepeatedTargets: counts taps spread across 40 steps that rapid window misses", () => {
+  const m = createMemory();
+  // Tap the SAME label every 10 steps, 4 times — never 3 in any 10-step
+  // window, but 4 within a 40-step window.
+  let s = 0;
+  for (let i = 0; i < 4; i++) {
+    recordAction(m, {
+      step: ++s,
+      driver: "LLMFallback",
+      actionType: "tap",
+      targetText: "RepeatedCTA",
+      fingerprint: `fp${i}`,
+      outcome: "changed",
+    });
+    // 9 filler taps to space the next RepeatedCTA out by ~10 steps.
+    for (let j = 0; j < 9; j++) {
+      recordAction(m, {
+        step: ++s,
+        driver: "X",
+        actionType: "tap",
+        targetText: `Filler${i}_${j}`,
+        fingerprint: `fp${i}_${j}`,
+        outcome: "changed",
+      });
+    }
+  }
+  const slow = countSpacedRepeatedTargets(m);
+  const rapid = countRecentRepeatedTargets(m);
+  assert.ok(
+    slow.get("RepeatedCTA") >= SLOW_LOOP_WARN_THRESHOLD,
+    "slow window must catch spaced repetition",
+  );
+  assert.ok(
+    !rapid.get("RepeatedCTA") || rapid.get("RepeatedCTA") < LOOP_WARN_THRESHOLD,
+    "rapid window must NOT count this as a loop (the test's whole point)",
+  );
+});
+
+test("summarise: emits REPEAT WARNING for spaced repetition that LOOP WARNING misses", () => {
+  const m = createMemory();
+  // Same shape as run-11380697: 5 taps on the same label spaced out.
+  let s = 0;
+  for (let i = 0; i < 4; i++) {
+    recordAction(m, {
+      step: ++s,
+      driver: "LLMFallback",
+      actionType: "tap",
+      targetText: "Add bio",
+      fingerprint: `fp${i}`,
+      outcome: "changed",
+    });
+    for (let j = 0; j < 9; j++) {
+      recordAction(m, {
+        step: ++s,
+        driver: "X",
+        actionType: "tap",
+        targetText: `Filler${i}_${j}`,
+        fingerprint: `fp${i}_${j}`,
+        outcome: "changed",
+      });
+    }
+  }
+  const hint = summarise(m);
+  assert.ok(
+    !hint.includes("LOOP WARNING"),
+    "rapid LOOP WARNING must NOT fire on spaced repetition",
+  );
+  assert.ok(hint.includes("REPEAT WARNING"));
+  assert.ok(hint.includes("Add bio"), "warning must name the repeated label");
+  assert.ok(
+    hint.includes("recent_spaced_taps"),
+    "summary line must indicate spaced taps",
+  );
+});
+
+test("summarise: rapid LOOP WARNING wins precedence when both detectors would fire", () => {
+  const m = createMemory();
+  // 3 taps on the same label in 3 consecutive steps — fits both windows.
+  for (let i = 0; i < 3; i++) {
+    recordAction(m, {
+      step: i,
+      driver: "X",
+      actionType: "tap",
+      targetText: "Tile",
+      fingerprint: `fp${i}`,
+      outcome: "changed",
+    });
+  }
+  const hint = summarise(m);
+  assert.ok(hint.includes("LOOP WARNING"), "rapid warning must fire");
+  assert.ok(
+    !hint.includes("REPEAT WARNING"),
+    "slow warning must be suppressed when rapid already fired (avoid redundant noise)",
+  );
+});
+
+test("summarise: no REPEAT WARNING below the slow threshold (2 taps spaced out)", () => {
+  const m = createMemory();
+  recordAction(m, { step: 1, driver: "X", actionType: "tap", targetText: "Item", fingerprint: "fp1", outcome: "changed" });
+  for (let j = 2; j <= 20; j++) {
+    recordAction(m, { step: j, driver: "X", actionType: "tap", targetText: `Filler${j}`, fingerprint: `fp${j}`, outcome: "changed" });
+  }
+  recordAction(m, { step: 21, driver: "X", actionType: "tap", targetText: "Item", fingerprint: "fp21", outcome: "changed" });
+  const hint = summarise(m);
+  assert.ok(!hint.includes("REPEAT WARNING"));
+  assert.ok(!hint.includes("LOOP WARNING"));
 });
 
 test("summarise: includes logical_unique count line", () => {
