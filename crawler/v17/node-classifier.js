@@ -201,8 +201,17 @@ function computeStructuralFingerprint(graph, packageName, activity) {
  */
 function computeLogicalFingerprint(graph, packageName, activity) {
   const clickables = (graph && graph.clickables) || [];
+  // 2026-04-25 v5 (Bug #7): canonicalize resource-ids before deduping so
+  // dynamic numeric / hash suffixes don't drift the fingerprint between
+  // visits. Without this, a feed-item rid like `feed_item_42` differs from
+  // `feed_item_99` and the home feed produces a different logical fp every
+  // time content rotates — defeating Fix B's frontier dedup.
   const resourceIds = Array.from(
-    new Set(clickables.map((c) => c.resourceId || "").filter(Boolean)),
+    new Set(
+      clickables
+        .map((c) => canonicalizeResourceId(c.resourceId || ""))
+        .filter(Boolean),
+    ),
   ).sort();
   const classPrefixes = Array.from(
     new Set(
@@ -210,7 +219,12 @@ function computeLogicalFingerprint(graph, packageName, activity) {
         .map((c) => c.className || "")
         .filter(Boolean)
         .map((cls) => {
-          const parts = cls.split(".");
+          // Strip anonymous-class suffixes (`$1`, `$inner`) and trailing
+          // numeric suffixes that Compose / RecyclerView emit.
+          const stripped = cls
+            .replace(/\$[A-Za-z0-9_]+$/, "")
+            .replace(/_\d+$/, "");
+          const parts = stripped.split(".");
           return parts.slice(0, Math.min(2, parts.length)).join(".");
         }),
     ),
@@ -227,6 +241,40 @@ function computeLogicalFingerprint(graph, packageName, activity) {
   });
 
   return crypto.createHash("sha256").update(material).digest("hex").slice(0, 12);
+}
+
+/**
+ * Strip dynamic suffixes from a resource-id so the same logical element
+ * produces the same canonical id across visits. Conservative — only
+ * strips suffix shapes that are demonstrably dynamic content markers, not
+ * the rid's semantic part. Examples:
+ *
+ *   com.app:id/feed_item_42        → com.app:id/feed_item
+ *   com.app:id/post_card_8a3f2b    → com.app:id/post_card
+ *   com.app:id/row:5               → com.app:id/row
+ *   com.app:id/email_input         → com.app:id/email_input  (unchanged)
+ *
+ * Applies multiple passes — `feed_item_8a3f2b_42` collapses both. Bare
+ * `:id/` prefix is preserved because it's the Android convention.
+ *
+ * @param {string} rid
+ * @returns {string}
+ */
+function canonicalizeResourceId(rid) {
+  if (typeof rid !== "string" || !rid) return "";
+  let out = rid;
+  // Loop a couple of times so chained suffixes (e.g. `_8a3f_42`) collapse.
+  for (let i = 0; i < 3; i++) {
+    const prev = out;
+    // Trailing _<digits>
+    out = out.replace(/_\d+$/, "");
+    // Trailing _<hex 6+ chars> — uuid fragments, hashes
+    out = out.replace(/_[a-f0-9]{6,}$/i, "");
+    // Trailing :<digits> — RecyclerView position-style suffix
+    out = out.replace(/:\d+$/, "");
+    if (out === prev) break;
+  }
+  return out;
 }
 
 /**
@@ -488,6 +536,7 @@ module.exports = {
   classify,
   computeStructuralFingerprint,
   computeLogicalFingerprint,
+  canonicalizeResourceId,
   applyInputTypeShortCircuit,
   createCache,
   mergeRoles,

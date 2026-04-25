@@ -19,6 +19,7 @@ const {
   classify,
   computeStructuralFingerprint,
   computeLogicalFingerprint,
+  canonicalizeResourceId,
   applyInputTypeShortCircuit,
   createCache,
   HAIKU_MODEL,
@@ -360,4 +361,105 @@ test("computeLogicalFingerprint: collapses className prefixes (same first-2-segm
   const fpA = computeLogicalFingerprint(a, "com.app", "HomeActivity");
   const fpB = computeLogicalFingerprint(b, "com.app", "HomeActivity");
   assert.equal(fpA, fpB, "className prefix collapse (com.app) should yield same logical fp");
+});
+
+// ── 2026-04-25 v5 (Bug #7): rid canonicalization for stable logical fp ──
+//
+// Run dd7ccf49 reproduced a Profile↔Home bounce on the home feed because
+// each visit produced a different logical fp — feed items carry rids like
+// `feed_item_42` whose suffix changes per item. Canonicalizing the rid
+// (strip _<digits>, _<hex>, :<digits>) collapses the variance so the same
+// logical screen produces the same fp across content rotation.
+//
+// All fixtures use generic com.example.app naming.
+
+test("canonicalizeResourceId: strips numeric, hex, and colon-position suffixes", () => {
+  assert.equal(
+    canonicalizeResourceId("com.example.app:id/feed_item_42"),
+    "com.example.app:id/feed_item",
+  );
+  assert.equal(
+    canonicalizeResourceId("com.example.app:id/post_card_8a3f2b"),
+    "com.example.app:id/post_card",
+  );
+  assert.equal(
+    canonicalizeResourceId("com.example.app:id/row:5"),
+    "com.example.app:id/row",
+  );
+  // Chained — feed_item_8a3f_42 collapses both passes.
+  assert.equal(
+    canonicalizeResourceId("com.example.app:id/feed_item_8a3f2b_42"),
+    "com.example.app:id/feed_item",
+  );
+  // Semantically meaningful rids unchanged.
+  assert.equal(
+    canonicalizeResourceId("com.example.app:id/feed_item"),
+    "com.example.app:id/feed_item",
+  );
+  assert.equal(
+    canonicalizeResourceId("com.example.app:id/email_input"),
+    "com.example.app:id/email_input",
+  );
+  // Empty / null safety.
+  assert.equal(canonicalizeResourceId(""), "");
+  assert.equal(canonicalizeResourceId(null), "");
+  assert.equal(canonicalizeResourceId(undefined), "");
+});
+
+test("computeLogicalFingerprint: identical fp across feed-item-suffix variations on the same logical screen", () => {
+  // Same logical home feed, three visits — feed-item rids differ only by
+  // numeric / hex suffixes. Logical fp must collapse them all.
+  const visit1 = parseClickableGraph(wrap(
+    node({ resourceId: "com.example.app:id/feed_item_1",  cls: "com.example.app.FeedCard", bounds: "[40,200][1040,400]" }),
+    node({ resourceId: "com.example.app:id/feed_item_2",  cls: "com.example.app.FeedCard", bounds: "[40,410][1040,610]" }),
+    node({ resourceId: "com.example.app:id/nav_home",     cls: "androidx.compose.material.BottomNavigationItem", bounds: "[0,2280][270,2400]" }),
+  ));
+  const visit2 = parseClickableGraph(wrap(
+    // Same logical screen, completely different feed-item suffixes.
+    node({ resourceId: "com.example.app:id/feed_item_99",     cls: "com.example.app.FeedCard", bounds: "[40,200][1040,400]" }),
+    node({ resourceId: "com.example.app:id/feed_item_8a3f2b", cls: "com.example.app.FeedCard", bounds: "[40,410][1040,610]" }),
+    node({ resourceId: "com.example.app:id/nav_home",         cls: "androidx.compose.material.BottomNavigationItem", bounds: "[0,2280][270,2400]" }),
+  ));
+  const visit3 = parseClickableGraph(wrap(
+    // Mixed suffix shapes including colon-position style.
+    node({ resourceId: "com.example.app:id/feed_item:0", cls: "com.example.app.FeedCard", bounds: "[40,200][1040,400]" }),
+    node({ resourceId: "com.example.app:id/feed_item:1", cls: "com.example.app.FeedCard", bounds: "[40,410][1040,610]" }),
+    node({ resourceId: "com.example.app:id/nav_home",    cls: "androidx.compose.material.BottomNavigationItem", bounds: "[0,2280][270,2400]" }),
+  ));
+  const fp1 = computeLogicalFingerprint(visit1, "com.example.app", "HomeActivity");
+  const fp2 = computeLogicalFingerprint(visit2, "com.example.app", "HomeActivity");
+  const fp3 = computeLogicalFingerprint(visit3, "com.example.app", "HomeActivity");
+  assert.equal(fp1, fp2, "feed-item numeric/hex suffix variance must collapse");
+  assert.equal(fp2, fp3, "colon-position suffix variance must collapse");
+});
+
+test("computeLogicalFingerprint: STILL distinguishes structurally-different screens after canonicalization", () => {
+  // Regression guard — canonicalization should not over-collapse such that
+  // a feed and a settings screen become indistinguishable.
+  const feed = parseClickableGraph(wrap(
+    node({ resourceId: "com.example.app:id/feed_item_42", cls: "com.example.app.FeedCard", bounds: "[40,200][1040,400]" }),
+    node({ resourceId: "com.example.app:id/nav_home",     cls: "com.example.app.NavTab", bounds: "[0,2280][270,2400]" }),
+  ));
+  const settings = parseClickableGraph(wrap(
+    node({ resourceId: "com.example.app:id/settings_row_notifications", cls: "com.example.app.SettingsRow", bounds: "[40,200][1040,360]" }),
+    node({ resourceId: "com.example.app:id/settings_row_privacy",       cls: "com.example.app.SettingsRow", bounds: "[40,380][1040,540]" }),
+  ));
+  const fpFeed     = computeLogicalFingerprint(feed,     "com.example.app", "HomeActivity");
+  const fpSettings = computeLogicalFingerprint(settings, "com.example.app", "SettingsActivity");
+  assert.notEqual(fpFeed, fpSettings, "different screen kinds must remain distinguishable");
+});
+
+test("computeStructuralFingerprint: feed-item suffix variations DO change structural fp (regression guard)", () => {
+  // Drivers rely on structural fp staying position/content sensitive so
+  // they don't re-tap the same Reply button after a feed re-render. The
+  // canonicalization is logical-fp-only — structural fp must NOT collapse.
+  const visit1 = parseClickableGraph(wrap(
+    node({ resourceId: "com.example.app:id/feed_item_1", cls: "com.example.app.FeedCard", bounds: "[40,200][1040,400]" }),
+  ));
+  const visit2 = parseClickableGraph(wrap(
+    node({ resourceId: "com.example.app:id/feed_item_99", cls: "com.example.app.FeedCard", bounds: "[40,200][1040,400]" }),
+  ));
+  const sfp1 = computeStructuralFingerprint(visit1, "com.example.app", "HomeActivity");
+  const sfp2 = computeStructuralFingerprint(visit2, "com.example.app", "HomeActivity");
+  assert.notEqual(sfp1, sfp2, "structural fp MUST stay sensitive to rid suffix variance");
 });
