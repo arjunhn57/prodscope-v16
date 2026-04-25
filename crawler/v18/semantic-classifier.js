@@ -80,6 +80,19 @@ const VALID_ROLES_SET = new Set(VALID_ROLES);
 const VALID_INTENTS = ["navigate", "read_only", "write", "destructive"];
 const VALID_INTENTS_SET = new Set(VALID_INTENTS);
 
+/**
+ * Screen types where `write` intent is legitimately required for the crawl
+ * to make progress. Any other screen type — profile, settings, form,
+ * compose, search, etc. — gets `write` stripped from allowed_intents server-
+ * side regardless of what Haiku returned. The crawl can navigate around
+ * those screens without mutating user data; tapping Save / Submit on a
+ * profile-edit form only writes to the user's account and produces zero
+ * coverage. This is a structural rule, not a per-app pattern: every app's
+ * auth gates the rest of the experience, every app's user-data forms do
+ * not (2026-04-25 v4).
+ */
+const WRITE_INTENT_ALLOWED_SCREEN_TYPES = new Set(["auth", "permission"]);
+
 /** Screen type taxonomy. */
 const VALID_SCREEN_TYPES = [
   "feed",
@@ -215,7 +228,7 @@ Intent rules:
 - other: anything that doesn't fit.
 
 ── Plan fields ──
-- allowed_intents: intents the dispatcher may act on here. For feed/detail/profile/settings/search: ["navigate", "read_only"]. For compose/dialog (crawler's job is to dismiss): ["navigate"] (navigate here includes tapping the close button). For auth/permission: ["navigate", "read_only", "write"] (write is needed to submit). Never include "destructive".
+- allowed_intents: intents the dispatcher may act on here. For feed/detail/profile/settings/search/form: ["navigate", "read_only"]. For compose/dialog (crawler's job is to dismiss): ["navigate"] (navigate here includes tapping the close button). For auth/permission ONLY: ["navigate", "read_only", "write"] (write is needed to pass the gate). Never include "destructive". CRITICAL: "write" must NEVER appear on form/profile/settings/compose/search — Save / Submit on a user-data form only mutates the user's account and produces zero crawl coverage. The crawl can navigate around those screens without writing.
 - action_budget: reasonable number of actions before the dispatcher re-plans or moves to a new hub. Feed: 3-5. Settings: up to number of items. Compose: 1 (just dismiss). Dialog: 1-2.
 - exit_condition: one-line natural-language condition that signals we're done here (e.g. "after 3 feed items opened, press back and navigate to an unvisited hub").
 - confidence: 0.0-1.0 — your confidence in the plan. Low confidence (< 0.5) triggers an escalation to Sonnet.
@@ -405,6 +418,25 @@ function validatePlan(toolInput, clickableCount, fingerprint) {
   }
   // Destructive must never appear in allowed_intents.
   if (toolInput.allowed_intents.includes("destructive")) return null;
+
+  // 2026-04-25 v4: write intent is allowed only on auth-class screens.
+  // Strip it server-side on any other screen_type so a Haiku slip can't
+  // turn an Edit-Profile / Settings / Compose form into a write loop that
+  // mutates user data. Logged at info so we can monitor classifier drift
+  // — if the strip fires often, the prompt change isn't taking hold.
+  if (
+    !WRITE_INTENT_ALLOWED_SCREEN_TYPES.has(toolInput.screen_type) &&
+    toolInput.allowed_intents.includes("write")
+  ) {
+    toolInput.allowed_intents = toolInput.allowed_intents.filter(
+      (i) => i !== "write",
+    );
+    if (toolInput.allowed_intents.length === 0) return null;
+    log.info(
+      { fingerprint, screenType: toolInput.screen_type },
+      "classifier: stripped 'write' intent on non-auth screen",
+    );
+  }
   const actionBudget = Number(toolInput.action_budget);
   if (!Number.isFinite(actionBudget) || actionBudget < 1 || actionBudget > 20) return null;
   const confidence = Number(toolInput.confidence);
@@ -727,6 +759,7 @@ module.exports = {
   HAIKU_MODEL,
   HAIKU_TIMEOUT_MS,
   LOW_CONFIDENCE_THRESHOLD,
+  WRITE_INTENT_ALLOWED_SCREEN_TYPES,
   VALID_ROLES,
   VALID_ROLES_SET,
   VALID_INTENTS,

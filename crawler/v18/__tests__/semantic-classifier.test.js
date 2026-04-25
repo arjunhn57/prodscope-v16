@@ -199,6 +199,126 @@ test("validatePlan: rejects allowed_intents containing 'destructive'", () => {
   assert.equal(r, null);
 });
 
+// ── 2026-04-25 v4: write intent is auth-class-only ─────────────────────
+//
+// Server-side guard. Even if Haiku returns allowed_intents=["navigate","write"]
+// on a profile / settings / form / compose screen, write must be stripped so
+// the dispatcher's intent filter doesn't keep Save / Submit candidates that
+// mutate user data. Auth and permission keep write because typing is required
+// to pass the gate.
+//
+// All fixtures use generic screen types — no app-specific labels.
+
+test("validatePlan: keeps 'write' on auth screen (write is required to pass the gate)", () => {
+  const r = validatePlan(
+    {
+      screen_type: "auth",
+      allowed_intents: ["navigate", "read_only", "write"],
+      action_budget: 3,
+      confidence: 0.95,
+      nodes: [],
+    },
+    0,
+    "auth-fp",
+  );
+  assert.ok(r);
+  assert.deepEqual(
+    r.allowedIntents.sort(),
+    ["navigate", "read_only", "write"],
+    "write must survive on auth screens",
+  );
+});
+
+test("validatePlan: keeps 'write' on permission screen (system permission dialogs)", () => {
+  const r = validatePlan(
+    {
+      screen_type: "permission",
+      allowed_intents: ["navigate", "read_only", "write"],
+      action_budget: 1,
+      confidence: 0.95,
+      nodes: [],
+    },
+    0,
+    "perm-fp",
+  );
+  assert.ok(r);
+  assert.ok(r.allowedIntents.includes("write"));
+});
+
+test("validatePlan: strips 'write' on form screen (Edit Profile / Settings forms)", () => {
+  // Mirrors the run-11380697 regression: Haiku classified Edit Profile as
+  // screen_type=form and included write — Save was then tappable. After the
+  // strip, write is gone and Save will be filtered out by the dispatcher.
+  const r = validatePlan(
+    {
+      screen_type: "form",
+      allowed_intents: ["navigate", "read_only", "write"],
+      action_budget: 3,
+      confidence: 0.92,
+      nodes: [],
+    },
+    0,
+    "form-fp",
+  );
+  assert.ok(r);
+  assert.ok(!r.allowedIntents.includes("write"), "write must be stripped on form");
+  assert.deepEqual(r.allowedIntents.sort(), ["navigate", "read_only"]);
+});
+
+test("validatePlan: strips 'write' on settings/profile/compose/search/feed/detail (any non-auth-class)", () => {
+  // Single parametric loop: every non-auth screen type in the taxonomy.
+  // Each one must shed write if Haiku tries to set it. No screen-type
+  // exception list here — auth and permission only.
+  const nonAuthTypes = [
+    "settings",
+    "profile",
+    "compose",
+    "search",
+    "feed",
+    "detail",
+    "dialog",
+    "onboarding",
+    "error",
+    "other",
+  ];
+  for (const t of nonAuthTypes) {
+    const r = validatePlan(
+      {
+        screen_type: t,
+        allowed_intents: ["navigate", "read_only", "write"],
+        action_budget: 3,
+        confidence: 0.9,
+        nodes: [],
+      },
+      0,
+      `${t}-fp`,
+    );
+    assert.ok(r, `validatePlan must accept screen_type=${t}`);
+    assert.ok(
+      !r.allowedIntents.includes("write"),
+      `write must be stripped on screen_type=${t}`,
+    );
+  }
+});
+
+test("validatePlan: rejects when stripping write leaves allowed_intents empty", () => {
+  // Defence-in-depth: if Haiku returns allowed_intents=["write"] only on a
+  // non-auth screen, stripping leaves [] — invalid plan, return null so the
+  // caller falls back to default.
+  const r = validatePlan(
+    {
+      screen_type: "form",
+      allowed_intents: ["write"],
+      action_budget: 3,
+      confidence: 0.9,
+      nodes: [],
+    },
+    0,
+    "form-fp",
+  );
+  assert.equal(r, null);
+});
+
 // ── 4. Invalid intent value on a node ──────────────────────────────────
 
 test("validatePlan: drops a node with invalid intent (keeps the rest)", () => {
