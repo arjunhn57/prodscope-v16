@@ -19,6 +19,7 @@ import { CountTease } from "../../../components/shared/CountTease";
 import { useAuthStore, canAccessFeature } from "../../../stores/auth";
 import { ScreenLightbox, type LightboxScreen } from "./ScreenLightbox";
 import { Picture } from "@/components/ui/Picture";
+import { AnnotatedScreenshot } from "./AnnotatedScreenshot";
 
 interface CriticalFindingsProps {
   report: CrawlReport;
@@ -176,13 +177,23 @@ export function CriticalFindings({ report }: CriticalFindingsProps) {
                     aria-label={`Open screenshot for ${headlineFor(finding)}`}
                   >
                     {trail.screenshotPath ? (
-                      <Picture
-                        src={trail.screenshotPath}
-                        alt={`Step ${finding.step}: ${headlineFor(finding)}`}
-                        width={220}
-                        height={476}
-                        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
-                      />
+                      report.jobId ? (
+                        <AnnotatedScreenshot
+                          jobId={report.jobId}
+                          screenId={`screen_${finding.step}`}
+                          screenshotUrl={trail.screenshotPath}
+                          alt={`Step ${finding.step}: ${headlineFor(finding)}`}
+                          className="w-full h-full block transition-transform duration-300 group-hover:scale-[1.03]"
+                        />
+                      ) : (
+                        <Picture
+                          src={trail.screenshotPath}
+                          alt={`Step ${finding.step}: ${headlineFor(finding)}`}
+                          width={220}
+                          height={476}
+                          className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+                        />
+                      )
                     ) : (
                       <div className="w-full h-full flex items-center justify-center text-[11px] text-[var(--color-text-muted)]">
                         No capture
