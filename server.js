@@ -1000,6 +1000,40 @@ app.get("/api/v1/job-screenshot/:jobId/:filename", (req, res) => {
 });
 
 /**
+ * GET /api/v1/jobs/:jobId/annotations/:screenId
+ *   -> annotations.json for a single cited screen.
+ *
+ * GET /api/v1/jobs/:jobId/annotations/:screenId/baked
+ *   -> baked PNG (the screenshot with annotations rendered on top).
+ *
+ * Both routes serve from /tmp/reports/{jobId}/annotated/. The frontend
+ * uses the JSON path for SVG overlays at view time and falls back to
+ * the baked PNG for PDF export / email previews.
+ */
+function resolveAnnotationPath(jobId, screenId, suffix) {
+  if (!/^[a-zA-Z0-9._-]+$/.test(jobId)) return null;
+  if (!/^screen_\d+$/.test(screenId)) return null;
+  const base = `/tmp/reports/${jobId}/annotated`;
+  return path.join(base, `${screenId}${suffix}`);
+}
+
+app.get("/api/v1/jobs/:jobId/annotations/:screenId", (req, res) => {
+  const filePath = resolveAnnotationPath(req.params.jobId, req.params.screenId, ".annotations.json");
+  if (!filePath || !fs.existsSync(filePath)) {
+    return res.status(404).json(wrapError("Annotations not found"));
+  }
+  res.type("application/json").sendFile(filePath);
+});
+
+app.get("/api/v1/jobs/:jobId/annotations/:screenId/baked", (req, res) => {
+  const filePath = resolveAnnotationPath(req.params.jobId, req.params.screenId, ".annotated.png");
+  if (!filePath || !fs.existsSync(filePath)) {
+    return res.status(404).send("Annotated PNG not found");
+  }
+  res.type("image/png").sendFile(filePath);
+});
+
+/**
  * GET /api/jobs — List recent jobs for the Dashboard feed.
  * Cursor-paginated by created_at (ISO). Newest first.
  * Defaults to limit=10, clamped to [1, 100].

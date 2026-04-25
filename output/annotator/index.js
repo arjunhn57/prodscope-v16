@@ -19,12 +19,18 @@
 
 const { renderAnnotated } = require("./render");
 const { renderZoom } = require("./zoom");
+const { synthesizeAnnotations } = require("./synthesize");
+const { ANNOTATION_TOOL } = require("./tool");
+const { buildAnnotationPrompt } = require("./prompt");
 const schema = require("./schema");
 const style = require("./style");
 
 module.exports = {
   renderAnnotated,
   renderZoom,
+  synthesizeAnnotations,
+  buildAnnotationPrompt,
+  ANNOTATION_TOOL,
   validateScreenAnnotations: schema.validateScreenAnnotations,
   schema,
   style,

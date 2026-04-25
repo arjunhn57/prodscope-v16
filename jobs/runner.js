@@ -26,6 +26,7 @@ const metrics = require("../lib/metrics");
 const { alertJobFailed, alertConsecutiveFailures, alertDiskCritical } = require("../lib/alerts");
 const { logger, createJobLogger } = require("../lib/logger");
 const { synthesizeReportV2 } = require("../output/report-synthesis-v2");
+const { annotateCitedScreens } = require("../output/annotator/pipeline");
 const billing = require("../lib/billing");
 
 /**
@@ -61,6 +62,12 @@ async function refundIfCodeSideFault(jobId, reason, log) {
 // V1 path is unchanged — V2 is purely additive until validated.
 const REPORT_V2_ENABLED =
   String(process.env.REPORT_V2_ENABLED || "").toLowerCase() === "true";
+
+// Annotation pass — run only after V2 succeeds, only on cited screens.
+// Independent flag so we can ship V2 reports without paying the
+// per-screen vision call cost until the annotation grammar is shipped.
+const ANNOTATIONS_ENABLED =
+  String(process.env.ANNOTATIONS_ENABLED || "").toLowerCase() === "true";
 
 // Engine selection happens at job runtime below — both v16 and v17 are loaded
 // so a run can be steered via CRAWL_ENGINE env var without restarting.
@@ -647,6 +654,58 @@ async function processJob(jobId, apkPath, opts) {
           v2Errors = [`v2_exception: ${v2Err.message || String(v2Err)}`];
           log.warn({ err: v2Err.message }, "V2 synthesis threw — V1 report unaffected");
         }
+        // Annotation pass — run on cited screens only. Gated separately
+        // so we can ship V2 reports today without paying for vision
+        // calls per screen until the annotation UI is wired up.
+        let annotationsResult = null;
+        if (ANNOTATIONS_ENABLED && v2Report) {
+          try {
+            const outDir = `/tmp/reports/${jobId}/annotated`;
+            const annotateOut = await annotateCitedScreens({
+              jobId,
+              report: v2Report,
+              screens: crawlResult.screens || [],
+              stage2Analyses: analyses || [],
+              outDir,
+            });
+            annotationsResult = {
+              annotatedScreens: annotateOut.annotatedScreens,
+              failedScreens: annotateOut.failedScreens,
+              tokenUsage: annotateOut.tokenUsage,
+              dir: outDir,
+              perScreen: annotateOut.results.map((r) => ({
+                screenId: r.screenId,
+                ok: !!r.files,
+                files: r.files || null,
+                errors: r.errors || null,
+              })),
+            };
+            sonnetTokensAccum.input_tokens += annotateOut.tokenUsage.input_tokens || 0;
+            sonnetTokensAccum.output_tokens += annotateOut.tokenUsage.output_tokens || 0;
+            log.info(
+              {
+                jobId,
+                annotatedCount: annotateOut.annotatedScreens.length,
+                failedCount: annotateOut.failedScreens.length,
+                annInputTokens: annotateOut.tokenUsage.input_tokens,
+                annOutputTokens: annotateOut.tokenUsage.output_tokens,
+              },
+              "Annotation pass complete",
+            );
+          } catch (annErr) {
+            log.warn(
+              { err: annErr.message },
+              "Annotation pass threw — V2 report unaffected",
+            );
+            annotationsResult = {
+              annotatedScreens: [],
+              failedScreens: [],
+              tokenUsage: { input_tokens: 0, output_tokens: 0 },
+              error: annErr.message,
+            };
+          }
+        }
+
         // Persist V2 fields alongside V1. They are read by the demo
         // script (and, eventually, the V2-aware frontend) — null when
         // the synthesizer didn't produce a valid report.
@@ -654,6 +713,7 @@ async function processJob(jobId, apkPath, opts) {
           v2Report,
           v2TokenUsage,
           v2Errors,
+          annotations: annotationsResult,
         });
       }
     } catch (oracleErr) {
