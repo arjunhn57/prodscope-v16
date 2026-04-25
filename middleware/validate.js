@@ -50,11 +50,13 @@ const staticInputsSchema = z
 // ---------------------------------------------------------------------------
 
 const ALLOWED_EXTENSIONS = new Set([".apk", ".aab", ".xapk"]);
-// 50 MB — Vercel proxy caps at ~4.5 MB, the production deployment
-// uses direct-to-backend upload which is fine up to 50 MB. Larger APKs
-// should be compressed (strip debug symbols, split ABIs) before upload.
-// Task 3.5 — matched to the FILE_TOO_LARGE error code's documented limit.
-const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
+// 200 MB — real-world apps (Spotify, social, gaming, fintech) commonly
+// ship 60–180 MB APKs. 50 MB rejected most non-trivial uploads.
+// 2026-04-25: bumped from 50 MB → 200 MB. The error message already
+// cited 200 MB; the constant had lagged. Frontend uploads bypass the
+// Vercel proxy via direct-to-backend so the only ceiling is multer +
+// nginx body-buffer (configured to >200 MB on the VM).
+const MAX_FILE_SIZE_BYTES = 200 * 1024 * 1024;
 
 /**
  * Validate the uploaded file.
