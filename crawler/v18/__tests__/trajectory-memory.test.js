@@ -190,6 +190,7 @@ test("tappedLabelsOnFp: returns labels of tapped clickables in current observati
 const {
   uniqueLogicalScreensCount,
   countRecentHubTaps,
+  countRecentRepeatedTargets,
   LOOP_WINDOW_STEPS,
   LOOP_WARN_THRESHOLD,
 } = require("../trajectory-memory");
@@ -240,14 +241,14 @@ test("countRecentHubTaps: non-hub labels (e.g. 'Post A') don't trigger", () => {
   assert.equal(counts.size, 0);
 });
 
-test("summarise: emits LOOP WARNING when a hub tap count hits the threshold", () => {
+test("summarise: emits LOOP WARNING when a label repeats over the threshold", () => {
   const m = createMemory();
   for (let i = 0; i < LOOP_WARN_THRESHOLD; i++) {
     recordAction(m, { step: i, driver: "LLMFallback", actionType: "tap", targetText: "Home", fingerprint: `fp${i}` });
   }
   const hint = summarise(m);
   assert.ok(hint.includes("LOOP WARNING"), "expected LOOP WARNING in hint");
-  assert.ok(hint.includes("Home"), "LOOP WARNING should name the looped label");
+  assert.ok(hint.includes("Home"), "LOOP WARNING should name the repeated label");
   assert.ok(hint.includes("Do NOT tap"), "directive should be prescriptive");
 });
 
@@ -258,6 +259,93 @@ test("summarise: no LOOP WARNING below the threshold (2 taps only)", () => {
   }
   const hint = summarise(m);
   assert.ok(!hint.includes("LOOP WARNING"), "no warning should fire below threshold");
+});
+
+// ── 2026-04-25 v2: generalised loop detector (no keyword filter) ───────
+//
+// Hub-keyword-only detection (the v1 approach) silently missed loops on
+// labels that don't match any hardcoded keyword: a profile card showing
+// the user's own email/handle, "Hi, Arjun" greeting cards, dynamic count
+// badges, localized hub labels in non-English apps. countRecentRepeatedTargets
+// buckets by raw targetText so any repeated target surfaces.
+//
+// Generic test harness: `user@example.com`, `Settings`, `Vidzz` — none
+// app-specific, none of which would all match the legacy HUB_LABEL_PATTERNS.
+
+test("countRecentRepeatedTargets: counts every repeated target, no keyword filter", () => {
+  const m = createMemory();
+  for (let i = 0; i < 4; i++) {
+    recordAction(m, {
+      step: i * 2,
+      driver: "LLMFallback",
+      actionType: "tap",
+      targetText: "user@example.com", // personalized profile card — no hub keyword
+      fingerprint: `fp${i}a`,
+    });
+    recordAction(m, {
+      step: i * 2 + 1,
+      driver: "LLMFallback",
+      actionType: "tap",
+      targetText: "Vidzz", // app-specific tab name — no hub keyword
+      fingerprint: `fp${i}b`,
+    });
+  }
+  const counts = countRecentRepeatedTargets(m);
+  assert.ok(counts.get("user@example.com") >= 3, "personalized label must be counted");
+  assert.ok(counts.get("Vidzz") >= 3, "non-hub-keyword label must be counted");
+});
+
+test("countRecentRepeatedTargets: skips non-tap actions and empty/null targetText", () => {
+  const m = createMemory();
+  recordAction(m, { step: 1, driver: "X", actionType: "type", targetText: "Email", fingerprint: "fp" });
+  recordAction(m, { step: 2, driver: "X", actionType: "tap", targetText: null, fingerprint: "fp" });
+  recordAction(m, { step: 3, driver: "X", actionType: "tap", targetText: "  ", fingerprint: "fp" });
+  recordAction(m, { step: 4, driver: "X", actionType: "wait", targetText: "Home", fingerprint: "fp" });
+  const counts = countRecentRepeatedTargets(m);
+  assert.equal(counts.size, 0, "type/wait actions and empty labels must not count");
+});
+
+test("summarise: LOOP WARNING fires on personalized label that no hub keyword matches", () => {
+  const m = createMemory();
+  // Simulates the run-13644110 pattern: a profile-info card whose label
+  // is the user's email rendered alongside a real Home tab. Without
+  // keyword filtering, both labels surface as repeated targets.
+  for (let i = 0; i < LOOP_WARN_THRESHOLD; i++) {
+    recordAction(m, {
+      step: i,
+      driver: "LLMFallback",
+      actionType: "tap",
+      targetText: "user@example.com",
+      fingerprint: `fp${i}`,
+    });
+  }
+  const hint = summarise(m);
+  assert.ok(hint.includes("LOOP WARNING"));
+  assert.ok(
+    hint.includes("user@example.com"),
+    "warning must surface the actual repeated label, not a hub-keyword stand-in",
+  );
+});
+
+test("summarise: recent_repeated_taps line uses the new label, not the legacy 'recent_hub_taps'", () => {
+  const m = createMemory();
+  for (let i = 0; i < LOOP_WARN_THRESHOLD; i++) {
+    recordAction(m, { step: i, driver: "X", actionType: "tap", targetText: "AnyLabel", fingerprint: `fp${i}` });
+  }
+  const hint = summarise(m);
+  assert.ok(hint.includes("recent_repeated_taps:"));
+  assert.ok(!hint.includes("recent_hub_taps:"), "old key must be gone");
+});
+
+test("summarise: recent_repeated_taps line is suppressed when no label repeats over threshold", () => {
+  const m = createMemory();
+  // Three different one-off labels — none repeat, so no signal.
+  recordAction(m, { step: 1, driver: "X", actionType: "tap", targetText: "A", fingerprint: "fp" });
+  recordAction(m, { step: 2, driver: "X", actionType: "tap", targetText: "B", fingerprint: "fp" });
+  recordAction(m, { step: 3, driver: "X", actionType: "tap", targetText: "C", fingerprint: "fp" });
+  const hint = summarise(m);
+  assert.ok(!hint.includes("recent_repeated_taps:"));
+  assert.ok(!hint.includes("LOOP WARNING"));
 });
 
 test("summarise: includes logical_unique count line", () => {

@@ -24,14 +24,17 @@ const DEFAULT_HUBS = [
   "detail",
 ];
 
-/** Cap on recent action history — enough for the classifier to spot loops
- *  without blowing token budget. */
-const RECENT_ACTIONS_CAP = 8;
+/** Cap on recent action history — must be ≥ LOOP_WINDOW_STEPS so the loop
+ *  detector can scan a full window. */
+const RECENT_ACTIONS_CAP = 12;
 
 /**
- * Phase 4 (2026-04-25): well-known nav / hub labels that, when tapped
- * repeatedly in a short window, indicate a hub bounce-loop. Match is
- * case-insensitive substring on targetText.
+ * Phase 4 (2026-04-25): well-known nav / hub labels — kept for the legacy
+ * `countRecentHubTaps` helper, no longer used by `summarise`. Hub-keyword
+ * matching is fundamentally fragile: any app rendering a hub element with a
+ * personalized label (user's name, email, dynamic count badge, localized
+ * text) bypasses it. The detector now buckets by raw targetText (see
+ * `countRecentRepeatedTargets`) so loops are caught regardless of label.
  */
 const HUB_LABEL_PATTERNS = [
   /\bhome\b/i,
@@ -50,9 +53,9 @@ const HUB_LABEL_PATTERNS = [
   /\bback\b/i,
 ];
 
-/** Window over which we count hub taps for loop detection. */
+/** Window over which we count repeated taps for loop detection. */
 const LOOP_WINDOW_STEPS = 10;
-/** Number of taps on the same label within the window before we warn. */
+/** Number of taps on the same target within the window before we warn. */
 const LOOP_WARN_THRESHOLD = 3;
 
 /**
@@ -308,21 +311,26 @@ function summarise(memory, opts) {
     parts.push(`untapped_on_this_screen: ${untapped.length}`);
   }
 
-  // Phase 4: anti-loop pressure. Count recent taps on well-known hub
-  // labels. If any label hits LOOP_WARN_THRESHOLD in the last
-  // LOOP_WINDOW_STEPS, emit a loud prescriptive directive so the LLM
-  // stops bouncing.
-  const hubTaps = countRecentHubTaps(memory);
-  if (hubTaps.size > 0) {
-    const summary = Array.from(hubTaps.entries())
-      .sort((a, b) => b[1] - a[1])
-      .map(([label, count]) => `${label}×${count}`)
-      .join(", ");
-    parts.push(`recent_hub_taps: ${summary} in last ${LOOP_WINDOW_STEPS} steps`);
-    const maxCount = Math.max(...hubTaps.values());
-    if (maxCount >= LOOP_WARN_THRESHOLD) {
-      const loopedLabels = Array.from(hubTaps.entries())
-        .filter(([, count]) => count >= LOOP_WARN_THRESHOLD)
+  // Phase 4 (2026-04-25 v2): anti-loop pressure. Count recent taps on the
+  // SAME targetText regardless of whether the label matches a hub keyword.
+  // Hub-keyword filtering missed loops on personalized labels (the user's
+  // own email rendered as a profile card, "Hi, Arjun" greetings, dynamic
+  // count badges, localized hub text). We now bucket by raw targetText so
+  // any element tapped LOOP_WARN_THRESHOLD+ times in LOOP_WINDOW_STEPS
+  // surfaces as a loop — generalised, no keyword list to maintain.
+  const repeatedTaps = countRecentRepeatedTargets(memory);
+  if (repeatedTaps.size > 0) {
+    // Only surface entries that hit the threshold — single-tap labels would
+    // dominate the line otherwise and dilute the signal.
+    const overThreshold = Array.from(repeatedTaps.entries())
+      .filter(([, count]) => count >= LOOP_WARN_THRESHOLD)
+      .sort((a, b) => b[1] - a[1]);
+    if (overThreshold.length > 0) {
+      const summary = overThreshold
+        .map(([label, count]) => `${label}×${count}`)
+        .join(", ");
+      parts.push(`recent_repeated_taps: ${summary} in last ${LOOP_WINDOW_STEPS} steps`);
+      const loopedLabels = overThreshold
         .map(([label]) => `"${label}"`)
         .join(" and ");
       const remainingHubs =
@@ -330,7 +338,7 @@ function summarise(memory, opts) {
           ? ` Unvisited hubs: ${Array.from(memory.hubsRemaining).join(", ")}.`
           : "";
       parts.push(
-        `LOOP WARNING: You have been bouncing between ${loopedLabels}. ` +
+        `LOOP WARNING: You have been repeatedly tapping ${loopedLabels}. ` +
           `Do NOT tap ${loopedLabels} next. ` +
           `Try a list item, a drawer, a detail row, a "More"/overflow menu, ` +
           `edge_swipe_back, or a previously-untapped element — even if you are ` +
@@ -343,8 +351,37 @@ function summarise(memory, opts) {
 }
 
 /**
- * Phase 4: count taps on well-known hub labels within LOOP_WINDOW_STEPS.
- * Returns Map<label, count>.
+ * Bucket recent tap actions by targetText, ignoring nulls/empties. Returns
+ * Map<label, count> over the last LOOP_WINDOW_STEPS actions. No keyword
+ * filter — any repeated label surfaces. This is the primary loop detector
+ * (2026-04-25 v2).
+ *
+ * Why no keyword filter: hub-bounce loops can involve any clickable a
+ * model is biased to revisit, including elements with personalized labels
+ * (user's name/email on a profile card, "Hi, Arjun", dynamic count
+ * badges) or localized labels in non-English apps. Keyword matching
+ * silently misses these; raw-label bucketing catches them.
+ *
+ * @param {TrajectoryMemory} memory
+ * @returns {Map<string, number>}
+ */
+function countRecentRepeatedTargets(memory) {
+  const out = new Map();
+  if (!memory || !Array.isArray(memory.recentActions)) return out;
+  const recent = memory.recentActions.slice(-LOOP_WINDOW_STEPS);
+  for (const a of recent) {
+    if (!a || a.actionType !== "tap") continue;
+    const label = typeof a.targetText === "string" ? a.targetText.trim() : "";
+    if (!label) continue;
+    out.set(label, (out.get(label) || 0) + 1);
+  }
+  return out;
+}
+
+/**
+ * @deprecated Use countRecentRepeatedTargets. Kept exported for callers
+ * (and tests) that haven't migrated yet. Same window/threshold semantics
+ * but only counts labels matching HUB_LABEL_PATTERNS.
  *
  * @param {TrajectoryMemory} memory
  * @returns {Map<string, number>}
@@ -400,6 +437,7 @@ module.exports = {
   tappedLabelsOnFp,
   // Phase 4 (logical fp + anti-loop):
   uniqueLogicalScreensCount,
+  countRecentRepeatedTargets,
   countRecentHubTaps,
   HUB_LABEL_PATTERNS,
   LOOP_WINDOW_STEPS,
