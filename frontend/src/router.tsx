@@ -76,6 +76,20 @@ export const router = createBrowserRouter([
       })),
   },
   {
+    path: "/privacy",
+    lazy: () =>
+      import("./features/legal/PrivacyPage").then((m) => ({
+        Component: m.PrivacyPage,
+      })),
+  },
+  {
+    path: "/terms",
+    lazy: () =>
+      import("./features/legal/TermsPage").then((m) => ({
+        Component: m.TermsPage,
+      })),
+  },
+  {
     path: "/admin/partners",
     lazy: () =>
       Promise.all([

@@ -27,6 +27,7 @@ export type UploadState = "idle" | "uploading" | "error" | "complete";
 
 export interface UseUploadJobReturn {
   startUpload: (file: File, meta?: UploadMeta) => void;
+  startFromUrl: (playStoreUrl: string, meta?: UploadMeta) => void;
   cancel: () => void;
   reset: () => void;
   state: UploadState;
@@ -54,6 +55,13 @@ function resolveUploadUrl(): string {
     ? API_BASE
     : `${window.location.origin}${API_BASE.startsWith("/") ? "" : "/"}${API_BASE}`;
   return `${base.replace(/\/$/, "")}/start-job`;
+}
+
+function resolveUrlJobUrl(): string {
+  const base = API_BASE.startsWith("http")
+    ? API_BASE
+    : `${window.location.origin}${API_BASE.startsWith("/") ? "" : "/"}${API_BASE}`;
+  return `${base.replace(/\/$/, "")}/start-job-from-url`;
 }
 
 export function useUploadJob(): UseUploadJobReturn {
@@ -240,8 +248,103 @@ export function useUploadJob(): UseUploadJobReturn {
     [queryClient, token, logout]
   );
 
+  // 2026-04-26 (Item #3): URL-paste path. The backend fetches the APK
+  // from a public mirror server-side, so we don't track upload progress;
+  // the request body is small JSON. Same {jobId, queuePosition} response
+  // shape so downstream code (state machine, navigation) doesn't care
+  // how the job was started.
+  const startFromUrl = useCallback(
+    (playStoreUrl: string, meta: UploadMeta = {}) => {
+      if (xhrRef.current) {
+        xhrRef.current.abort();
+        xhrRef.current = null;
+      }
+      samplesRef.current = [];
+
+      if (mountedRef.current) {
+        setState("uploading");
+        setError(null);
+        setResult(null);
+        // No real progress to report on a server-side fetch — show 0
+        // and let the UI display a generic "fetching" hint.
+        setProgress({ loaded: 0, total: 0, percent: 0, speedBps: 0, etaSec: 0 });
+      }
+
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
+      const body: Record<string, unknown> = { playStoreUrl };
+      if (meta.email) body.email = meta.email;
+      if (meta.credentials) body.credentials = meta.credentials;
+      if (meta.goals) body.goals = meta.goals;
+      if (meta.painPoints) body.painPoints = meta.painPoints;
+      if (meta.staticInputs) {
+        const cleaned: Record<string, string> = {};
+        for (const [key, value] of Object.entries(meta.staticInputs)) {
+          if (typeof value === "string" && value.trim().length > 0) {
+            cleaned[key] = value.trim();
+          }
+        }
+        if (Object.keys(cleaned).length > 0) {
+          body.staticInputs = JSON.stringify(cleaned);
+        }
+      }
+
+      type StartJobResponse = {
+        success?: boolean;
+        data?: { jobId: string; queuePosition: number };
+        error?: string;
+      };
+
+      fetch(resolveUrlJobUrl(), {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      })
+        .then(async (res) => {
+          if (!mountedRef.current) return;
+          if (res.status === 401) {
+            logout();
+            setState("error");
+            setError("Your session expired. Sign in to retry.");
+            return;
+          }
+          let parsed: StartJobResponse | null = null;
+          try {
+            parsed = (await res.json()) as StartJobResponse;
+          } catch {
+            parsed = null;
+          }
+          if (res.ok && parsed?.success && parsed.data?.jobId) {
+            setProgress({ loaded: 1, total: 1, percent: 100, speedBps: 0, etaSec: 0 });
+            setState("complete");
+            setResult({
+              jobId: parsed.data.jobId,
+              queuePosition: parsed.data.queuePosition ?? 0,
+            });
+            queryClient.invalidateQueries({ queryKey: ["queue-status"] });
+          } else {
+            setState("error");
+            setError(
+              parsed?.error ||
+                "We couldn't fetch this APK from the Play Store mirror. Try uploading the APK directly.",
+            );
+          }
+        })
+        .catch(() => {
+          if (!mountedRef.current) return;
+          setState("error");
+          setError("Network error — couldn't reach the server.");
+        });
+    },
+    [queryClient, token, logout],
+  );
+
   return {
     startUpload,
+    startFromUrl,
     cancel,
     reset,
     state,

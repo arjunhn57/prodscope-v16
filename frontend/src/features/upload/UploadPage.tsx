@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, useReducedMotion, AnimatePresence } from "framer-motion";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Upload, Link as LinkIcon, Info } from "lucide-react";
 import { TopBar } from "../../components/layout/TopBar";
 import { Dropzone } from "./components/Dropzone";
 import { FilePreviewCard } from "./components/FilePreviewCard";
@@ -11,6 +11,18 @@ import { LaunchCTA } from "./components/LaunchCTA";
 import { useUploadJob, type UploadMeta } from "./useUploadJob";
 import { EDITORIAL_EASE } from "../report/tokens";
 
+// Match canonical Play Store URLs (with/without locale prefix and extra
+// query params). The id= parameter is the Android package name we extract
+// server-side.
+const PLAY_STORE_URL_REGEX =
+  /^https?:\/\/(www\.)?play\.google\.com\/store\/apps\/details\?(?:[^#]*&)?id=[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+/i;
+
+function isValidPlayStoreUrl(s: string): boolean {
+  return PLAY_STORE_URL_REGEX.test(s.trim());
+}
+
+type InputMode = "upload" | "url";
+
 const AURORA_BACKDROP =
   "radial-gradient(80% 50% at 50% 0%, rgba(108,71,255,0.08) 0%, rgba(108,71,255,0) 55%), radial-gradient(60% 50% at 50% 0%, rgba(219,39,119,0.05) 0%, rgba(219,39,119,0) 60%), #FAFAFA";
 
@@ -18,12 +30,16 @@ export function UploadPage() {
   const navigate = useNavigate();
   const reduceMotion = useReducedMotion();
 
+  const [inputMode, setInputMode] = useState<InputMode>("upload");
   const [file, setFile] = useState<File | null>(null);
+  const [playStoreUrl, setPlayStoreUrl] = useState<string>("");
+  const [urlTouched, setUrlTouched] = useState(false);
   const [meta, setMeta] = useState<UploadMeta>({});
   const [submitting, setSubmitting] = useState(false);
   const [fadingOut, setFadingOut] = useState(false);
 
   const upload = useUploadJob();
+  const urlValid = !playStoreUrl || isValidPlayStoreUrl(playStoreUrl);
 
   const handleFileAccepted = useCallback(
     (accepted: File) => {
@@ -44,18 +60,31 @@ export function UploadPage() {
   }, [upload]);
 
   const handleRetry = useCallback(() => {
+    if (inputMode === "url") {
+      if (!isValidPlayStoreUrl(playStoreUrl)) return;
+      upload.startFromUrl(playStoreUrl, meta);
+      return;
+    }
     if (!file) return;
     upload.startUpload(file, meta);
-  }, [file, meta, upload]);
+  }, [file, meta, upload, inputMode, playStoreUrl]);
 
   const handleLaunch = useCallback(() => {
-    if (!file) return;
     if (upload.state === "uploading" || submitting) return;
-    if (upload.state === "idle" || upload.state === "error") {
+    if (upload.state !== "idle" && upload.state !== "error") return;
+    if (inputMode === "url") {
+      if (!isValidPlayStoreUrl(playStoreUrl)) {
+        setUrlTouched(true);
+        return;
+      }
       setSubmitting(true);
-      upload.startUpload(file, meta);
+      upload.startFromUrl(playStoreUrl, meta);
+      return;
     }
-  }, [file, meta, upload, submitting]);
+    if (!file) return;
+    setSubmitting(true);
+    upload.startUpload(file, meta);
+  }, [file, meta, upload, submitting, inputMode, playStoreUrl]);
 
   useEffect(() => {
     if (upload.state === "error") {
@@ -79,11 +108,25 @@ export function UploadPage() {
 
   const ctaHint = (() => {
     if (upload.state === "complete") return "Your analysis is queued and ready to start.";
-    if (upload.state === "uploading") return "Uploading your APK — hang tight.";
-    if (upload.state === "error") return "Resolve the upload error before launching.";
+    if (upload.state === "uploading") {
+      return inputMode === "url"
+        ? "Fetching APK from the Play Store mirror — this can take a minute."
+        : "Uploading your APK — hang tight.";
+    }
+    if (upload.state === "error") return "Resolve the error below before launching.";
+    if (inputMode === "url") {
+      if (!playStoreUrl) return "Paste a Play Store URL to enable launch.";
+      if (!urlValid) return "Enter a valid Play Store URL to enable launch.";
+      return "Add context below if needed, then launch when you're ready.";
+    }
     if (file) return "Add context below if needed, then launch when you're ready.";
     return "Drop an APK above to enable launch.";
   })();
+
+  const launchReady =
+    upload.state !== "uploading" &&
+    !submitting &&
+    (inputMode === "url" ? isValidPlayStoreUrl(playStoreUrl) : !!file);
 
   return (
     <div className="flex flex-col min-h-dvh">
@@ -149,34 +192,178 @@ export function UploadPage() {
             transition={{ duration: 0.5, ease: EDITORIAL_EASE, delay: reduceMotion ? 0 : 0.08 }}
             className="mt-10 md:mt-14"
           >
+            {/* 2026-04-26 (Item #3): input mode toggle — APK upload vs Play
+                Store URL paste. State: inputMode. The upload panel keeps the
+                existing Dropzone+Preview flow; the url panel posts JSON to
+                /api/v1/start-job-from-url which fetches the APK server-side
+                via lib/apk-fetcher. */}
+            <div
+              className="mx-auto max-w-[520px] mb-5 flex gap-1.5 rounded-xl p-1"
+              style={{
+                background: "rgba(241,245,249,0.8)",
+                border: "1px solid rgba(226,232,240,0.9)",
+              }}
+              role="tablist"
+              aria-label="Choose input source"
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={inputMode === "upload"}
+                onClick={() => setInputMode("upload")}
+                disabled={upload.state === "uploading" || submitting}
+                className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-[13px] font-semibold transition-all disabled:cursor-not-allowed"
+                style={{
+                  background: inputMode === "upload" ? "white" : "transparent",
+                  color:
+                    inputMode === "upload"
+                      ? "var(--color-text-primary)"
+                      : "var(--color-text-muted)",
+                  boxShadow:
+                    inputMode === "upload"
+                      ? "0 1px 2px rgba(15,23,42,0.06)"
+                      : "none",
+                  fontFamily: "var(--font-label)",
+                }}
+              >
+                <Upload className="w-3.5 h-3.5" />
+                Upload APK
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={inputMode === "url"}
+                onClick={() => setInputMode("url")}
+                disabled={upload.state === "uploading" || submitting}
+                className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-[13px] font-semibold transition-all disabled:cursor-not-allowed"
+                style={{
+                  background: inputMode === "url" ? "white" : "transparent",
+                  color:
+                    inputMode === "url"
+                      ? "var(--color-text-primary)"
+                      : "var(--color-text-muted)",
+                  boxShadow:
+                    inputMode === "url" ? "0 1px 2px rgba(15,23,42,0.06)" : "none",
+                  fontFamily: "var(--font-label)",
+                }}
+              >
+                <LinkIcon className="w-3.5 h-3.5" />
+                Paste Play Store URL
+              </button>
+            </div>
+
             <AnimatePresence mode="wait">
-              {file ? (
-                <motion.div
-                  key="preview"
-                  initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -8 }}
-                  transition={{ duration: 0.35, ease: EDITORIAL_EASE }}
-                >
-                  <FilePreviewCard
-                    file={file}
-                    state={upload.state}
-                    progress={upload.progress}
-                    error={upload.error}
-                    onCancel={handleCancel}
-                    onReplace={handleReplace}
-                    onRetry={handleRetry}
-                  />
-                </motion.div>
+              {inputMode === "upload" ? (
+                file ? (
+                  <motion.div
+                    key="preview"
+                    initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -8 }}
+                    transition={{ duration: 0.35, ease: EDITORIAL_EASE }}
+                  >
+                    <FilePreviewCard
+                      file={file}
+                      state={upload.state}
+                      progress={upload.progress}
+                      error={upload.error}
+                      onCancel={handleCancel}
+                      onReplace={handleReplace}
+                      onRetry={handleRetry}
+                    />
+                  </motion.div>
+                ) : (
+                  <motion.div
+                    key="dropzone"
+                    initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -8 }}
+                    transition={{ duration: 0.35, ease: EDITORIAL_EASE }}
+                  >
+                    <Dropzone onFileAccepted={handleFileAccepted} />
+                  </motion.div>
+                )
               ) : (
                 <motion.div
-                  key="dropzone"
+                  key="url-panel"
                   initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -8 }}
                   transition={{ duration: 0.35, ease: EDITORIAL_EASE }}
+                  className="mx-auto max-w-[640px]"
                 >
-                  <Dropzone onFileAccepted={handleFileAccepted} />
+                  <div
+                    className="rounded-2xl p-5 md:p-6"
+                    style={{
+                      background:
+                        "linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(248,250,252,0.9) 100%)",
+                      border: "1px solid rgba(226,232,240,0.9)",
+                      boxShadow:
+                        "0 1px 2px rgba(15,23,42,0.04), 0 14px 32px -20px rgba(15,23,42,0.16)",
+                    }}
+                  >
+                    <label
+                      htmlFor="playStoreUrlInput"
+                      className="block text-[12.5px] font-semibold text-[var(--color-text-primary)] mb-2"
+                      style={{ fontFamily: "var(--font-label)" }}
+                    >
+                      Play Store URL
+                    </label>
+                    <input
+                      id="playStoreUrlInput"
+                      type="url"
+                      inputMode="url"
+                      autoComplete="off"
+                      spellCheck={false}
+                      value={playStoreUrl}
+                      onChange={(e) => {
+                        setPlayStoreUrl(e.target.value);
+                        if (urlTouched) setUrlTouched(false);
+                      }}
+                      onBlur={() => setUrlTouched(true)}
+                      placeholder="https://play.google.com/store/apps/details?id=com.example.app"
+                      disabled={upload.state === "uploading" || submitting}
+                      className="w-full rounded-xl border bg-white px-3.5 py-2.5 text-[14px] text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-ring)] disabled:opacity-60 disabled:cursor-not-allowed"
+                      style={{
+                        borderColor:
+                          urlTouched && !urlValid
+                            ? "rgb(239,68,68)"
+                            : "rgba(226,232,240,1)",
+                        fontFamily: "var(--font-mono, monospace)",
+                      }}
+                      aria-invalid={urlTouched && !urlValid ? true : undefined}
+                      aria-describedby="playStoreUrlHint"
+                    />
+                    <div
+                      id="playStoreUrlHint"
+                      className="mt-2.5 flex items-start gap-1.5 text-[12px] text-[var(--color-text-muted)] leading-[1.5]"
+                      style={{ fontFamily: "var(--font-sans)" }}
+                    >
+                      <Info className="w-3.5 h-3.5 mt-[1px] shrink-0" />
+                      <span>
+                        We fetch the public APK from a public mirror — never
+                        sign in to Google Play on your behalf. If the mirror
+                        doesn&rsquo;t have this app, switch to direct upload.
+                      </span>
+                    </div>
+                    {urlTouched && playStoreUrl && !urlValid && (
+                      <div
+                        className="mt-2 text-[12px] text-[rgb(220,38,38)]"
+                        style={{ fontFamily: "var(--font-sans)" }}
+                      >
+                        Doesn&rsquo;t look like a Play Store app URL. Expected:
+                        https://play.google.com/store/apps/details?id=...
+                      </div>
+                    )}
+                    {upload.state === "error" && upload.error && (
+                      <div
+                        className="mt-3 rounded-lg border border-[rgba(220,38,38,0.2)] bg-[rgba(254,226,226,0.4)] px-3 py-2 text-[12.5px] text-[rgb(159,18,57)]"
+                        style={{ fontFamily: "var(--font-sans)" }}
+                      >
+                        {upload.error}
+                      </div>
+                    )}
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>
@@ -214,7 +401,7 @@ export function UploadPage() {
             className="mt-10 md:mt-12 flex justify-center"
           >
             <LaunchCTA
-              ready={!!file && upload.state !== "uploading" && !submitting}
+              ready={launchReady}
               submitting={submitting && upload.state !== "uploading"}
               uploading={upload.state === "uploading"}
               onClick={handleLaunch}

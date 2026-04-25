@@ -1,5 +1,5 @@
 import { motion, useReducedMotion } from "framer-motion";
-import { Lock, EyeOff, Clock } from "lucide-react";
+import { ShieldCheck, EyeOff, Clock } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { EDITORIAL_EASE } from "../../report/tokens";
 
@@ -9,21 +9,26 @@ interface TrustItem {
   sublabel: string;
 }
 
+// 2026-04-26: diligence-positioned trust copy. Each banner ties to a
+// real code-level guarantee — "Read-only" is enforced by the v18
+// classifier's write-intent strip on non-auth screens; "no credentials"
+// is the V1 pre-auth-only mode; "auto-deleted" matches the 7-day
+// retention in the privacy policy.
 const ITEMS: TrustItem[] = [
   {
-    icon: Lock,
-    label: "Encrypted in transit",
-    sublabel: "TLS 1.3 end-to-end",
+    icon: ShieldCheck,
+    label: "Read-only by default",
+    sublabel: "Never types or taps Save",
   },
   {
     icon: EyeOff,
-    label: "Never shared",
-    sublabel: "Your build stays with you",
+    label: "Nothing personal stored",
+    sublabel: "No credentials needed",
   },
   {
     icon: Clock,
-    label: "Auto-deleted",
-    sublabel: "Removed after 7 days",
+    label: "Auto-deleted in 7 days",
+    sublabel: "APK and screenshots wiped",
   },
 ];
 
