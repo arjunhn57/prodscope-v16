@@ -45,6 +45,10 @@ const jobStore = require("../../jobs/store");
 
 // V17 additions: driver dispatcher + per-run classifier cache + LLMFallback wrapper.
 const { dispatch: defaultDispatch } = require("./dispatcher");
+// V18 trajectory memory — referenced from the drift-recovery block so the
+// agent's next decision sees the relaunch as a first-class step in
+// recentActions rather than an invisible reset (2026-04-25 v3).
+const { recordAction: recordTrajectoryAction } = require("../v18/trajectory-memory");
 const {
   createCache: createClassifierCache,
   computeStructuralFingerprint,
@@ -536,6 +540,37 @@ async function runAgentLoop(opts) {
       // ALSO shows drift, the attempt counter ticks again. Normal 2 s
       // post-launch settle window mirrors runner.js:268.
       relaunchApp(opts.targetPackage, targetLauncherActivity);
+      // 2026-04-25 v3: make the synthetic recovery visible to the
+      // trajectory. Without this entry, the agent's recentActions still
+      // show the previous action (e.g. press_back) as outcome=changed,
+      // and it picks the same action again, drifting again. Recording the
+      // recovery — and naming the previous action that caused it — lets
+      // summarise() emit a directive ("the previous press_back exited
+      // the app; do NOT press_back again") on the next dispatch. This is
+      // app-agnostic: any action that drifts (press_back, an external
+      // intent tap, etc.) names itself in the outcome.
+      const trajectory =
+        (deps && deps.extraDispatchDeps && deps.extraDispatchDeps.trajectory) || null;
+      if (trajectory) {
+        const causingAction =
+          (lastAction && typeof lastAction.type === "string" && lastAction.type) ||
+          "unknown";
+        try {
+          recordTrajectoryAction(trajectory, {
+            step,
+            driver: "drift-recovery",
+            actionType: "launch_app",
+            targetText: null,
+            fingerprint: (prevObservation && prevObservation.fingerprint) || "",
+            outcome: `drift_recovery_after_${causingAction}`,
+          });
+        } catch (err) {
+          log.warn(
+            { err: err.message, step },
+            "drift-recovery: recordAction threw",
+          );
+        }
+      }
       try { await driftSleep(2000); } catch (_) {}
       // Consume a budget step so a runaway drift loop still hits max_steps.
       budget.step();

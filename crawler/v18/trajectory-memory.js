@@ -318,6 +318,16 @@ function summarise(memory, opts) {
     parts.push(`untapped_on_this_screen: ${untapped.length}`);
   }
 
+  // 2026-04-25 v3: causal anti-drift directive. The drift-recovery block
+  // in v17/agent-loop records a synthetic launch_app entry with outcome
+  // "drift_recovery_after_<action>" whenever it had to relaunch the
+  // target package. If the most recent ≤2 entries include such a recovery,
+  // the prior action just exited the app — emit a directive so the next
+  // decision doesn't repeat it. App-agnostic: works for any action that
+  // drifts (press_back, an external intent tap, a deep-link, etc.).
+  const driftDirective = buildDriftDirective(memory);
+  if (driftDirective) parts.push(driftDirective);
+
   // Phase 4 (2026-04-25 v2): anti-loop pressure. Count recent taps on the
   // SAME targetText regardless of whether the label matches a hub keyword.
   // Hub-keyword filtering missed loops on personalized labels (the user's
@@ -355,6 +365,40 @@ function summarise(memory, opts) {
   }
 
   return parts.join("\n").slice(0, 1600);
+}
+
+/**
+ * 2026-04-25 v3: build the causal anti-drift directive for summarise.
+ * Looks at the last few recentActions entries; if any has an outcome
+ * of "drift_recovery_after_<action>", the named action just caused
+ * the app to exit. Emit a one-line directive telling the LLM not to
+ * repeat that action from the current screen. Returns null if no recent
+ * recovery is in scope.
+ *
+ * Window: last 2 entries. Tighter than LOOP_WINDOW_STEPS because the
+ * causal signal only matters relative to the immediately preceding
+ * decision — older recoveries are stale.
+ *
+ * @param {TrajectoryMemory} memory
+ * @returns {string|null}
+ */
+function buildDriftDirective(memory) {
+  if (!memory || !Array.isArray(memory.recentActions)) return null;
+  const recent = memory.recentActions.slice(-2);
+  for (const a of recent) {
+    if (!a || typeof a.outcome !== "string") continue;
+    const m = /^drift_recovery_after_(.+)$/.exec(a.outcome);
+    if (!m) continue;
+    const causing = m[1];
+    return (
+      "DRIFT WARNING: the previous " + causing + " caused the target app to " +
+      "exit and required a forced relaunch. Do NOT issue " + causing + " " +
+      "again from this screen — it has no back-stack from here. Pick a " +
+      "different action: tap a list item, a navigation hub, or an " +
+      "unvisited element."
+    );
+  }
+  return null;
 }
 
 /**

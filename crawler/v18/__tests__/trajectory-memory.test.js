@@ -348,6 +348,88 @@ test("summarise: recent_repeated_taps line is suppressed when no label repeats o
   assert.ok(!hint.includes("LOOP WARNING"));
 });
 
+// ── 2026-04-25 v3: causal anti-drift directive ─────────────────────────
+//
+// When v17/agent-loop's drift-recovery block calls recordAction with an
+// outcome of "drift_recovery_after_<action>", summarise must emit a
+// directive telling the LLM not to repeat that action. This is the
+// signal that prevents the press_back oscillation seen in run e1d45991:
+// agent presses back from app root, exits to launcher, drift recovery
+// brings biztoso back, agent picks press_back again — looping until the
+// recovery cap kills the run. The directive surfaces the causal link
+// the agent's recentActions otherwise hides.
+//
+// All fixtures are app-agnostic — generic action types, no package names.
+
+test("summarise: emits DRIFT WARNING when the most recent action is a drift recovery", () => {
+  const m = createMemory();
+  recordAction(m, {
+    step: 21,
+    driver: "LLMFallback",
+    actionType: "press_back",
+    targetText: null,
+    fingerprint: "feed-fp",
+    outcome: "changed",
+  });
+  recordAction(m, {
+    step: 22,
+    driver: "drift-recovery",
+    actionType: "launch_app",
+    targetText: null,
+    fingerprint: "feed-fp",
+    outcome: "drift_recovery_after_press_back",
+  });
+  const hint = summarise(m);
+  assert.ok(hint.includes("DRIFT WARNING"), "expected DRIFT WARNING in hint");
+  assert.ok(hint.includes("press_back"), "warning must name the causing action");
+  assert.ok(hint.includes("Do NOT"), "directive should be prescriptive");
+});
+
+test("summarise: DRIFT WARNING names whatever action caused the recovery (not press_back-specific)", () => {
+  // Generic — works for any action that causes drift, e.g. tap on a deep
+  // link that hands off to an external app.
+  const m = createMemory();
+  recordAction(m, {
+    step: 5,
+    driver: "drift-recovery",
+    actionType: "launch_app",
+    targetText: null,
+    fingerprint: "fp",
+    outcome: "drift_recovery_after_tap",
+  });
+  const hint = summarise(m);
+  assert.ok(hint.includes("DRIFT WARNING"));
+  assert.ok(hint.includes("tap"), "warning must name the actual causing action");
+});
+
+test("summarise: no DRIFT WARNING when no recent recovery in window", () => {
+  const m = createMemory();
+  // 3 normal taps, no recovery outcome.
+  recordAction(m, { step: 1, driver: "X", actionType: "tap", targetText: "A", fingerprint: "fp", outcome: "changed" });
+  recordAction(m, { step: 2, driver: "X", actionType: "tap", targetText: "B", fingerprint: "fp", outcome: "changed" });
+  recordAction(m, { step: 3, driver: "X", actionType: "tap", targetText: "C", fingerprint: "fp", outcome: "changed" });
+  const hint = summarise(m);
+  assert.ok(!hint.includes("DRIFT WARNING"));
+});
+
+test("summarise: stale recovery (>2 entries ago) does not trigger DRIFT WARNING", () => {
+  // Window is the last 2 entries — older recoveries are noise.
+  const m = createMemory();
+  recordAction(m, {
+    step: 1,
+    driver: "drift-recovery",
+    actionType: "launch_app",
+    targetText: null,
+    fingerprint: "fp",
+    outcome: "drift_recovery_after_press_back",
+  });
+  recordAction(m, { step: 2, driver: "X", actionType: "tap", targetText: "Home", fingerprint: "fp", outcome: "changed" });
+  recordAction(m, { step: 3, driver: "X", actionType: "tap", targetText: "Profile", fingerprint: "fp", outcome: "changed" });
+  recordAction(m, { step: 4, driver: "X", actionType: "tap", targetText: "Settings", fingerprint: "fp", outcome: "changed" });
+  const hint = summarise(m);
+  assert.ok(!hint.includes("DRIFT WARNING"), "stale recovery must not retrigger the warning");
+});
+
 test("summarise: includes logical_unique count line", () => {
   const m = createMemory();
   recordScreen(m, "s1", "feed", "lfp-feed");
