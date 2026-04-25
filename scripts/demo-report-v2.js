@@ -120,8 +120,28 @@ function fixtureInputs() {
 async function runFromStore(jobId) {
   const job = store.getJob ? store.getJob(jobId) : null;
   if (!job) fail(`Job ${jobId} not found in local store.`);
+
+  // Fast path: if a V2 run already happened on this job (REPORT_V2_ENABLED
+  // was true at the time), just return the persisted output. No new API call.
+  if (job.v2Report) {
+    console.error(`[demo-report-v2] using persisted V2 output from job ${jobId}`);
+    return {
+      ok: true,
+      report: job.v2Report,
+      tokenUsage: job.v2TokenUsage || { input_tokens: 0, output_tokens: 0 },
+      screenIdIndex: { ids: [], byId: {} },
+    };
+  }
+  if (job.v2Errors) {
+    console.error(`[demo-report-v2] job ${jobId} has persisted V2 errors:`);
+    return { ok: false, errors: job.v2Errors, tokenUsage: { input_tokens: 0, output_tokens: 0 } };
+  }
+
+  // Slow path: re-synthesize from stored screens + Stage 2 analyses.
+  // The job store may not surface aiAnalyses (older runs predating
+  // REPORT_V2_ENABLED won't have it persisted) so this path is best-effort.
   if (!Array.isArray(job.screens) || job.screens.length === 0) {
-    fail(`Job ${jobId} has no screens — can't synthesize.`);
+    fail(`Job ${jobId} has no screens array — can't synthesize. (Older runs predating REPORT_V2_ENABLED don't persist a screens field; trigger a fresh run.)`);
   }
 
   // Pull the same inputs the production report-builder would.

@@ -25,6 +25,12 @@ const {
 const metrics = require("../lib/metrics");
 const { alertJobFailed, alertConsecutiveFailures, alertDiskCritical } = require("../lib/alerts");
 const { logger, createJobLogger } = require("../lib/logger");
+const { synthesizeReportV2 } = require("../output/report-synthesis-v2");
+
+// V2 report synthesis runs alongside V1 when REPORT_V2_ENABLED=true.
+// V1 path is unchanged — V2 is purely additive until validated.
+const REPORT_V2_ENABLED =
+  String(process.env.REPORT_V2_ENABLED || "").toLowerCase() === "true";
 
 // Engine selection happens at job runtime below — both v16 and v17 are loaded
 // so a run can be steered via CRAWL_ENGINE env var without restarting.
@@ -542,6 +548,79 @@ async function processJob(jobId, apkPath, opts) {
       // Report generation uses Sonnet
       sonnetTokensAccum.input_tokens += reportResult.tokenUsage.input_tokens;
       sonnetTokensAccum.output_tokens += reportResult.tokenUsage.output_tokens;
+
+      // V2 report synthesis — runs alongside V1 when REPORT_V2_ENABLED=true.
+      // Failures here are isolated; V1 path is unaffected.
+      if (REPORT_V2_ENABLED) {
+        let v2Report = null;
+        let v2TokenUsage = { input_tokens: 0, output_tokens: 0 };
+        let v2Errors = null;
+        try {
+          const v2Result = await synthesizeReportV2({
+            packageName: appProfile.packageName || "",
+            crawlStats: crawlResult.stats || {},
+            // Full screen list — synthesizer cites by id, but we pass
+            // every screen so it can reference unanalyzed screens too
+            // (e.g. "settings page reached at screen_14 but not deeply analyzed").
+            screens: (crawlResult.screens || []).map((s) => ({
+              step: s.step,
+              screenType: s.screenType || "unknown",
+              activity: s.activity,
+              feature: s.feature,
+            })),
+            stage2Analyses: analyses || [],
+            deterministicFindings: crawlResult.oracleFindings || [],
+            coverageSummary: crawlResult.coverage || {},
+            flows: crawlResult.flows || [],
+            opts: { painPoints: opts.painPoints, goals: opts.goals },
+          });
+          if (v2Result.ok) {
+            v2Report = v2Result.report;
+            v2TokenUsage = v2Result.tokenUsage;
+            // Persist V2 to disk for offline inspection — separate from
+            // the SQLite blob so even large reports don't bloat the row.
+            try {
+              const reportsDir = `/tmp/reports/${jobId}`;
+              fs.mkdirSync(reportsDir, { recursive: true });
+              fs.writeFileSync(
+                path.join(reportsDir, "v2-report.json"),
+                JSON.stringify(v2Result.report, null, 2),
+              );
+            } catch (writeErr) {
+              log.warn({ err: writeErr.message }, "V2: disk write failed (non-fatal)");
+            }
+            log.info(
+              {
+                jobId,
+                v2Flags: v2Result.report.diligence_flags.length,
+                v2Verdicts: v2Result.report.verdict.claims.length,
+                v2UxIssues: v2Result.report.ux_issues.length,
+                v2InputTokens: v2TokenUsage.input_tokens,
+                v2OutputTokens: v2TokenUsage.output_tokens,
+              },
+              "V2 synthesis OK",
+            );
+          } else {
+            v2Errors = v2Result.errors;
+            v2TokenUsage = v2Result.tokenUsage || v2TokenUsage;
+            log.warn(
+              { jobId, errors: v2Result.errors.slice(0, 5) },
+              "V2 synthesis returned validation failure",
+            );
+          }
+        } catch (v2Err) {
+          v2Errors = [`v2_exception: ${v2Err.message || String(v2Err)}`];
+          log.warn({ err: v2Err.message }, "V2 synthesis threw — V1 report unaffected");
+        }
+        // Persist V2 fields alongside V1. They are read by the demo
+        // script (and, eventually, the V2-aware frontend) — null when
+        // the synthesizer didn't produce a valid report.
+        store.updateJob(jobId, {
+          v2Report,
+          v2TokenUsage,
+          v2Errors,
+        });
+      }
     } catch (oracleErr) {
       log.error({ err: oracleErr }, "Oracle/report pipeline failed");
       // C6: Guaranteed minimum output — generate report from what we have
