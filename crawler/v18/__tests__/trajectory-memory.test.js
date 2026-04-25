@@ -709,6 +709,18 @@ test("uniqueActivitiesCount: tolerates missing/empty activity arg", () => {
   assert.equal(uniqueActivitiesCount(m), 0);
 });
 
+test("uniqueActivitiesCount: filters the 'unknown' sentinel from getCurrentActivity", () => {
+  // adb.js getCurrentActivity returns the literal string "unknown" when
+  // dumpsys output doesn't match the regex. We must NOT count that as a
+  // real activity — otherwise countActivityVisits would saturate on
+  // every observation and the drill-down preference gate would mis-fire.
+  const m = createMemory();
+  recordScreen(m, "fp1", "feed", "lfp1", "unknown");
+  recordScreen(m, "fp2", "feed", "lfp2", "unknown");
+  recordScreen(m, "fp3", "settings", "lfp3", "com.app/.RealActivity");
+  assert.equal(uniqueActivitiesCount(m), 1);
+});
+
 test("countActivityVisits: counts recentActions matching the activity", () => {
   const m = createMemory();
   for (let i = 0; i < 5; i++) {

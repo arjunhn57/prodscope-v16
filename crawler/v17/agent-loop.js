@@ -881,18 +881,19 @@ async function runAgentLoop(opts) {
 
     // ── press_back guardrail on auth-looking screens ──
     // Drivers never emit press_back; this guardrail only fires against a
-    // rogue LLMFallback action. When it does, we don't re-ask (drivers
-    // would re-produce the same output) — we concede. The stopReason is
-    // `press_back_blocked` without an auth prefix because isAuthScreen is
-    // a structural check that can trip on upsell modals inside non-auth
-    // apps (e.g. Files' "Turn on backup" panel) — labeling those as
-    // blocked_by_auth would misrepresent the run.
+    // rogue LLMFallback action. The structural isAuthScreen test alone is
+    // too eager — it trips on Knowledge Base / FAQ / settings detail pages
+    // that happen to have a single CTA layout. 2026-04-25 v6: ALSO require
+    // the classifier (Haiku) to have confirmed screenType==="auth" before
+    // we concede. If classifier disagrees, the LLMFallback's press_back is
+    // a navigation choice and should pass through to the loop.
     if (
       decision.action?.type === "press_back" &&
-      isAuthScreen(observation)
+      isAuthScreen(observation) &&
+      dispatchedScreenType === "auth"
     ) {
       log.warn(
-        { step },
+        { step, dispatchedScreenType },
         "press_back blocked on auth-looking screen — conceding press_back_blocked",
       );
       decision = {

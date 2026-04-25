@@ -365,6 +365,12 @@ function recordTapIfAny(action, classifiedClickables, fp, deps) {
 function recordActionOnTrajectory(action, driverName, fp, state, deps, screenType, activity) {
   if (!action || !deps || !deps.trajectory) return;
   try {
+    // crawler/adb.js getCurrentActivity returns "unknown" when the
+    // dumpsys regex misses — treat that as missing so detectHubRevisit
+    // and countActivityVisits don't see a single pseudo-bucket that
+    // swallows every action.
+    const safeActivity =
+      typeof activity === "string" && activity !== "unknown" ? activity : undefined;
     recordAction(deps.trajectory, {
       step: (state && state.dispatchCount) || 0,
       driver: driverName,
@@ -372,7 +378,7 @@ function recordActionOnTrajectory(action, driverName, fp, state, deps, screenTyp
       targetText: action.targetText,
       fingerprint: fp,
       screenType: typeof screenType === "string" ? screenType : undefined,
-      activity: typeof activity === "string" ? activity : undefined,
+      activity: safeActivity,
       outcome: null, // populated later by caller if available — unused by summarise
     });
   } catch (err) {

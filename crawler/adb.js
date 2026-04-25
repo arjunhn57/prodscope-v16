@@ -269,11 +269,43 @@ function inputText(text) {
   execFileSync('adb', args, { timeout: DEFAULT_TIMEOUT, encoding: 'utf-8' });
 }
 
-/** Get the current foreground activity. */
+/**
+ * Get the current foreground activity.
+ *
+ * 2026-04-25 v6: Android 13/14 changed the dumpsys output. mResumedActivity
+ * is no longer always present; the canonical line is now mTopResumedActivity
+ * (or sometimes topResumedActivity, or ResumedActivity). We try several
+ * patterns + a final pm-style fallback so the activity coverage signal
+ * (used by ExplorationDriver's drill-down preference + the hub-revisit
+ * detector) doesn't degrade to "unknown" on every screen.
+ *
+ * Returns the canonical "<package>/<activity>" form, or 'unknown' if
+ * nothing matched (callers downstream filter that out).
+ */
 function getCurrentActivity() {
-  const out = run('adb shell dumpsys activity activities | grep mResumedActivity', { ignoreError: true });
-  const match = out.match(/u0\s+(\S+\/\S+)/);
-  return match ? match[1] : 'unknown';
+  // Cheapest / most reliable on modern Android: dumpsys window directly.
+  // mCurrentFocus matches the foreground window and works on 11–14.
+  const winOut = run('adb shell dumpsys window | grep -E "mCurrentFocus|mFocusedApp"', { ignoreError: true });
+  const winMatch = winOut.match(/(\S+\/\S+)\}/) || winOut.match(/u0\s+(\S+\/\S+)/);
+  if (winMatch && winMatch[1] && winMatch[1].includes('/')) {
+    return winMatch[1];
+  }
+
+  // Fallback chain on dumpsys activity — different Android versions surface
+  // the resumed activity under different keys.
+  const out = run(
+    'adb shell dumpsys activity activities | grep -E "mResumedActivity|mTopResumedActivity|topResumedActivity|ResumedActivity"',
+    { ignoreError: true },
+  );
+  // Common formats:
+  //   "  mResumedActivity: ActivityRecord{... u0 com.app/.MainActivity t1234}"
+  //   "  topResumedActivity=ActivityRecord{... u0 com.app/.MainActivity ...}"
+  //   "  mTopResumedActivity=ActivityRecord{... com.app/.MainActivity ...}"
+  const match =
+    out.match(/u0\s+(\S+\/\S+)/) ||
+    out.match(/=\S*\{[^}]*?(\S+\/\S+)[^}]*?\}/) ||
+    out.match(/(\S+\/\S+)/);
+  return match && match[1] && match[1].includes('/') ? match[1] : 'unknown';
 }
 
 /** Get the current foreground package name. */

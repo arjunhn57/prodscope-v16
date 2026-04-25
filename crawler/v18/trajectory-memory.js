@@ -260,8 +260,12 @@ function recordScreen(memory, fingerprint, screenType, logicalFingerprint, activ
   // logical fp seen). Same activity can appear across many fps (different
   // tabs, scroll positions). Set stays bounded by the OS — typical app
   // has 10-30 activities.
+  // crawler/adb.js getCurrentActivity returns the literal string "unknown"
+  // when the dumpsys regex misses (Android-version drift) — treat that as
+  // missing so the activity-coverage signal isn't poisoned by a single
+  // pseudo-activity that swallows every observation.
   if (!memory.activitiesSeen) memory.activitiesSeen = new Set();
-  if (typeof activity === "string" && activity.length > 0) {
+  if (typeof activity === "string" && activity.length > 0 && activity !== "unknown") {
     memory.activitiesSeen.add(activity);
   }
 
