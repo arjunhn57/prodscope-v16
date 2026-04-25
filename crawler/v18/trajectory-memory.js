@@ -377,12 +377,34 @@ function summarise(memory, opts) {
     }
   }
 
+  // 2026-04-25 v5 (Bug #8): alternation detector. A strict A,B,A,B
+  // pattern (4 taps, 2 of each) is a clear loop but doesn't trip the
+  // 3-in-10 rapid LOOP WARNING. Fires at step 4 vs step 6 and names
+  // both labels so the LLM sees the joint pattern. Precedence: rapid
+  // LOOP WARNING wins if it already fired (it's louder and covers the
+  // 3-in-10 case which subsumes alternation at high counts); otherwise
+  // alternation fires here, before the slow REPEAT WARNING below.
+  let alternationFired = false;
+  if (!rapidBounceFired) {
+    const alt = detectAlternatingPair(memory);
+    if (alt) {
+      alternationFired = true;
+      parts.push(`alternation_detected: "${alt.a}" ↔ "${alt.b}" in last 4 taps`);
+      parts.push(
+        "ALTERNATION WARNING: You are bouncing between \"" + alt.a + "\" " +
+          "and \"" + alt.b + "\". These two together aren't producing new " +
+          "screens — pick a THIRD different element (a list item, a drawer, " +
+          "a detail row, an unvisited hub) before tapping either one again.",
+      );
+    }
+  }
+
   // 2026-04-25 v4: slow-loop pressure. Same bucketing as above but with a
   // wider window (40 vs 10) to catch spaced repetition like the run-11380697
   // pattern: 5 taps on the same CTA across 41 steps that the rapid-bounce
-  // detector missed. Suppressed when LOOP WARNING already fired for the
-  // same labels — the louder rapid directive subsumes the milder slow one.
-  if (!rapidBounceFired) {
+  // detector missed. Suppressed when LOOP WARNING or ALTERNATION already
+  // fired — the louder/more-specific directives subsume the milder slow one.
+  if (!rapidBounceFired && !alternationFired) {
     const spacedTaps = countSpacedRepeatedTargets(memory);
     if (spacedTaps.size > 0) {
       const overSlow = Array.from(spacedTaps.entries())
@@ -442,6 +464,40 @@ function buildDriftDirective(memory) {
     );
   }
   return null;
+}
+
+/**
+ * Detect a strict A,B,A,B alternation in the last 4 tap actions. Returns
+ * `{ a, b }` if the pattern matches with `A !== B` and both non-empty;
+ * null otherwise.
+ *
+ * 2026-04-25 v5 (Bug #8): a 2-cycle alternation (4 taps total, only 2 of
+ * each label) is a clear loop to a human but doesn't trip the rapid
+ * LOOP WARNING (3 of the same in 10). Run dd7ccf49 burned 6 steps on
+ * Profile↔Home before LOOP fired. Detecting alternation explicitly
+ * fires at step 4 instead, naming both labels so the LLM sees the joint
+ * pattern and is told to pick a third element.
+ *
+ * Window: last 4 *tap* actions only. Non-tap actions (wait, scroll,
+ * launch_app) and null-label taps are filtered out before counting, so
+ * an interleaved scroll between two A-B-A-B taps doesn't break the
+ * detection.
+ *
+ * @param {TrajectoryMemory} memory
+ * @returns {{a: string, b: string}|null}
+ */
+function detectAlternatingPair(memory) {
+  if (!memory || !Array.isArray(memory.recentActions)) return null;
+  const labelledTaps = memory.recentActions
+    .filter((a) => a && a.actionType === "tap" && typeof a.targetText === "string" && a.targetText.trim().length > 0)
+    .slice(-4)
+    .map((a) => a.targetText.trim());
+  if (labelledTaps.length < 4) return null;
+  const [w, x, y, z] = labelledTaps;
+  if (w === x) return null; // Need two distinct labels
+  if (w !== y) return null; // First and third must match
+  if (x !== z) return null; // Second and fourth must match
+  return { a: w, b: x };
 }
 
 /**
@@ -556,6 +612,7 @@ module.exports = {
   uniqueLogicalScreensCount,
   countRecentRepeatedTargets,
   countSpacedRepeatedTargets,
+  detectAlternatingPair,
   countRecentHubTaps,
   HUB_LABEL_PATTERNS,
   LOOP_WINDOW_STEPS,

@@ -192,6 +192,7 @@ const {
   countRecentHubTaps,
   countRecentRepeatedTargets,
   countSpacedRepeatedTargets,
+  detectAlternatingPair,
   LOOP_WINDOW_STEPS,
   LOOP_WARN_THRESHOLD,
   SLOW_LOOP_WINDOW_STEPS,
@@ -551,6 +552,127 @@ test("summarise: no REPEAT WARNING below the slow threshold (2 taps spaced out)"
   const hint = summarise(m);
   assert.ok(!hint.includes("REPEAT WARNING"));
   assert.ok(!hint.includes("LOOP WARNING"));
+});
+
+// ── 2026-04-25 v5 (Bug #8): alternation detector ───────────────────────
+//
+// A strict A,B,A,B pattern in the last 4 taps is a 2-cycle alternation —
+// clearly a loop to a human but doesn't trip the 3-in-10 LOOP WARNING.
+// Run dd7ccf49 burned 6 steps on Profile↔Home before LOOP fired; the
+// alternation detector fires at step 4 and names both labels.
+//
+// All fixtures use generic action labels (no app-specific text).
+
+function pushTap(m, step, label) {
+  recordAction(m, {
+    step,
+    driver: "X",
+    actionType: "tap",
+    targetText: label,
+    fingerprint: `fp${step}`,
+    outcome: "changed",
+  });
+}
+
+test("detectAlternatingPair: strict A,B,A,B in last 4 taps returns {a, b}", () => {
+  const m = createMemory();
+  pushTap(m, 1, "Alpha");
+  pushTap(m, 2, "Beta");
+  pushTap(m, 3, "Alpha");
+  pushTap(m, 4, "Beta");
+  const r = detectAlternatingPair(m);
+  assert.ok(r);
+  assert.equal(r.a, "Alpha");
+  assert.equal(r.b, "Beta");
+});
+
+test("detectAlternatingPair: broken pattern A,B,A,C → null", () => {
+  const m = createMemory();
+  pushTap(m, 1, "Alpha");
+  pushTap(m, 2, "Beta");
+  pushTap(m, 3, "Alpha");
+  pushTap(m, 4, "Gamma");
+  assert.equal(detectAlternatingPair(m), null);
+});
+
+test("detectAlternatingPair: non-alternating A,A,B,B → null", () => {
+  const m = createMemory();
+  pushTap(m, 1, "Alpha");
+  pushTap(m, 2, "Alpha");
+  pushTap(m, 3, "Beta");
+  pushTap(m, 4, "Beta");
+  assert.equal(detectAlternatingPair(m), null);
+});
+
+test("detectAlternatingPair: same label everywhere A,A,A,A → null (would be a LOOP not an alternation)", () => {
+  const m = createMemory();
+  for (let i = 1; i <= 4; i++) pushTap(m, i, "Same");
+  assert.equal(detectAlternatingPair(m), null);
+});
+
+test("detectAlternatingPair: skips non-tap actions when scanning the last 4 taps", () => {
+  // Real run pattern: alternation can be interleaved with scrolls / waits
+  // / launch_apps. Detector must look at the last 4 *labelled tap* actions,
+  // ignoring everything else.
+  const m = createMemory();
+  pushTap(m, 1, "Alpha");
+  recordAction(m, { step: 2, driver: "X", actionType: "scroll_down", targetText: null, fingerprint: "fp2", outcome: "changed" });
+  pushTap(m, 3, "Beta");
+  recordAction(m, { step: 4, driver: "X", actionType: "wait", targetText: null, fingerprint: "fp4", outcome: "changed" });
+  pushTap(m, 5, "Alpha");
+  pushTap(m, 6, "Beta");
+  const r = detectAlternatingPair(m);
+  assert.ok(r);
+  assert.equal(r.a, "Alpha");
+  assert.equal(r.b, "Beta");
+});
+
+test("summarise: ALTERNATION WARNING fires at 4 taps with strict A,B,A,B and names both labels", () => {
+  const m = createMemory();
+  pushTap(m, 1, "Hub1");
+  pushTap(m, 2, "Hub2");
+  pushTap(m, 3, "Hub1");
+  pushTap(m, 4, "Hub2");
+  const hint = summarise(m);
+  assert.ok(hint.includes("ALTERNATION WARNING"));
+  assert.ok(hint.includes("Hub1"));
+  assert.ok(hint.includes("Hub2"));
+  assert.ok(/third/i.test(hint), "directive must mention picking a third element");
+  // LOOP WARNING does NOT fire (each label only 2× in window, below threshold 3).
+  assert.ok(!hint.includes("LOOP WARNING"));
+});
+
+test("summarise: rapid LOOP WARNING wins precedence over ALTERNATION WARNING when both could fire", () => {
+  // Same label tapped 3 times within 10 steps → LOOP fires. Alternation
+  // doesn't apply because 3-of-the-same isn't an alternation, but verify
+  // that even when both signals are nominally present (e.g. A,B,A,B,A),
+  // LOOP wins.
+  const m = createMemory();
+  pushTap(m, 1, "A");
+  pushTap(m, 2, "B");
+  pushTap(m, 3, "A");
+  pushTap(m, 4, "B");
+  pushTap(m, 5, "A"); // 3rd A → LOOP threshold hit
+  const hint = summarise(m);
+  assert.ok(hint.includes("LOOP WARNING"));
+  assert.ok(!hint.includes("ALTERNATION WARNING"), "louder rapid warning subsumes alternation");
+});
+
+test("summarise: ALTERNATION WARNING wins precedence over slow REPEAT WARNING", () => {
+  // Alternation fires AND slow-window has 2 taps of each — REPEAT shouldn't
+  // also emit, the more-specific alternation directive subsumes it.
+  const m = createMemory();
+  pushTap(m, 1, "X");
+  pushTap(m, 2, "Y");
+  pushTap(m, 3, "X");
+  pushTap(m, 4, "Y");
+  // Need ≥3 of one label in slow window for REPEAT — bump X to 3 across 40
+  // by adding a filler then another X. But that would make X show 3× in
+  // the 10-step window too, which would trip LOOP. So instead: just check
+  // that at the alternation step, REPEAT does NOT fire.
+  const hint = summarise(m);
+  assert.ok(hint.includes("ALTERNATION WARNING"));
+  assert.ok(!hint.includes("REPEAT WARNING"), "slow warning suppressed when alternation already covers the loop");
 });
 
 test("summarise: includes logical_unique count line", () => {
