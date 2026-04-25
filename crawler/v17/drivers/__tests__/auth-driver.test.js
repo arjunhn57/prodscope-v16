@@ -525,3 +525,228 @@ test("Wikipedia-upsell scenario: upsell XML → claim false when no creds, no te
   assert.equal(authDriver.claim({ xml: wikipediaUpsellXml }, { dispatchCount: 1 }), false);
   assert.equal(authDriver.claim({ xml: wikipediaUpsellXml }), false);
 });
+
+// ── 2026-04-25: terminal-state fp blocking + classifier-noise filtering ────
+//
+// Two general-driver bugs:
+//
+//  (A) A multi-step driver can reach a terminal state where it has no next
+//      action on this screen but its claim() signal still matches. Returning
+//      plain null causes claim→decide→null forever and the dispatcher
+//      records driver_claimed_but_null on every dispatch. Fix: terminal
+//      states must call markFingerprintBlocked so claim() returns false on
+//      re-entry.
+//
+//  (B) The LLM classifier can mis-tag overlay UI (Android autofill /
+//      credential-manager / IME suggestion chips, Chrome autocomplete
+//      popups) as primary form controls because the overlay structurally
+//      resembles the real control. The chip's label is a literal email
+//      address or masked password — never the label of a real submit
+//      button or empty input. Fix: filter classifier output by semantic
+//      plausibility (looksLikeEmail) before drivers act on it.
+//
+// All fixtures below use com.example.app + user@example.com to make the
+// app-agnostic intent explicit.
+//
+// New cases:
+//   18. looksLikeEmail: address-shaped strings → true; real labels → false.
+//   19. pickSubmitButton: email-labeled submit_button candidates filtered.
+//   20. pickEmailInput: prefers empty-label input over autofill chip.
+//   21. decide authStep='submitted' → blocks fp instead of null-loop.
+//   22. decide stuck-detection → blocks fp instead of null-loop.
+//   23. Autofill-chip replay: classified chip at email slot does not hijack.
+
+// Generic email form. No real-app naming — pure "what an Android email
+// form looks like structurally" so the test reads as a property of the
+// driver, not a property of one app.
+const genericEmailFormXml = wrap(
+  node({
+    resourceId: "com.example.app:id/email_input",
+    cls: "android.widget.EditText",
+    pkg: "com.example.app",
+    bounds: "[80,500][1000,620]",
+  }),
+  node({
+    resourceId: "com.example.app:id/password_input",
+    cls: "android.widget.EditText",
+    pkg: "com.example.app",
+    password: true,
+    bounds: "[80,680][1000,800]",
+  }),
+  node({
+    text: "Sign in",
+    clickable: true,
+    bounds: "[80,900][1000,1020]",
+    pkg: "com.example.app",
+  }),
+);
+
+test("looksLikeEmail: only real address-shaped strings return true", () => {
+  assert.equal(authDriver.looksLikeEmail("user@example.com"), true);
+  assert.equal(authDriver.looksLikeEmail("user+tag@example.co.uk"), true);
+  // Real submit / input labels must be false.
+  assert.equal(authDriver.looksLikeEmail(""), false);
+  assert.equal(authDriver.looksLikeEmail(undefined), false);
+  assert.equal(authDriver.looksLikeEmail(null), false);
+  assert.equal(authDriver.looksLikeEmail("Email"), false);
+  assert.equal(authDriver.looksLikeEmail("Sign in"), false);
+  assert.equal(authDriver.looksLikeEmail("Continue with Email"), false);
+  assert.equal(authDriver.looksLikeEmail("@example"), false); // no tld
+  assert.equal(authDriver.looksLikeEmail("user@"), false); // no tld
+});
+
+test("pickSubmitButton: filters out candidates whose label looks like an email", () => {
+  const classified = [
+    { role: "submit_button", label: "user@example.com", cx: 540, cy: 818 },
+    { role: "submit_button", label: "Sign in", cx: 540, cy: 1400 },
+  ];
+  const picked = authDriver.pickSubmitButton(classified);
+  assert.ok(picked);
+  assert.equal(picked.label, "Sign in", "autofill-chip candidate must be filtered");
+
+  // Only-chip case returns null, not the chip.
+  const onlyChip = [
+    { role: "submit_button", label: "user@example.com", cx: 540, cy: 818 },
+  ];
+  assert.equal(authDriver.pickSubmitButton(onlyChip), null);
+});
+
+test("pickEmailInput: prefers empty-label input over email-addressed autofill chip", () => {
+  const classified = [
+    { role: "email_input", label: "user@example.com", cx: 540, cy: 500 },
+    { role: "email_input", label: "", cx: 540, cy: 818 },
+  ];
+  const picked = authDriver.pickEmailInput(classified);
+  assert.ok(picked);
+  assert.equal(picked.cy, 818, "real empty input wins over chip");
+
+  // All-chip fallback: return something rather than yield.
+  const onlyChips = [
+    { role: "email_input", label: "user@example.com", cx: 540, cy: 500 },
+  ];
+  const fallback = authDriver.pickEmailInput(onlyChips);
+  assert.ok(fallback, "must fall back rather than yield when no empty input exists");
+});
+
+test("decide: authStep='submitted' on email form → blocks fp and returns null", async () => {
+  // Simulates post-submit re-dispatch when the form is still visible
+  // (invalid creds, captcha, server error, network). Before the fix
+  // this returned null without blocking, so claim() kept returning true
+  // and LLMFallback drove forever.
+  const classifier = makeClassifier((c) => {
+    if (c.isEmail) return "email_input";
+    if (c.isPassword) return "password_input";
+    if (c.label === "Sign in") return "submit_button";
+    return "unknown";
+  });
+  const state = {
+    credentials: { email: "user@example.com", password: "pw" },
+    authStep: "submitted",
+    dispatchCount: 5,
+    authStepDispatch: 4,
+  };
+  const observation = {
+    xml: genericEmailFormXml,
+    packageName: "com.example.app",
+    activity: ".Login",
+  };
+  const action = await authDriver.decide(observation, state, { classify: classifier.fn });
+  assert.equal(action, null, "must yield, not terminate the run");
+  assert.ok(state.authBlockedFingerprints instanceof Set);
+  assert.equal(state.authBlockedFingerprints.size, 1, "post-submit fp must be blocked");
+
+  // Re-claim on the same screen must now be false — no infinite claim+null loop.
+  assert.equal(authDriver.claim(observation, state), false);
+});
+
+test("decide: stuck-dispatch limit blocks fp instead of yielding in place", async () => {
+  // authStep set but not moved in >=STUCK_DISPATCH_LIMIT dispatches.
+  const classifier = makeClassifier((c) => {
+    if (c.isEmail) return "email_input";
+    if (c.isPassword) return "password_input";
+    if (c.label === "Sign in") return "submit_button";
+    return "unknown";
+  });
+  const state = {
+    credentials: { email: "user@example.com", password: "pw" },
+    authStep: "email_focused",
+    dispatchCount: 10,
+    authStepDispatch: 5, // delta=5 ≥ STUCK_DISPATCH_LIMIT (2)
+  };
+  const observation = {
+    xml: genericEmailFormXml,
+    packageName: "com.example.app",
+    activity: ".Login",
+  };
+  const action = await authDriver.decide(observation, state, { classify: classifier.fn });
+  assert.equal(action, null);
+  assert.ok(state.authBlockedFingerprints instanceof Set);
+  assert.equal(state.authBlockedFingerprints.size, 1);
+  assert.equal(authDriver.claim(observation, state), false);
+});
+
+test("decide: autofill-chip replay — chip at email slot does not hijack initial tap", async () => {
+  // Generic Android autofill chip rendered above the real input. The chip
+  // is a clickable whose label is a remembered email address. The classifier
+  // mis-tags it as email_input (alongside the real input). pickEmailInput
+  // must prefer the empty-label real input.
+  const chipXml = wrap(
+    node({
+      text: "user@example.com",
+      resourceId: "com.example.app:id/autofill_chip_0",
+      bounds: "[40,380][1040,470]", // cy=425 — chip
+      pkg: "com.example.app",
+    }),
+    node({
+      resourceId: "com.example.app:id/email_input",
+      cls: "android.widget.EditText",
+      pkg: "com.example.app",
+      bounds: "[80,500][1000,620]", // cy=560 — real input
+    }),
+    node({
+      resourceId: "com.example.app:id/password_input",
+      cls: "android.widget.EditText",
+      pkg: "com.example.app",
+      password: true,
+      bounds: "[80,680][1000,800]",
+    }),
+    node({
+      text: "Sign in",
+      clickable: true,
+      bounds: "[80,900][1000,1020]",
+      pkg: "com.example.app",
+    }),
+  );
+
+  const classifier = makeClassifier((c) => {
+    // Both the chip and the real input get role=email_input — the same
+    // misclassification an LLM classifier produces under autofill noise.
+    if (c.label === "user@example.com") return "email_input";
+    if (c.isEmail) return "email_input";
+    if (c.isPassword) return "password_input";
+    if (c.label === "Sign in") return "submit_button";
+    return "unknown";
+  });
+  const state = {
+    credentials: { email: "user@example.com", password: "pw" },
+    dispatchCount: 1,
+  };
+  const action = await authDriver.decide(
+    { xml: chipXml, packageName: "com.example.app", activity: ".Login" },
+    state,
+    { classify: classifier.fn },
+  );
+
+  assert.equal(action.type, "tap");
+  assert.equal(
+    action.y,
+    560,
+    "must tap the real empty email input (cy=560), not the chip (cy=425)",
+  );
+  assert.notEqual(
+    action.targetText,
+    "user@example.com",
+    "autofill chip label must never leak into the tap action",
+  );
+  assert.equal(state.authStep, "email_focused");
+});

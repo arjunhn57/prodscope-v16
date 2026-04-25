@@ -40,6 +40,27 @@ const HAS_PASSWORD_INPUT_REGEX =
   /inputType="textPassword"|password="true"|resource-id="[^"]*(?:password|passwd|pass_word)"/i;
 
 /**
+ * Does the label look like a populated email address? Android's autofill /
+ * credential-manager / IME suggestion layer renders credential chips as
+ * in-process clickables whose label IS a remembered address (and password
+ * chips render as masked dots). A real empty email input has no label or a
+ * hint like "Email" — never a full address. A real submit button is
+ * "Sign in" / "Continue" / "Next" — never an address.
+ *
+ * Used to filter classifier output. If the LLM classifier mis-tags an
+ * autofill chip as email_input or submit_button, this keeps AuthDriver from
+ * tapping the chip and overwriting credentials already in the real input.
+ * Purely semantic — no app-specific patterns (2026-04-25 regression fix).
+ *
+ * @param {string|undefined|null} label
+ * @returns {boolean}
+ */
+function looksLikeEmail(label) {
+  if (!label || typeof label !== "string") return false;
+  return /[^\s@]+@[^\s@]+\.[^\s@]+/.test(label);
+}
+
+/**
  * @typedef {import('./clickable-graph').Clickable} Clickable
  * @typedef {import('../node-classifier').ClassifiedClickable} ClassifiedClickable
  *
@@ -206,7 +227,11 @@ function markFingerprintBlocked(state, observation, reason) {
 async function decide(observation, state, deps = {}) {
   if (!observation || typeof observation !== "object") return null;
 
-  // Stuck detection: if state.authStep hasn't moved in >=2 dispatches, yield.
+  // Stuck detection: if state.authStep hasn't moved in >=2 dispatches, yield
+  // permanently on this fp. Just returning null (pre-2026-04-25 behavior) kept
+  // claim() returning true next dispatch via the password-input signal, so the
+  // dispatcher logged `driver_claimed_but_null:AuthDriver` on every step and
+  // LLMFallback drove without memory. Blocking the fp forces a hard yield.
   if (
     state &&
     state.authStep &&
@@ -216,9 +241,9 @@ async function decide(observation, state, deps = {}) {
   ) {
     log.warn(
       { authStep: state.authStep, dispatchCount: state.dispatchCount },
-      "AuthDriver: stuck — yielding to LLMFallback",
+      "AuthDriver: stuck — blocking fp and yielding to LLMFallback",
     );
-    return null;
+    return markFingerprintBlocked(state, observation, "stuck_dispatch_limit");
   }
 
   const graph = parseClickableGraph(observation.xml);
@@ -286,7 +311,7 @@ function classifyScreen(classified) {
  * @returns {Action|null}
  */
 function executeEmailFlow(classified, state, observation) {
-  const emailInput = classified.find((c) => c.role === "email_input");
+  const emailInput = pickEmailInput(classified);
   const passwordInput = classified.find((c) => c.role === "password_input");
   const submitButton = pickSubmitButton(classified);
   const creds = state && state.credentials;
@@ -323,8 +348,11 @@ function executeEmailFlow(classified, state, observation) {
       return tapAction(submitButton);
     }
     case "submitted":
-      // Still on the form — probably invalid creds or a captcha. Yield.
-      return null;
+      // Login was submitted but the form is still visible — invalid creds,
+      // captcha, server error, or autofill corruption. Block the fp so
+      // claim() returns false on re-entry instead of looping
+      // claim→decide→null while LLMFallback drives without memory.
+      return markFingerprintBlocked(state, observation, "submitted_form_persists");
     default:
       return null;
   }
@@ -369,14 +397,37 @@ function executeAuthChoice(classified, state, observation) {
  * If the classifier tagged multiple submit buttons, tiebreak by picking the
  * lowest y-coordinate (conventional form-bottom placement).
  *
+ * Autofill / IME suggestion chips can be mis-classified as submit_button
+ * when they render near the form. Their label is a literal email address,
+ * which no real submit button uses — filter them out (2026-04-25).
+ *
  * @param {Array<ClassifiedClickable>} classified
  * @returns {ClassifiedClickable|null}
  */
 function pickSubmitButton(classified) {
-  const candidates = classified.filter((c) => c.role === "submit_button");
+  const candidates = classified.filter(
+    (c) => c.role === "submit_button" && !looksLikeEmail(c.label),
+  );
   if (candidates.length === 0) return null;
   if (candidates.length === 1) return candidates[0];
   return candidates.reduce((a, b) => (a.cy > b.cy ? a : b));
+}
+
+/**
+ * Pick the real empty email input when autofill chips also get tagged
+ * `email_input`. A chip's label is a full address; the real input has an
+ * empty label or a hint like "Email". Prefer the empty-label candidate;
+ * fall back to whatever's available so a pathological classification
+ * doesn't yield instead of advancing the form (2026-04-25).
+ *
+ * @param {Array<ClassifiedClickable>} classified
+ * @returns {ClassifiedClickable|null}
+ */
+function pickEmailInput(classified) {
+  const inputs = classified.filter((c) => c.role === "email_input");
+  if (inputs.length === 0) return null;
+  const nonChipInputs = inputs.filter((c) => !looksLikeEmail(c.label));
+  return nonChipInputs[0] || inputs[0];
 }
 
 /**
@@ -415,6 +466,8 @@ module.exports = {
   executeEmailFlow,
   executeAuthChoice,
   pickSubmitButton,
+  pickEmailInput,
+  looksLikeEmail,
   markFingerprintBlocked,
   STUCK_DISPATCH_LIMIT,
 };
