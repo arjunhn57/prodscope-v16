@@ -168,18 +168,35 @@ function installApk(apkPath) {
     // the target package first to defeat stubborn signature / test-only /
     // profile-owner collisions that -r -d alone can't resolve.
     //
-    // Extraction: adb writes messages like `Existing package org.wikipedia
-    // signatures do not match` or `Package com.foo.bar is already installed`.
-    // Require a java-style DOTTED identifier so we can't mis-extract ordinary
-    // English words ("ignoring", "signatures", etc.). Falls back to parsing
-    // the APK manifest if no dotted package name is found in the error.
-    const dottedPkgRe = /\b([a-z][a-z0-9_]+(?:\.[a-z0-9_]+)+)\b/i;
-    let blockingPkg = null;
+    // Extraction is anchored on the canonical install-error phrasings adb
+    // emits — NOT a generic "any dotted identifier" sweep. The earlier
+    // broad regex would happily match the .apk filename embedded in the
+    // error path (e.g. "f4d5549510b6.apk") before reaching the real
+    // package name ("org.wikipedia"), causing the retry to uninstall a
+    // bogus package and the install to fail again. Specific phrases:
+    //   - "Existing package <pkg> signatures do not match"
+    //   - "Package <pkg> is already installed"
+    //   - "INSTALL_FAILED_*: <pkg>"
+    // 2026-04-25: also fall through to the APK-manifest aapt2 lookup as
+    // an authoritative fallback (always safe — the package name we're
+    // about to install must be the package blocking the install).
     const errStr = (err && err.message) || "";
-    const pkgFromErr = errStr.match(dottedPkgRe);
-    if (pkgFromErr) blockingPkg = pkgFromErr[1];
-    // Manifest fallback — if the error didn't name a package, parse the APK
-    // we're about to install. Cheap aapt2 call, authoritative answer.
+    let blockingPkg = null;
+    const PKG_TOKEN = "([a-z][a-z0-9_]+(?:\\.[a-z0-9_]+)+)";
+    const PHRASE_REGEXES = [
+      new RegExp(`Existing package ${PKG_TOKEN} signatures`, "i"),
+      new RegExp(`Package ${PKG_TOKEN} is already installed`, "i"),
+      new RegExp(`Package ${PKG_TOKEN} signatures do not match`, "i"),
+    ];
+    for (const re of PHRASE_REGEXES) {
+      const m = errStr.match(re);
+      if (m && m[1] && !m[1].endsWith(".apk") && !m[1].endsWith(".aab") && !m[1].endsWith(".xapk")) {
+        blockingPkg = m[1];
+        break;
+      }
+    }
+    // Manifest fallback — authoritative. Whatever package the APK we're
+    // installing declares is, by definition, the package blocking us.
     if (!blockingPkg) {
       try {
         const badging = execFileSync("aapt2", ["dump", "badging", apkPath], {
