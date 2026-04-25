@@ -77,6 +77,13 @@ const LOOP_WARN_THRESHOLD = 3;
  *   Phase 3 graph-exploration state: per fp, the set of elementKeys
  *   we've tapped. `ExplorationDriver` and `LLMFallback` use this to
  *   prefer untapped clickables (frontier) on a revisited screen.
+ *
+ *   2026-04-25 v2: keyed on LOGICAL fp, not structural. Structural fp
+ *   churns when feed / list / timeline content rotates between visits,
+ *   so a structurally-keyed map revived its frontier on every revisit
+ *   and let bounce-loops persist. Logical fp is position- and content-
+ *   insensitive — the same screen across content variance maps to the
+ *   same key, so once an edge is tapped it stays tapped on revisits.
  */
 
 /**

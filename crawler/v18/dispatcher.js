@@ -153,14 +153,24 @@ async function dispatch(observation, state, deps = {}) {
   const { plan, clickables: classifiedClickables } = classification;
 
   // 3. Update trajectory memory.
-  // Phase 4: compute logical fp alongside structural fp so coverage
-  // tracking is position/content-insensitive. Structural fp is still
-  // used for per-fp edge tracking (drivers need position sensitivity).
+  // Phase 4: compute logical fp alongside structural fp. Coverage tracking
+  // (`logicalFingerprintsSeen`, `seenTypeCounts`) is keyed on logical fp so
+  // scroll-offset / content-rotation drift doesn't inflate counts.
+  // 2026-04-25 v2: per-fp edge tracking (`tappedEdgesByFp`) is now ALSO
+  // keyed on logical fp. Pre-v2 it used structural fp, which let any feed
+  // / list / timeline screen revive its frontier on every revisit because
+  // structural fp churns with content rotation — the agent could re-tap
+  // the same edge indefinitely. Logical fp stays stable across content
+  // variance, so once an edge is tapped on a screen it stays in the
+  // tapped set on subsequent revisits.
   const logicalFp = computeLogicalFingerprint(
     graph,
     observation.packageName,
     observation.activity,
   );
+  // Attach to plan so downstream drivers / LLMFallback can read it without
+  // re-computing.
+  plan.logicalFingerprint = logicalFp;
   if (deps.trajectory) {
     recordScreen(deps.trajectory, plan.fingerprint, plan.screenType, logicalFp);
   }
@@ -265,7 +275,7 @@ async function dispatch(observation, state, deps = {}) {
       },
       "dispatcher: driver acted",
     );
-    recordTapIfAny(action, classifiedClickables, plan.fingerprint, deps);
+    recordTapIfAny(action, classifiedClickables, logicalFp, deps);
     recordActionOnTrajectory(action, driver.name, plan.fingerprint, state, deps);
     return { driver: driver.name, action, diagnostics, plan };
   }
@@ -284,7 +294,7 @@ async function dispatch(observation, state, deps = {}) {
     },
     "dispatcher: LLMFallback acted",
   );
-  recordTapIfAny(fallbackAction, classifiedClickables, plan.fingerprint, deps);
+  recordTapIfAny(fallbackAction, classifiedClickables, logicalFp, deps);
   recordActionOnTrajectory(fallbackAction, "LLMFallback", plan.fingerprint, state, deps);
   return {
     driver: "LLMFallback",
@@ -301,13 +311,18 @@ async function dispatch(observation, state, deps = {}) {
  * clickable was tapped via bounds containment, record the edge as
  * visited in the graph-exploration state.
  *
+ * 2026-04-25 v2: keyed on LOGICAL fp, not structural. Structural fp
+ * churns when feed/list content rotates, which previously revived the
+ * frontier on every revisit and let the agent re-tap the same edge
+ * indefinitely. Logical fp is stable across content variance.
+ *
  * Silently no-op on non-tap actions, missing trajectory, or taps that
  * don't hit any classified clickable (e.g. v16 agent abstract-coord
  * taps — those already fell through the intent validator).
  *
  * @param {object} action
  * @param {object[]} classifiedClickables
- * @param {string} fp
+ * @param {string} fp                     Logical fp keyed by caller.
  * @param {object} deps
  */
 function recordTapIfAny(action, classifiedClickables, fp, deps) {

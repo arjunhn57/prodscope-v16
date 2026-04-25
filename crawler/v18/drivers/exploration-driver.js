@@ -173,7 +173,11 @@ async function decide(observation, state, deps = {}) {
   // is empty the driver yields — dispatcher's post-driver fallback either
   // emits press_back on safe screen types or lets LLMFallback pick an
   // unvisited hub via trajectory hint.
-  const fp = (deps.plan && deps.plan.fingerprint) || null;
+  // 2026-04-25 v2: prefer logical fp so feed/list content rotation doesn't
+  // revive the frontier. Fall back to structural fp for older callers /
+  // tests that don't set logicalFingerprint on the plan.
+  const fp =
+    (deps.plan && (deps.plan.logicalFingerprint || deps.plan.fingerprint)) || null;
   const trajectory = deps.trajectory || null;
   let frontierGraph = filterable;
   if (fp && trajectory) {

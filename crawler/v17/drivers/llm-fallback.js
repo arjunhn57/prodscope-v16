@@ -302,8 +302,12 @@ function createLlmFallback(inner) {
     if (deps && deps.trajectory) {
       try {
         const summariseOpts = {};
-        if (deps.plan && deps.plan.fingerprint) {
-          summariseOpts.currentFp = deps.plan.fingerprint;
+        // 2026-04-25 v2: prefer logical fp so the per-screen tapped /
+        // untapped frontier in the hint matches what dispatcher records.
+        // Fall back to structural fp when logical isn't set (older paths).
+        if (deps.plan && (deps.plan.logicalFingerprint || deps.plan.fingerprint)) {
+          summariseOpts.currentFp =
+            deps.plan.logicalFingerprint || deps.plan.fingerprint;
         }
         if (Array.isArray(deps.classifiedClickables)) {
           summariseOpts.currentClickables = deps.classifiedClickables;

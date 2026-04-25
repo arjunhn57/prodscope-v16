@@ -309,7 +309,7 @@ test("dispatch: after driver emits a tap, the tapped clickable is recorded in tr
   );
   assert.equal(r.action.type, "tap");
   // One of the 3 cards is now marked tapped on this fp.
-  const fp = r.plan.fingerprint;
+  const fp = r.plan.logicalFingerprint;
   assert.ok(trajectory.tappedEdgesByFp.has(fp));
   assert.equal(trajectory.tappedEdgesByFp.get(fp).size, 1);
 });
@@ -337,7 +337,7 @@ test("dispatch: classifier cache hit on second call — second tap records secon
   const trajectory = createMemory();
   const r1 = await dispatch({ xml, packageName: "com.app" }, {}, { anthropic, classifierCache: cache, trajectory });
   const r2 = await dispatch({ xml, packageName: "com.app" }, {}, { anthropic, classifierCache: cache, trajectory });
-  const fp = r1.plan.fingerprint;
+  const fp = r1.plan.logicalFingerprint;
   assert.notEqual(r1.action.y, r2.action.y, "second call must pick a different card via frontier filter");
   assert.equal(trajectory.tappedEdgesByFp.get(fp).size, 2);
 });
@@ -368,7 +368,7 @@ test("dispatch: frontier empty on detail screen → ExplorationDriver emits pres
   // live fp to match. Simpler: dispatch first to learn the fp, then pre-seed
   // trajectory on that fp and dispatch again.
   const r1 = await dispatch({ xml, packageName: "com.app" }, {}, { anthropic, classifierCache: new Map(), trajectory });
-  const fp = r1.plan.fingerprint;
+  const fp = r1.plan.logicalFingerprint;
   // Pre-seed all graph clickables as tapped on the real fp.
   for (const c of graph.clickables) recordTap(trajectory, fp, c);
   // Dispatch again with the same xml + fresh anthropic (need a second plan scripted).
@@ -404,7 +404,7 @@ test("dispatch: detail screen with ViewPager + empty frontier → emits swipe_ho
   const r0 = await dispatch({ xml, packageName: "com.app" }, {}, {
     anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory,
   });
-  const fp = r0.plan.fingerprint;
+  const fp = r0.plan.logicalFingerprint;
   for (const c of graph.clickables) recordTap(trajectory, fp, c);
   // Now frontier is empty. Expect swipe_horizontal (pager detected).
   const r = await dispatch({ xml, packageName: "com.app" }, {}, {
@@ -439,7 +439,7 @@ test("dispatch: WebView detail screen with empty frontier → scroll_down before
   const r0 = await dispatch({ xml, packageName: "com.app" }, {}, {
     anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory,
   });
-  const fp = r0.plan.fingerprint;
+  const fp = r0.plan.logicalFingerprint;
   for (const c of graph.clickables) recordTap(trajectory, fp, c);
   // Empty frontier on a WebView detail screen → should emit scroll_down
   // before the back ladder.
@@ -469,7 +469,7 @@ test("dispatch: detail screen (no pager) empty frontier → press_back first, th
   const r0 = await dispatch({ xml, packageName: "com.app" }, {}, {
     anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory,
   });
-  const fp = r0.plan.fingerprint;
+  const fp = r0.plan.logicalFingerprint;
   for (const c of graph.clickables) recordTap(trajectory, fp, c);
   // Share driver state so back-ladder progresses across calls.
   const sharedState = {};
@@ -519,7 +519,7 @@ test("dispatch: frontier empty on feed screen → ExplorationDriver yields to LL
   const r0 = await dispatch({ xml, packageName: "com.app" }, {}, {
     anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory,
   });
-  const fp = r0.plan.fingerprint;
+  const fp = r0.plan.logicalFingerprint;
   for (const c of graph.clickables) recordTap(trajectory, fp, c);
   // Now dispatch with empty frontier on a feed screen → should hit LLMFallback.
   let fallbackCalled = false;
