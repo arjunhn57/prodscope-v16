@@ -22,6 +22,7 @@ const {
 } = require("./config/defaults");
 const { createAuthMiddleware } = require("./middleware/auth");
 const { validateStartJob, MAX_FILE_SIZE_BYTES } = require("./middleware/validate");
+const { fetchApkFromUrl, isValidPlayStoreUrl } = require("./lib/apk-fetcher");
 const { wrapSuccess, wrapError, errorHandler } = require("./middleware/error-handler");
 const { multerErrorHandler } = require("./middleware/multer-error-handler");
 const { sendApiError } = require("./lib/api-errors");
@@ -320,6 +321,146 @@ app.post(
       queuePosition: queueInfo.queueDepth,
     }));
   }
+);
+
+/**
+ * POST /api/v1/start-job-from-url — same pipeline as /start-job but the
+ * APK is fetched server-side from a Play Store URL via lib/apk-fetcher.
+ *
+ * Body: JSON {playStoreUrl, email?, credentials?, goldenPath?, painPoints?, goals?, staticInputs?}
+ * Same validators as multipart /start-job apply (parseCredentials, parseStaticInputs).
+ *
+ * Item #3: route wired, fetcher returns 501 (not_implemented) until item #4 lands.
+ */
+app.post(
+  "/api/v1/start-job-from-url",
+  jobLimiter,
+  express.json({ limit: "32kb" }),
+  async (req, res) => {
+    const body = req.body || {};
+    const playStoreUrl = typeof body.playStoreUrl === "string" ? body.playStoreUrl.trim() : "";
+
+    if (!isValidPlayStoreUrl(playStoreUrl)) {
+      return res.status(400).json(wrapError(
+        "Invalid Play Store URL. Expected https://play.google.com/store/apps/details?id=...",
+      ));
+    }
+
+    // Reuse the same body validation as /start-job. Wrap the body in the
+    // expected shape (string-typed credentials/staticInputs, since the
+    // multipart form variant submits them as strings) and run the same
+    // validators directly.
+    const {
+      startJobSchema,
+      parseCredentials,
+      parseStaticInputs,
+    } = require("./middleware/validate");
+
+    const fakeBody = {
+      email: body.email,
+      credentials: typeof body.credentials === "string" ? body.credentials : "{}",
+      goldenPath: typeof body.goldenPath === "string" ? body.goldenPath : "",
+      painPoints: typeof body.painPoints === "string" ? body.painPoints : "",
+      goals: typeof body.goals === "string" ? body.goals : "",
+      staticInputs: typeof body.staticInputs === "string" ? body.staticInputs : "{}",
+    };
+    const bodyResult = startJobSchema.safeParse(fakeBody);
+    if (!bodyResult.success) {
+      const issues = bodyResult.error.issues.map(
+        (i) => `${i.path.join(".")}: ${i.message}`,
+      );
+      return res.status(400).json({
+        error: "Validation failed",
+        details: issues,
+      });
+    }
+    const credResult = parseCredentials(bodyResult.data.credentials);
+    if (!credResult.valid) {
+      return res.status(400).json({
+        error: "Credentials validation failed",
+        details: [credResult.error],
+      });
+    }
+    const staticResult = parseStaticInputs(bodyResult.data.staticInputs);
+    if (!staticResult.valid) {
+      return res.status(400).json({
+        error: "staticInputs validation failed",
+        details: [staticResult.error],
+      });
+    }
+
+    // Fetch the APK via the public-mirror chain. Item #4 implements the
+    // actual fetch; until then this rejects with not_implemented and the
+    // user gets a clean error pointing them to direct upload.
+    let fetched;
+    try {
+      fetched = await fetchApkFromUrl(playStoreUrl);
+    } catch (err) {
+      const code = err && err.code === "not_implemented" ? 501 : 502;
+      return res.status(code).json(wrapError(
+        err && err.message ? err.message : "Failed to fetch APK from Play Store URL",
+      ));
+    }
+
+    const jobId = uuidv4();
+    const ownerUserId =
+      req.user && req.user.type === "user" ? req.user.sub : null;
+
+    const credFields = credResult.parsed
+      ? Object.keys(credResult.parsed).filter(
+          (k) =>
+            typeof credResult.parsed[k] === "string" &&
+            credResult.parsed[k].length > 0,
+        )
+      : [];
+    logger.info(
+      {
+        jobId,
+        traceId: req.traceId,
+        source: "play_store_url",
+        packageName: fetched.packageName,
+        mirror: fetched.source,
+        credentialsPresent: credFields.length > 0,
+        credentialFields: credFields,
+      },
+      "start-job-from-url: inputs ingested",
+    );
+
+    store.createJob(jobId, {
+      status: "queued",
+      step: 0,
+      userId: ownerUserId,
+      steps: [
+        "Fetching APK",
+        "Installing",
+        "Crawling",
+        "Analyzing",
+        "Generating Report",
+        "Sending Email",
+      ],
+      screenshots: [],
+      report: null,
+    });
+
+    await queue.enqueue(jobId, fetched.apkPath, {
+      email: bodyResult.data.email,
+      credentials: credResult.parsed,
+      goldenPath: bodyResult.data.goldenPath,
+      painPoints: bodyResult.data.painPoints,
+      goals: bodyResult.data.goals,
+      staticInputs: staticResult.parsed || null,
+      traceId: req.traceId,
+    });
+
+    const queueInfo = await queue.status();
+    res.json(wrapSuccess({
+      jobId,
+      status: "queued",
+      queuePosition: queueInfo.queueDepth,
+      packageName: fetched.packageName,
+      source: fetched.source,
+    }));
+  },
 );
 
 /**

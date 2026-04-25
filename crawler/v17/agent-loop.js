@@ -443,6 +443,13 @@ async function runAgentLoop(opts) {
   let stopReason = null;
   let consecutiveIdenticalCount = 0;
   let lastActionForConsecutive = null;
+  // 2026-04-26 (Item #6): pre-auth-only V1 — when credentials are absent
+  // and the dispatcher plan keeps coming back as screenType=auth for N
+  // consecutive steps, the crawler has reached the app's auth wall and
+  // can't make further progress. Terminate cleanly with a reason the
+  // user understands instead of letting it grind to budget_exhausted.
+  let authWallStreak = 0;
+  const AUTH_WALL_STREAK_LIMIT = 5;
 
   // ── Discovery / stagnation tracking ──
   let stagnationStreak = 0; // consecutive no_change count
@@ -756,6 +763,7 @@ async function runAgentLoop(opts) {
      * }}
      */
     let decision;
+    let dispatchResult = null;
     try {
       // V18 injection point: opts.deps.dispatch overrides the v17 dispatcher
       // so V18's LLM-first dispatcher can be swapped in via feature flag
@@ -763,7 +771,7 @@ async function runAgentLoop(opts) {
       // existing runs are unaffected.
       const dispatchFn = (deps && deps.dispatch) || defaultDispatch;
       const extraDispatchDeps = (deps && deps.extraDispatchDeps) || {};
-      const dispatchResult = await dispatchFn(observation, driverState, Object.assign({
+      dispatchResult = await dispatchFn(observation, driverState, Object.assign({
         anthropic: deps.anthropic,
         classifierCache,
         llmFallback,
@@ -809,6 +817,32 @@ async function runAgentLoop(opts) {
         outputTokens: 0,
         cachedInputTokens: 0,
       };
+    }
+
+    // 2026-04-26 (Item #6): auth-wall detection for pre-auth-only mode.
+    // When the user opted into pre-auth analysis (no credentials) and the
+    // classifier keeps returning screenType=auth for AUTH_WALL_STREAK_LIMIT
+    // consecutive dispatches, the crawler has hit the login wall and
+    // can't make further progress. Terminate with a clear reason.
+    const credsEmpty =
+      !driverState.credentials ||
+      (!driverState.credentials.email &&
+        !driverState.credentials.password &&
+        !driverState.credentials.username);
+    const dispatchedScreenType =
+      (dispatchResult && dispatchResult.plan && dispatchResult.plan.screenType) || null;
+    if (credsEmpty && dispatchedScreenType === "auth") {
+      authWallStreak += 1;
+      if (authWallStreak >= AUTH_WALL_STREAK_LIMIT) {
+        log.warn(
+          { jobId: opts.jobId, step, authWallStreak },
+          "auth_wall_reached: pre-auth crawler can't progress past login screen — terminating",
+        );
+        stopReason = "auth_wall_reached";
+        break;
+      }
+    } else {
+      authWallStreak = 0;
     }
 
     // Record LLM cost from the decision's token usage (will matter once
