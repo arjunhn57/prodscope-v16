@@ -121,7 +121,9 @@ db.exec(`
     picture TEXT,
     role TEXT NOT NULL DEFAULT 'public',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    last_login_at DATETIME
+    last_login_at DATETIME,
+    credits_remaining INTEGER NOT NULL DEFAULT 1,
+    email_verified INTEGER NOT NULL DEFAULT 0
   );
   CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
   CREATE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id);
@@ -225,6 +227,22 @@ db.exec(`
   }
 })();
 
+// Freemium credit accounting migration (2026-04-27). Pre-existing rows: design
+// partners + admin (Arjun). They are exempt from credit gating in the billing
+// layer (see lib/billing/index.js — chargeRun skips by role), so the default
+// credits_remaining=1 here is harmless for them. New "public" signups get
+// 1 free credit, then hit paywall.
+(function migrateUsersColumns() {
+  const existing = db.prepare("PRAGMA table_info(users)").all();
+  const names = new Set(existing.map((c) => c.name));
+  if (!names.has("credits_remaining")) {
+    db.exec("ALTER TABLE users ADD COLUMN credits_remaining INTEGER NOT NULL DEFAULT 1");
+  }
+  if (!names.has("email_verified")) {
+    db.exec("ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0");
+  }
+})();
+
 db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id)");
 
 // ---------------------------------------------------------------------------
@@ -263,6 +281,23 @@ const stmts = {
   userGetByEmail: db.prepare("SELECT * FROM users WHERE email = ?"),
   userGetByGoogleId: db.prepare("SELECT * FROM users WHERE google_id = ?"),
   userSetRole: db.prepare("UPDATE users SET role = ? WHERE id = ?"),
+
+  // Freemium credit accounting (2026-04-27).
+  // Decrement is conditional on credits_remaining > 0 so a concurrent caller
+  // can't take credits below zero — the .changes return tells us whether the
+  // user had a credit to spend.
+  userGetCredits: db.prepare(
+    "SELECT credits_remaining, email_verified, role FROM users WHERE id = ?"
+  ),
+  userDecrementCredits: db.prepare(
+    "UPDATE users SET credits_remaining = credits_remaining - 1 WHERE id = ? AND credits_remaining > 0"
+  ),
+  userIncrementCredits: db.prepare(
+    "UPDATE users SET credits_remaining = credits_remaining + 1 WHERE id = ?"
+  ),
+  userSetEmailVerified: db.prepare(
+    "UPDATE users SET email_verified = ? WHERE id = ?"
+  ),
 
   appInsert: db.prepare(`
     INSERT INTO design_partner_applications
@@ -317,6 +352,8 @@ function getJob(id) {
     step: row.step,
     created_at: row.created_at,
     completed_at: row.completed_at,
+    userId: row.user_id || null,
+    costUsd: typeof row.cost_usd === "number" ? row.cost_usd : null,
   };
 }
 
@@ -519,6 +556,64 @@ function setUserRole(id, role) {
   if (!allowed.has(role)) throw new Error(`Invalid role: ${role}`);
   stmts.userSetRole.run(role, id);
   return stmts.userGetById.get(id);
+}
+
+/**
+ * Read credit/verification state for a user without returning the full user
+ * row. Returns null if the user isn't in the table.
+ *
+ * @param {string} userId
+ * @returns {{ credits_remaining: number, email_verified: number, role: string } | null}
+ */
+function getUserCredits(userId) {
+  return stmts.userGetCredits.get(userId) || null;
+}
+
+/**
+ * Atomically decrement a user's credit balance by 1. Returns the new balance
+ * or null if the user had no credits left. Uses a transaction so a concurrent
+ * decrement can't drive the balance below zero.
+ *
+ * @param {string} userId
+ * @returns {{ ok: true, balanceAfter: number } | { ok: false, reason: "no_credits" | "user_not_found", balance: number | null }}
+ */
+const decrementUserCredits = db.transaction((userId) => {
+  const row = stmts.userGetCredits.get(userId);
+  if (!row) return { ok: false, reason: "user_not_found", balance: null };
+  if (row.credits_remaining <= 0) {
+    return { ok: false, reason: "no_credits", balance: 0 };
+  }
+  const result = stmts.userDecrementCredits.run(userId);
+  if (result.changes !== 1) {
+    return { ok: false, reason: "no_credits", balance: 0 };
+  }
+  return { ok: true, balanceAfter: row.credits_remaining - 1 };
+});
+
+/**
+ * Increment a user's credit balance by 1 (refund path). Returns the new
+ * balance, or null if the user wasn't found.
+ *
+ * @param {string} userId
+ * @returns {{ ok: true, balanceAfter: number } | { ok: false, reason: "user_not_found" }}
+ */
+const incrementUserCredits = db.transaction((userId) => {
+  const row = stmts.userGetCredits.get(userId);
+  if (!row) return { ok: false, reason: "user_not_found" };
+  stmts.userIncrementCredits.run(userId);
+  return { ok: true, balanceAfter: row.credits_remaining + 1 };
+});
+
+/**
+ * Set the email_verified flag on a user. Stored as 0/1 in SQLite — pass
+ * boolean from JS, we coerce.
+ *
+ * @param {string} userId
+ * @param {boolean} verified
+ * @returns {void}
+ */
+function setUserEmailVerified(userId, verified) {
+  stmts.userSetEmailVerified.run(verified ? 1 : 0, userId);
 }
 
 // ---------------------------------------------------------------------------
@@ -761,6 +856,7 @@ function adminSummary() {
 module.exports = {
   createJob, getJob, updateJob, listJobs, jobEvents, db, cleanupOldJobs,
   upsertUserFromGoogle, getUserById, getUserByEmail, setUserRole,
+  getUserCredits, decrementUserCredits, incrementUserCredits, setUserEmailVerified,
   createApplication, getApplicationsByEmail, listApplications,
   setApplicationStatus, setApplicationLoiStatus, getApplicationById,
   listUsersWithUsage, listJobsForUser, adminSummary,

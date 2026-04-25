@@ -68,6 +68,7 @@ export function useUploadJob(): UseUploadJobReturn {
   const queryClient = useQueryClient();
   const token = useAuthStore((s) => s.token);
   const logout = useAuthStore((s) => s.logout);
+  const setCredits = useAuthStore((s) => s.setCredits);
 
   const [state, setState] = useState<UploadState>("idle");
   const [progress, setProgress] = useState<UploadProgress>(INITIAL_PROGRESS);
@@ -197,7 +198,15 @@ export function useUploadJob(): UseUploadJobReturn {
         }
 
         let parsed:
-          | { success: boolean; data?: { jobId: string; queuePosition: number }; error?: string }
+          | {
+              success: boolean;
+              data?: {
+                jobId: string;
+                queuePosition: number;
+                creditBalanceAfter?: number | null;
+              };
+              error?: string;
+            }
           | null = null;
         try {
           parsed = JSON.parse(xhr.responseText);
@@ -218,7 +227,16 @@ export function useUploadJob(): UseUploadJobReturn {
             jobId: parsed.data.jobId,
             queuePosition: parsed.data.queuePosition ?? 0,
           });
+          if (typeof parsed.data.creditBalanceAfter === "number") {
+            setCredits(parsed.data.creditBalanceAfter);
+          }
           queryClient.invalidateQueries({ queryKey: ["queue-status"] });
+        } else if (xhr.status === 402) {
+          setState("error");
+          setError(
+            parsed?.error ||
+              "You've used your free report. Upgrade to run another.",
+          );
         } else {
           setState("error");
           setError(parsed?.error || `Upload failed (${xhr.status || "network"})`);
@@ -245,7 +263,7 @@ export function useUploadJob(): UseUploadJobReturn {
 
       xhr.send(formData);
     },
-    [queryClient, token, logout]
+    [queryClient, token, logout, setCredits]
   );
 
   // 2026-04-26 (Item #3): URL-paste path. The backend fetches the APK
@@ -294,7 +312,11 @@ export function useUploadJob(): UseUploadJobReturn {
 
       type StartJobResponse = {
         success?: boolean;
-        data?: { jobId: string; queuePosition: number };
+        data?: {
+          jobId: string;
+          queuePosition: number;
+          creditBalanceAfter?: number | null;
+        };
         error?: string;
       };
 
@@ -324,7 +346,16 @@ export function useUploadJob(): UseUploadJobReturn {
               jobId: parsed.data.jobId,
               queuePosition: parsed.data.queuePosition ?? 0,
             });
+            if (typeof parsed.data.creditBalanceAfter === "number") {
+              setCredits(parsed.data.creditBalanceAfter);
+            }
             queryClient.invalidateQueries({ queryKey: ["queue-status"] });
+          } else if (res.status === 402) {
+            setState("error");
+            setError(
+              parsed?.error ||
+                "You've used your free report. Upgrade to run another.",
+            );
           } else {
             setState("error");
             setError(
@@ -339,7 +370,7 @@ export function useUploadJob(): UseUploadJobReturn {
           setError("Network error — couldn't reach the server.");
         });
     },
-    [queryClient, token, logout],
+    [queryClient, token, logout, setCredits],
   );
 
   return {

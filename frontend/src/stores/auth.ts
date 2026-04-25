@@ -11,6 +11,13 @@ export interface AuthUser {
   name: string;
   picture: string;
   role: UserRole;
+  // Freemium accounting (2026-04-27). Public users get 1 free credit on
+  // signup, then hit the paywall. admin/design_partner are exempt
+  // (`quotaExempt: true`) — the QuotaMeter renders an "Unlimited" tile
+  // for them.
+  creditsRemaining?: number;
+  emailVerified?: boolean;
+  quotaExempt?: boolean;
 }
 
 export type GatedFeature =
@@ -40,6 +47,7 @@ interface AuthState {
   usage: Usage;
   login: (token: string, user?: AuthUser | null) => void;
   logout: () => void;
+  setCredits: (credits: number) => void;
 }
 
 export const FREE_USAGE: Usage = { crawlsThisMonth: 0, crawlLimit: 3 };
@@ -120,6 +128,12 @@ export const useAuthStore = create<AuthState>()(
           tier: "free",
           usage: FREE_USAGE,
         }),
+      setCredits: (credits) =>
+        set((state) =>
+          state.user
+            ? { user: { ...state.user, creditsRemaining: credits } }
+            : state,
+        ),
     }),
     { name: "prodscope-auth" }
   )

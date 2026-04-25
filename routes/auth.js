@@ -93,6 +93,7 @@ router.post("/auth/google", loginLimiter, express.json(), async (req, res) => {
       "24h",
     );
 
+    const exempt = user.role === "admin" || user.role === "design_partner";
     res.json(
       wrapSuccess({
         token,
@@ -103,6 +104,11 @@ router.post("/auth/google", loginLimiter, express.json(), async (req, res) => {
           name: user.name,
           picture: user.picture,
           role: user.role,
+          creditsRemaining: typeof user.credits_remaining === "number"
+            ? user.credits_remaining
+            : 1,
+          emailVerified: user.email_verified === 1,
+          quotaExempt: exempt,
         },
       }),
     );
@@ -125,6 +131,9 @@ router.get("/auth/me", (req, res) => {
   if (!record) {
     return res.status(404).json(wrapError("User not found"));
   }
+  // Roles exempt from freemium credit gating — admins and design partners
+  // see "unlimited" in the QuotaMeter rather than a credit count.
+  const exempt = record.role === "admin" || record.role === "design_partner";
   res.json(
     wrapSuccess({
       id: record.id,
@@ -132,6 +141,11 @@ router.get("/auth/me", (req, res) => {
       name: record.name,
       picture: record.picture,
       role: record.role,
+      creditsRemaining: typeof record.credits_remaining === "number"
+        ? record.credits_remaining
+        : 1,
+      emailVerified: record.email_verified === 1,
+      quotaExempt: exempt,
     }),
   );
 });

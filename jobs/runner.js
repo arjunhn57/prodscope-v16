@@ -26,6 +26,36 @@ const metrics = require("../lib/metrics");
 const { alertJobFailed, alertConsecutiveFailures, alertDiskCritical } = require("../lib/alerts");
 const { logger, createJobLogger } = require("../lib/logger");
 const { synthesizeReportV2 } = require("../output/report-synthesis-v2");
+const billing = require("../lib/billing");
+
+/**
+ * Refund the credit charged on this job if the run terminated with a
+ * code-side fault. Idempotent — `creditRefunded: true` flag on the job
+ * blocks double-refunds. Skipped silently for jobs that were never
+ * charged (admin/design_partner runs, jobs predating freemium).
+ */
+async function refundIfCodeSideFault(jobId, reason, log) {
+  try {
+    const job = store.getJob(jobId);
+    if (!job) return;
+    if (!job.userId) return;
+    if (job.creditCharged === false) return;
+    if (job.creditRefunded === true) return;
+    const r = await billing.refundRun({ userId: job.userId, jobId, reason });
+    if (r.ok && !r.skipped) {
+      log.info(
+        { jobId, reason, balanceAfter: r.balanceAfter },
+        "billing: credit refunded on code-side fault",
+      );
+      store.updateJob(jobId, {
+        creditRefunded: true,
+        creditBalanceAfter: r.balanceAfter,
+      });
+    }
+  } catch (e) {
+    log.error({ err: e, jobId, reason }, "billing: refund failed");
+  }
+}
 
 // V2 report synthesis runs alongside V1 when REPORT_V2_ENABLED=true.
 // V1 path is unchanged — V2 is purely additive until validated.
@@ -212,6 +242,9 @@ async function processJob(jobId, apkPath, opts) {
             quality: compat.quality,
           }, null, 2),
         });
+        // Code-side fault — the user uploaded a valid APK but our crawler
+        // can't run it. Refund the credit so they can try a different app.
+        await refundIfCodeSideFault(jobId, "uncrawlable:" + compat.reason, log);
         processJob._lastPackage = null;
         try { fs.unlinkSync(apkPath); } catch (_) {}
         return;
@@ -388,6 +421,8 @@ async function processJob(jobId, apkPath, opts) {
           costInr: 0,
         });
         alertJobFailed(jobId, crawlStopReason, "no screens captured");
+        // Code-side fault — device went offline or capture failed. Refund.
+        await refundIfCodeSideFault(jobId, "crawl_failed:" + (crawlStopReason || "no_screens"), log);
         return;
       }
 
@@ -782,6 +817,8 @@ async function processJob(jobId, apkPath, opts) {
       costInr: 0,
     });
     alertJobFailed(jobId, "uncaught_exception", err.message);
+    // Code-side fault — uncaught exception. Refund.
+    await refundIfCodeSideFault(jobId, "uncaught_exception:" + err.message, log);
     killEmulator();
   } finally {
     // Reset serial targeting after job completes

@@ -9,11 +9,12 @@ interface TrustItem {
   sublabel: string;
 }
 
-// 2026-04-26: diligence-positioned trust copy. Each banner ties to a
+// 2026-04-27: diligence-positioned trust copy. Each banner ties to a
 // real code-level guarantee — "Read-only" is enforced by the v18
-// classifier's write-intent strip on non-auth screens; "no credentials"
-// is the V1 pre-auth-only mode; "auto-deleted" matches the 7-day
-// retention in the privacy policy.
+// classifier's write-intent strip on non-auth screens; "Credentials
+// never logged" is true under both Full-app and Public-surface modes
+// (creds are encrypted at rest and dropped with the APK after the run);
+// "auto-deleted" matches the 7-day retention in the privacy policy.
 const ITEMS: TrustItem[] = [
   {
     icon: ShieldCheck,
@@ -22,8 +23,8 @@ const ITEMS: TrustItem[] = [
   },
   {
     icon: EyeOff,
-    label: "Nothing personal stored",
-    sublabel: "No credentials needed",
+    label: "Credentials never logged",
+    sublabel: "Encrypted at rest, dropped with the APK",
   },
   {
     icon: Clock,

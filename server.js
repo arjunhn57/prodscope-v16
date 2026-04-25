@@ -29,6 +29,7 @@ const { sendApiError } = require("./lib/api-errors");
 const { logger, requestLogger } = require("./lib/logger");
 const metrics = require("./lib/metrics");
 const magicLink = require("./lib/magic-link");
+const billing = require("./lib/billing");
 const { renderReportEmail } = require("./output/email-renderer");
 
 // ─── Environment validation ──────────────────────────────────────────────────
@@ -279,6 +280,30 @@ app.post(
       "start-job: inputs ingested"
     );
 
+    // Freemium gate. Public users have 1 free credit; admins/design partners
+    // are exempt. We charge BEFORE createJob/enqueue so a 402 leaves no
+    // dangling job/queue state. The runner refunds on code-side faults.
+    const charge = await billing.chargeRun({
+      userId: ownerUserId,
+      jobId,
+      tier: "full_report",
+    });
+    if (!charge.ok) {
+      // Clean up the multer temp file before bailing.
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
+      const status = charge.reason === "no_credits" ? 402 : 403;
+      return res.status(status).json(wrapError(
+        charge.reason === "no_credits"
+          ? "You've used your free report. Upgrade to run another."
+          : "Unable to start job: " + charge.reason,
+        charge.reason,
+        {
+          balance: charge.balance,
+          upgradeUrl: charge.upgradeUrl,
+        },
+      ));
+    }
+
     store.createJob(jobId, {
       status: "queued",
       step: 0,
@@ -293,6 +318,8 @@ app.post(
       ],
       screenshots: [],
       report: null,
+      creditCharged: !charge.skipped,
+      creditBalanceAfter: typeof charge.balanceAfter === "number" ? charge.balanceAfter : null,
     });
 
     const originalName = req.file.originalname || "upload.apk";
@@ -319,6 +346,7 @@ app.post(
       jobId,
       status: "queued",
       queuePosition: queueInfo.queueDepth,
+      creditBalanceAfter: typeof charge.balanceAfter === "number" ? charge.balanceAfter : null,
     }));
   }
 );
@@ -426,6 +454,29 @@ app.post(
       "start-job-from-url: inputs ingested",
     );
 
+    // Freemium gate (mirrors /api/v1/start-job). The fetched APK is on
+    // disk by this point; clean it up before bailing if the user has no
+    // credits, so we don't leak files.
+    const charge = await billing.chargeRun({
+      userId: ownerUserId,
+      jobId,
+      tier: "full_report",
+    });
+    if (!charge.ok) {
+      try { fs.unlinkSync(fetched.apkPath); } catch (_) {}
+      const status = charge.reason === "no_credits" ? 402 : 403;
+      return res.status(status).json(wrapError(
+        charge.reason === "no_credits"
+          ? "You've used your free report. Upgrade to run another."
+          : "Unable to start job: " + charge.reason,
+        charge.reason,
+        {
+          balance: charge.balance,
+          upgradeUrl: charge.upgradeUrl,
+        },
+      ));
+    }
+
     store.createJob(jobId, {
       status: "queued",
       step: 0,
@@ -440,6 +491,8 @@ app.post(
       ],
       screenshots: [],
       report: null,
+      creditCharged: !charge.skipped,
+      creditBalanceAfter: typeof charge.balanceAfter === "number" ? charge.balanceAfter : null,
     });
 
     await queue.enqueue(jobId, fetched.apkPath, {
@@ -459,6 +512,7 @@ app.post(
       queuePosition: queueInfo.queueDepth,
       packageName: fetched.packageName,
       source: fetched.source,
+      creditBalanceAfter: typeof charge.balanceAfter === "number" ? charge.balanceAfter : null,
     }));
   },
 );

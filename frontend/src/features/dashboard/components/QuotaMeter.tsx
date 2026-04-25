@@ -14,13 +14,21 @@ const RING_STROKE = 8;
 const RING_RADIUS = (RING_SIZE - RING_STROKE) / 2;
 const RING_CIRCUM = 2 * Math.PI * RING_RADIUS;
 
+// Freemium constant — public users get 1 report on signup. Used as the ring's
+// denominator so visual fill mirrors the credit-spent ratio.
+const FREE_QUOTA = 1;
+
 export function QuotaMeter() {
   const navigate = useNavigate();
   const reduceMotion = useReducedMotion();
   const tier = useAuthStore((s) => s.tier);
-  const usage = useAuthStore((s) => s.usage);
+  const user = useAuthStore((s) => s.user);
 
-  if (tier === "enterprise") {
+  // Exempt users (admin, design_partner) see the Enterprise tile regardless
+  // of stored credits.
+  const exempt = user?.quotaExempt === true || tier === "enterprise";
+
+  if (exempt) {
     return (
       <motion.section
         initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 14 }}
@@ -66,12 +74,16 @@ export function QuotaMeter() {
     );
   }
 
-  const { crawlsThisMonth, crawlLimit } = usage;
-  const used = Math.min(crawlsThisMonth, crawlLimit);
-  const remaining = Math.max(0, crawlLimit - crawlsThisMonth);
-  const pct = crawlLimit > 0 ? Math.min(100, (crawlsThisMonth / crawlLimit) * 100) : 0;
+  // Freemium: render against credits_remaining from the backend. Default to
+  // 1 (the free signup grant) if the field hasn't synced yet — matches the
+  // server-side default in jobs/store.js.
+  const creditsRemaining =
+    typeof user?.creditsRemaining === "number" ? user.creditsRemaining : FREE_QUOTA;
+  const used = Math.max(0, FREE_QUOTA - creditsRemaining);
+  const remaining = Math.max(0, creditsRemaining);
+  const pct = FREE_QUOTA > 0 ? Math.min(100, (used / FREE_QUOTA) * 100) : 0;
   const offset = RING_CIRCUM - (pct / 100) * RING_CIRCUM;
-  const exhausted = crawlsThisMonth >= crawlLimit;
+  const exhausted = remaining <= 0;
 
   return (
     <motion.section
@@ -85,7 +97,7 @@ export function QuotaMeter() {
       <div className="flex items-start gap-4">
         <div
           className="shrink-0"
-          aria-label={`${used} of ${crawlLimit} analyses used this month`}
+          aria-label={`${used} of ${FREE_QUOTA} free reports used`}
           role="img"
         >
           <svg
@@ -134,21 +146,23 @@ export function QuotaMeter() {
             className="text-[10.5px] font-semibold uppercase tracking-[0.22em] text-[var(--color-text-muted)]"
             style={{ fontFamily: "var(--font-label)" }}
           >
-            This month
+            Free reports
           </div>
           <div
             className="mt-1 text-[22px] font-semibold text-[var(--color-text-primary)] tabular-nums"
             style={{ fontFamily: "var(--font-mono)", letterSpacing: "-0.01em" }}
           >
-            {used} <span className="text-[var(--color-text-muted)]">/ {crawlLimit}</span>
+            {remaining} <span className="text-[var(--color-text-muted)]">/ {FREE_QUOTA}</span>
           </div>
           <div
             className="mt-0.5 text-[12px] text-[var(--color-text-secondary)]"
             style={{ fontFamily: "var(--font-sans)" }}
           >
             {exhausted
-              ? "Quota reached — upgrade to continue."
-              : `${remaining} remaining this month.`}
+              ? "Free report used — upgrade to run another."
+              : remaining === 1
+                ? "1 free report remaining."
+                : `${remaining} free reports remaining.`}
           </div>
         </div>
       </div>
@@ -162,7 +176,7 @@ export function QuotaMeter() {
           fontFamily: "var(--font-sans)",
         }}
       >
-        Go unlimited
+        {exhausted ? "Upgrade to run another report" : "Go unlimited"}
         <ArrowRight className="w-3.5 h-3.5" />
       </button>
     </motion.section>
