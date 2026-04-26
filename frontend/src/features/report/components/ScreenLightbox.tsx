@@ -88,7 +88,7 @@ export function ScreenLightbox({
             type="button"
             aria-label="Close"
             onClick={onClose}
-            className="absolute top-4 right-4 w-10 h-10 rounded-full bg-white shadow flex items-center justify-center text-[var(--color-text-primary)] hover:bg-[#F8FAFC] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)]"
+            className="absolute top-4 right-4 w-10 h-10 rounded-full bg-white shadow flex items-center justify-center text-[var(--color-text-primary)] hover:bg-[#F8FAFC] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-report-accent-ring)]"
           >
             <X className="w-4 h-4" />
           </button>
@@ -101,7 +101,7 @@ export function ScreenLightbox({
                 e.stopPropagation();
                 onNavigate(index - 1);
               }}
-              className="absolute left-3 md:left-6 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-white shadow flex items-center justify-center focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)]"
+              className="absolute left-3 md:left-6 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-white shadow flex items-center justify-center focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-report-accent-ring)]"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
@@ -114,7 +114,7 @@ export function ScreenLightbox({
                 e.stopPropagation();
                 onNavigate(index + 1);
               }}
-              className="absolute right-3 md:right-6 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-white shadow flex items-center justify-center focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)]"
+              className="absolute right-3 md:right-6 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-white shadow flex items-center justify-center focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-report-accent-ring)]"
             >
               <ChevronRight className="w-4 h-4" />
             </button>

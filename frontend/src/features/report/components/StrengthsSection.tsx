@@ -254,7 +254,7 @@ export function StrengthsSection({ report }: StrengthsSectionProps) {
                   <button
                     type="button"
                     onClick={() => setExpanded(isExpanded ? null : i)}
-                    className="mt-1 text-left text-[12.5px] leading-[1.55] pl-3 border-l-2 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] rounded-sm"
+                    className="mt-1 text-left text-[12.5px] leading-[1.55] pl-3 border-l-2 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-report-accent-ring)] rounded-sm"
                     style={{ borderColor: STRENGTH_PALETTE.ring }}
                   >
                     <span

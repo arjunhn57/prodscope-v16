@@ -8,25 +8,55 @@ import type { Severity } from "./types";
  * Keep pure tokens — no component logic.
  */
 
+/**
+ * Phase B5 (2026-04-26): the report uses a dual-token color system.
+ *
+ *  - **accent** (magenta, #D62B4D) is the BRAND accent. Matches the
+ *    color the annotator already paints on every screenshot box
+ *    (output/annotator/style.js:ACCENT). Use for finding-coded UI:
+ *    severity dots, recommended-fix borders, hero halo, section
+ *    markers inside report context.
+ *
+ *  - **accentSupporting** (purple, #6C47FF) is the SUPPORTING accent.
+ *    Reserved for gradient surfaces and large decorative areas where
+ *    pure magenta would feel aggressive. Anchors the cool side of the
+ *    purple→magenta gradient.
+ *
+ *  - **accentDecorative** (lavender, #8A6CFF) is the lightest cool
+ *    stop in the gradient. Decorative only — never on text/badges.
+ *
+ * Severity colors anchor on this dual scale: critical and high lean
+ * magenta, medium and low lean neutral. Strength has its own green
+ * palette (STRENGTH_PALETTE below).
+ */
 export const REPORT_GRADIENTS = {
-  hero: "linear-gradient(120deg, #8A6CFF 0%, #6C47FF 55%, #DB2777 100%)",
+  hero: "linear-gradient(120deg, #8A6CFF 0%, #6C47FF 55%, #D62B4D 100%)",
   auroraTile:
     "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(239,235,255,0.42) 100%)",
-  scoreTrack: "linear-gradient(135deg, #6C47FF 0%, #8A6CFF 50%, #DB2777 100%)",
+  scoreTrack: "linear-gradient(135deg, #6C47FF 0%, #8A6CFF 50%, #D62B4D 100%)",
   tintedDivider:
-    "linear-gradient(90deg, rgba(226,232,240,0) 0%, rgba(108,71,255,0.22) 50%, rgba(226,232,240,0) 100%)",
-  criticalChipBg: "linear-gradient(120deg, #FEE2E2 0%, #FECACA 100%)",
+    "linear-gradient(90deg, rgba(226,232,240,0) 0%, rgba(214,43,77,0.20) 50%, rgba(226,232,240,0) 100%)",
+  criticalChipBg: "linear-gradient(120deg, #FFE4EA 0%, #FECDD3 100%)",
   editorialHeadline:
-    "linear-gradient(120deg, #1E1B4B 0%, #4C1D95 32%, #6C47FF 58%, #DB2777 100%)",
+    "linear-gradient(120deg, #1E1B4B 0%, #4C1D95 32%, #6C47FF 58%, #D62B4D 100%)",
 } as const;
 
 /**
  * Hex equivalents of the core CSS variables — needed when a prop accepts only
  * a literal color (e.g. SVG `stroke`, Lucide `color=`, inline SVG `fill`).
- * Prefer `var(--color-accent)` etc. in `className` / `style` where possible.
+ * Prefer `var(--color-report-accent)` etc. in `className` / `style` where possible.
+ *
+ * Phase B5: `accent` flipped from purple → magenta to match the
+ * annotator. `accentSupporting` (the previous primary purple) and
+ * `accentDecorative` (lavender) added so gradient anchors and
+ * supporting visuals stay codified.
  */
 export const REPORT_COLORS = {
-  accent: "#6C47FF",
+  accent: "#D62B4D",
+  accentRing: "rgba(214, 43, 77, 0.25)",
+  accentSupporting: "#6C47FF",
+  accentSupportingRing: "rgba(108, 71, 255, 0.22)",
+  accentDecorative: "#8A6CFF",
   textPrimary: "#0F172A",
   textMuted: "#475569",
 } as const;

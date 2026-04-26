@@ -98,7 +98,7 @@ export function ReportFooter({ report, onRunAgain }: ReportFooterProps) {
               <button
                 type="button"
                 onClick={onRunAgain}
-                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-full text-[13px] font-medium text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] transition-opacity hover:opacity-95"
+                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-full text-[13px] font-medium text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-report-accent-ring)] transition-opacity hover:opacity-95"
                 style={{
                   background:
                     "linear-gradient(120deg, #8A6CFF 0%, #6C47FF 55%, #DB2777 100%)",
@@ -151,7 +151,7 @@ function ActionButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`relative inline-flex items-center gap-2 px-3.5 py-2 rounded-full text-[13px] font-medium bg-white border transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] ${
+      className={`relative inline-flex items-center gap-2 px-3.5 py-2 rounded-full text-[13px] font-medium bg-white border transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-report-accent-ring)] ${
         disabled
           ? "opacity-60 cursor-not-allowed border-[#E2E8F0] text-[var(--color-text-muted)]"
           : "text-[var(--color-text-secondary)] border-[#E2E8F0] hover:border-[rgba(108,71,255,0.3)] hover:text-[var(--color-text-primary)]"
@@ -164,7 +164,7 @@ function ActionButton({
           className="ml-1 text-[9.5px] font-semibold uppercase tracking-[0.16em] px-1.5 py-0.5 rounded-full"
           style={{
             background: "rgba(108,71,255,0.08)",
-            color: "var(--color-accent)",
+            color: "var(--color-report-accent)",
             border: "1px solid rgba(108,71,255,0.22)",
             fontFamily: "var(--font-label)",
           }}

@@ -228,6 +228,23 @@ export interface CrawlReport {
   v2Errors: string[] | null;
   /** Annotation pipeline output (paths to PNG/JSON sidecars). */
   annotations: V2AnnotationsPayload | null;
+  /** Phase B6: editorial 5-sentence executive summary. Null when the
+   *  Haiku call failed or the run pre-dates B6 — frontend falls back
+   *  to the deterministic builder in those cases. */
+  executiveSummary: ExecutiveSummary | null;
+}
+
+/**
+ * Phase B6 (2026-04-26): editorial executive summary, 5 sentences in
+ * senior-analyst voice. Backend `output/executive-summary.js` generates
+ * via a small Haiku call; this is the parsed shape persisted on the job.
+ */
+export interface ExecutiveSummary {
+  lead_sentence: string;
+  top_concern: string;
+  top_strength: string;
+  coverage_note: string;
+  closing_take: string;
 }
 
 /**

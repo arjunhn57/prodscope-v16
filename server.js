@@ -562,6 +562,10 @@ app.get("/api/v1/job-status/:jobId", statusLimiter, async (req, res) => {
     v2Report: job.v2Report,
     v2Errors: job.v2Errors,
     annotations: job.annotations,
+    // Phase B6: editorial executive summary (5-sentence Haiku-curated
+    // analyst voice). Frontend uses this when present; falls back to the
+    // deterministic builder for legacy / V1-only reports.
+    executiveSummary: job.executiveSummary,
     // App identity from the manifest parser. Lets the report viewer
     // render a real title (e.g. "Bluesky / xyz.blueskyweb.app") even
     // when V1's deterministic report is suppressed and contains no
@@ -653,6 +657,7 @@ app.get("/api/v1/public-report/:jobId", statusLimiter, (req, res) => {
       v2Report: job.v2Report,
       v2Errors: job.v2Errors,
       annotations: job.annotations,
+      executiveSummary: job.executiveSummary,
       appPackage: job.appPackage,
       appName: job.appName,
       launcherActivity: job.launcherActivity,

@@ -92,7 +92,7 @@ export function Masthead({
               type="button"
               onClick={onShare}
               aria-live="polite"
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-full text-[13px] font-medium text-[var(--color-text-secondary)] bg-white border border-[var(--color-border-default)] hover:border-[var(--color-border-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] transition-colors"
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-full text-[13px] font-medium text-[var(--color-text-secondary)] bg-white border border-[var(--color-border-default)] hover:border-[var(--color-border-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-report-accent-ring)] transition-colors"
             >
               {shareCopied ? (
                 <>
@@ -111,7 +111,7 @@ export function Masthead({
             <button
               type="button"
               onClick={onExport}
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-full text-[13px] font-medium text-[var(--color-text-secondary)] bg-white border border-[var(--color-border-default)] hover:border-[var(--color-border-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] transition-colors"
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-full text-[13px] font-medium text-[var(--color-text-secondary)] bg-white border border-[var(--color-border-default)] hover:border-[var(--color-border-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-report-accent-ring)] transition-colors"
             >
               <Download className="w-3.5 h-3.5" />
               Download HTML
@@ -121,7 +121,7 @@ export function Masthead({
             <button
               type="button"
               onClick={onRunAgain}
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-full text-[13px] font-medium text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] transition-opacity hover:opacity-95"
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-full text-[13px] font-medium text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-report-accent-ring)] transition-opacity hover:opacity-95"
               style={{ background: REPORT_GRADIENTS.hero }}
             >
               <RefreshCw className="w-3.5 h-3.5" />

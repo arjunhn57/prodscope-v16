@@ -27,6 +27,7 @@ const { alertJobFailed, alertConsecutiveFailures, alertDiskCritical } = require(
 const { logger, createJobLogger } = require("../lib/logger");
 const { synthesizeReportV2 } = require("../output/report-synthesis-v2");
 const { annotateCitedScreens } = require("../output/annotator/pipeline");
+const { synthesizeExecutiveSummary } = require("../output/executive-summary");
 const billing = require("../lib/billing");
 
 /**
@@ -729,6 +730,49 @@ async function processJob(jobId, apkPath, opts) {
           }
         }
 
+        // Phase B6 (2026-04-26): editorial executive summary. One Haiku
+        // call that takes V2's structured findings and produces a
+        // 5-sentence analyst-voice TL;DR for the report's executive-
+        // summary section. Failures are non-fatal — the frontend already
+        // has a deterministic fallback for legacy / V1-only reports.
+        let executiveSummary = null;
+        let executiveSummaryTokens = { input_tokens: 0, output_tokens: 0 };
+        if (v2Report) {
+          try {
+            const execResult = await synthesizeExecutiveSummary({
+              appName: appProfile.appName || "",
+              packageName: appProfile.packageName || "",
+              v2Report,
+              coverage: crawlResult.coverage || {},
+            });
+            if (execResult.ok) {
+              executiveSummary = execResult.summary;
+              executiveSummaryTokens = execResult.tokenUsage || executiveSummaryTokens;
+              haikuTokensAccum.input_tokens += executiveSummaryTokens.input_tokens || 0;
+              haikuTokensAccum.output_tokens += executiveSummaryTokens.output_tokens || 0;
+              log.info(
+                { jobId, leadLen: execResult.summary.lead_sentence.length },
+                "Executive summary OK",
+              );
+            } else {
+              executiveSummaryTokens = execResult.tokenUsage || executiveSummaryTokens;
+              if (executiveSummaryTokens.input_tokens > 0) {
+                haikuTokensAccum.input_tokens += executiveSummaryTokens.input_tokens;
+                haikuTokensAccum.output_tokens += executiveSummaryTokens.output_tokens || 0;
+              }
+              log.warn(
+                { jobId, errors: execResult.errors?.slice(0, 3) },
+                "Executive summary failed — frontend will use deterministic fallback",
+              );
+            }
+          } catch (execErr) {
+            log.warn(
+              { err: execErr.message },
+              "Executive summary threw — frontend will use deterministic fallback",
+            );
+          }
+        }
+
         // Persist V2 fields alongside V1. They are read by the demo
         // script (and, eventually, the V2-aware frontend) — null when
         // the synthesizer didn't produce a valid report.
@@ -737,6 +781,7 @@ async function processJob(jobId, apkPath, opts) {
           v2TokenUsage,
           v2Errors,
           annotations: annotationsResult,
+          executiveSummary,
         });
       }
     } catch (oracleErr) {

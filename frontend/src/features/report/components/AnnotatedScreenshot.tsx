@@ -82,6 +82,13 @@ interface AnnotatedScreenshotProps {
   className?: string;
   /** Initial state of the annotation toggle. Defaults to true. */
   initialAnnotated?: boolean;
+  /**
+   * Phase B3: when rendered as an atlas thumbnail, hide the toggle
+   * button (no room for it) and shrink the annotation overlay so
+   * marks remain readable at ~180px wide. The screenshot itself
+   * stays full quality.
+   */
+  compact?: boolean;
 }
 
 function buildAnnotationsUrl(jobId: string, screenId: string): string {
@@ -102,6 +109,7 @@ export function AnnotatedScreenshot({
   alt,
   className,
   initialAnnotated = true,
+  compact = false,
 }: AnnotatedScreenshotProps) {
   const [annotations, setAnnotations] = useState<ScreenAnnotations | null>(null);
   const [loadStatus, setLoadStatus] = useState<"idle" | "loading" | "ready" | "missing" | "error">(
@@ -270,8 +278,9 @@ export function AnnotatedScreenshot({
         </div>
       )}
 
-      {/* Toggle button (top-right corner) — only when annotations are ready */}
-      {loadStatus === "ready" && annotations && (
+      {/* Toggle button (top-right corner) — only when annotations are ready
+          and not in compact mode (atlas thumbnails don't have room). */}
+      {!compact && loadStatus === "ready" && annotations && (
         <button
           type="button"
           onClick={() => setShowAnnotations((s) => !s)}

@@ -11,6 +11,7 @@ import {
 import { clusterScreensByClassification } from "../useReportData";
 import { ScreenLightbox, type LightboxScreen } from "./ScreenLightbox";
 import { Picture } from "@/components/ui/Picture";
+import { AnnotatedScreenshot } from "./AnnotatedScreenshot";
 
 interface ScreenAtlasProps {
   report: CrawlReport;
@@ -24,10 +25,12 @@ interface Cluster {
 
 function Thumb({
   screen,
+  jobId,
   onOpen,
   rounded = "rounded-xl",
 }: {
   screen: ScreenRecord;
+  jobId: string | null;
   onOpen: () => void;
   rounded?: string;
 }) {
@@ -35,7 +38,7 @@ function Thumb({
     <button
       type="button"
       onClick={onOpen}
-      className={`group relative block w-full aspect-[9/16] overflow-hidden ${rounded} focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)]`}
+      className={`group relative block w-full aspect-[9/16] overflow-hidden ${rounded} focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-report-accent-ring)]`}
       style={{
         background: "#F1F5F9",
         border: "1px solid #E2E8F0",
@@ -43,13 +46,28 @@ function Thumb({
       aria-label={`Open screen ${screen.step}`}
     >
       {screen.path ? (
-        <Picture
-          src={screen.path}
-          alt={`Screen ${screen.step} — ${screen.activity}`}
-          width={180}
-          height={390}
-          className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
-        />
+        // Phase B3: AnnotatedScreenshot falls back to a plain <img> when
+        // no annotations.json exists for this screen — so atlas thumbs
+        // show ProdScope's marks on cited screens AND clean photos on
+        // the rest. No conditional needed.
+        jobId ? (
+          <AnnotatedScreenshot
+            jobId={jobId}
+            screenId={`screen_${screen.step}`}
+            screenshotUrl={screen.path}
+            alt={`Screen ${screen.step} — ${screen.activity}`}
+            className="w-full h-full block transition-transform duration-300 group-hover:scale-[1.03]"
+            compact
+          />
+        ) : (
+          <Picture
+            src={screen.path}
+            alt={`Screen ${screen.step} — ${screen.activity}`}
+            width={180}
+            height={390}
+            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+          />
+        )
       ) : (
         <div className="w-full h-full flex items-center justify-center text-[10.5px] text-[var(--color-text-muted)]">
           No capture
@@ -148,6 +166,7 @@ export function ScreenAtlas({ report }: ScreenAtlasProps) {
               <Thumb
                 key={`flat-${idx}`}
                 screen={s}
+                jobId={report.jobId}
                 onOpen={() => openLightbox(clusters[0], idx)}
                 rounded="rounded-xl"
               />
@@ -202,7 +221,7 @@ export function ScreenAtlas({ report }: ScreenAtlasProps) {
                       <button
                         type="button"
                         onClick={() => toggle(cluster.classifier)}
-                        className="inline-flex items-center gap-1 text-[11.5px] text-[var(--color-accent)] hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] rounded"
+                        className="inline-flex items-center gap-1 text-[11.5px] text-[var(--color-report-accent)] hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-report-accent-ring)] rounded"
                         aria-expanded={isOpen}
                       >
                         {isOpen ? "Collapse" : "Show all"}
@@ -219,6 +238,7 @@ export function ScreenAtlas({ report }: ScreenAtlasProps) {
                     <div className="col-span-2 row-span-2">
                       <Thumb
                         screen={cover}
+                        jobId={report.jobId}
                         onOpen={() => openLightbox(cluster, 0)}
                         rounded="rounded-xl"
                       />
@@ -227,6 +247,7 @@ export function ScreenAtlas({ report }: ScreenAtlasProps) {
                       <div key={s.fuzzyFp + idx}>
                         <Thumb
                           screen={s}
+                          jobId={report.jobId}
                           onOpen={() => openLightbox(cluster, idx + 1)}
                           rounded="rounded-md"
                         />
@@ -236,7 +257,7 @@ export function ScreenAtlas({ report }: ScreenAtlasProps) {
                       <button
                         type="button"
                         onClick={() => toggle(cluster.classifier)}
-                        className="aspect-[9/16] rounded-md flex items-center justify-center text-[12px] font-semibold text-[var(--color-text-secondary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)]"
+                        className="aspect-[9/16] rounded-md flex items-center justify-center text-[12px] font-semibold text-[var(--color-text-secondary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-report-accent-ring)]"
                         style={{
                           background: "#F8FAFC",
                           border: "1px dashed #CBD5E1",
@@ -254,6 +275,7 @@ export function ScreenAtlas({ report }: ScreenAtlasProps) {
                         <Thumb
                           key={s.fuzzyFp + idx}
                           screen={s}
+                          jobId={report.jobId}
                           onOpen={() => openLightbox(cluster, idx + 4)}
                           rounded="rounded-md"
                         />

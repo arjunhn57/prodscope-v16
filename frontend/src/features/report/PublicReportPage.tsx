@@ -109,7 +109,7 @@ function PublicShell({
         <div className="mx-auto max-w-[960px] px-4 md:px-8 lg:px-10 py-4 flex items-center justify-between">
           <a
             href="/"
-            className="text-[15px] font-semibold text-[var(--color-text-primary)] tracking-tight focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] rounded"
+            className="text-[15px] font-semibold text-[var(--color-text-primary)] tracking-tight focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-report-accent-ring)] rounded"
             style={{ fontFamily: "var(--font-heading)" }}
           >
             ProdScope
@@ -130,7 +130,7 @@ function PublicShell({
 function LoadingState() {
   return (
     <div className="flex flex-col items-center justify-center py-24 gap-4">
-      <Loader2 className="w-5 h-5 animate-spin text-[var(--color-accent)]" />
+      <Loader2 className="w-5 h-5 animate-spin text-[var(--color-report-accent)]" />
       <div
         className="text-[13px] text-[var(--color-text-muted)]"
         style={{ fontFamily: "var(--font-sans)" }}

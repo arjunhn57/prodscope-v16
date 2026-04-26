@@ -91,7 +91,7 @@ function RecommendationsInner({ report }: { report: CrawlReport }) {
                   border: "1px solid rgba(108,71,255,0.22)",
                 }}
               >
-                <AreaIcon className="w-3.5 h-3.5 text-[var(--color-accent)]" />
+                <AreaIcon className="w-3.5 h-3.5 text-[var(--color-report-accent)]" />
               </span>
               <span
                 className="text-[10.5px] font-semibold uppercase tracking-[0.22em] text-[var(--color-text-secondary)]"

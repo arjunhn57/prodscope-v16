@@ -32,7 +32,7 @@ export function VerdictHeadline({ report, score }: VerdictHeadlineProps) {
         transition={{ duration: 0.55, ease: EDITORIAL_EASE }}
       >
         <div
-          className="text-[10.5px] font-semibold uppercase tracking-[0.22em] text-[var(--color-accent)]"
+          className="text-[10.5px] font-semibold uppercase tracking-[0.22em] text-[var(--color-report-accent)]"
           style={{ fontFamily: "var(--font-label)" }}
         >
           Verdict

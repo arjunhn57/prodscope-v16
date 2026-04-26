@@ -87,7 +87,7 @@ export function SideRailTOC() {
             <li key={e.id}>
               <a
                 href={`#${e.id}`}
-                className={`group flex items-center gap-2.5 py-1.5 text-[12.5px] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] rounded ${
+                className={`group flex items-center gap-2.5 py-1.5 text-[12.5px] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-report-accent-ring)] rounded ${
                   isActive
                     ? "text-[var(--color-text-primary)] font-semibold"
                     : "text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]"
@@ -96,7 +96,7 @@ export function SideRailTOC() {
                 <span
                   aria-hidden
                   className={`inline-block h-[2px] rounded-full transition-all ${
-                    isActive ? "w-6 bg-[var(--color-accent)]" : "w-3 bg-[#CBD5E1] group-hover:w-4 group-hover:bg-[#94A3B8]"
+                    isActive ? "w-6 bg-[var(--color-report-accent)]" : "w-3 bg-[#CBD5E1] group-hover:w-4 group-hover:bg-[#94A3B8]"
                   }`}
                 />
                 {e.label}

@@ -4,6 +4,7 @@ import { API_BASE } from "../../lib/constants";
 import type {
   CrawlReport,
   CoverageRow,
+  ExecutiveSummary,
   Finding,
   Recommendation,
   ReproTrail,
@@ -122,6 +123,7 @@ function normalizeReport(
     v2Report?: unknown;
     v2Errors?: unknown;
     annotations?: unknown;
+    executiveSummary?: unknown;
     screenshots?: unknown;
     appPackage?: unknown;
     appName?: unknown;
@@ -269,6 +271,12 @@ function normalizeReport(
         : (r.annotations && typeof r.annotations === "object"
             ? (r.annotations as V2AnnotationsPayload)
             : null),
+    executiveSummary:
+      jobLevel?.executiveSummary && typeof jobLevel.executiveSummary === "object"
+        ? (jobLevel.executiveSummary as ExecutiveSummary)
+        : (r.executiveSummary && typeof r.executiveSummary === "object"
+            ? (r.executiveSummary as ExecutiveSummary)
+            : null),
   };
 }
 
@@ -312,6 +320,7 @@ export function useReportData(
       v2Report: jobAny.v2Report,
       v2Errors: jobAny.v2Errors,
       annotations: jobAny.annotations,
+      executiveSummary: jobAny.executiveSummary,
       screenshots: jobAny.screenshots,
       appPackage: jobAny.appPackage,
       appName: jobAny.appName,

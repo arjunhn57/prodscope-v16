@@ -22,6 +22,18 @@
   --color-accent-glow:       rgba(108, 71, 255, 0.12);
   --color-accent-ring:       rgba(108, 71, 255, 0.25);
 
+  /* Phase B5 (2026-04-26): brand magenta for the REPORT surfaces.
+     Matches the annotator's stroke color (output/annotator/style.js
+     ACCENT = "#D62B4D") so a finding's box on a screenshot reads as
+     part of the same visual system as the surrounding finding card.
+     Global accent stays purple for login/dashboard/upload — these
+     are report-scoped variants. */
+  --color-report-accent:       #D62B4D;
+  --color-report-accent-dim:   #B12241;
+  --color-report-accent-light: #FFE4EA;
+  --color-report-accent-glow:  rgba(214, 43, 77, 0.12);
+  --color-report-accent-ring:  rgba(214, 43, 77, 0.25);
+
   --color-warning: #F59E0B;
   --color-danger:  #EF4444;
   --color-success: #10B981;

@@ -69,7 +69,7 @@ export function JourneyMap({ report }: JourneyMapProps) {
               aria-hidden
               className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-white shadow flex items-center justify-center"
             >
-              <Sparkles className="w-2.5 h-2.5 text-[var(--color-accent)]" />
+              <Sparkles className="w-2.5 h-2.5 text-[var(--color-report-accent)]" />
             </span>
           </div>
 
@@ -78,7 +78,7 @@ export function JourneyMap({ report }: JourneyMapProps) {
               className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10.5px] font-semibold uppercase tracking-[0.18em]"
               style={{
                 background: "rgba(108,71,255,0.12)",
-                color: "var(--color-accent)",
+                color: "var(--color-report-accent)",
                 border: "1px solid rgba(108,71,255,0.28)",
                 fontFamily: "var(--font-label)",
               }}

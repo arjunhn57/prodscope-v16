@@ -178,7 +178,7 @@ export function CriticalFindings({ report }: CriticalFindingsProps) {
                   <button
                     type="button"
                     onClick={() => setLightboxIndex(globalIdx)}
-                    className="group relative w-full aspect-[9/16] max-w-[200px] rounded-xl overflow-hidden focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)]"
+                    className="group relative w-full aspect-[9/16] max-w-[200px] rounded-xl overflow-hidden focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-report-accent-ring)]"
                     style={{
                       background: "#F1F5F9",
                       border: "1px solid #E2E8F0",

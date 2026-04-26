@@ -37,7 +37,7 @@ export function MobileTOC() {
         type="button"
         onClick={() => setOpen(true)}
         aria-label={`Open report table of contents, currently viewing ${activeLabel}`}
-        className="lg:hidden fixed bottom-5 right-4 z-30 inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-[13px] font-semibold text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] transition-transform active:scale-[0.97]"
+        className="lg:hidden fixed bottom-5 right-4 z-30 inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-[13px] font-semibold text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-report-accent-ring)] transition-transform active:scale-[0.97]"
         style={{
           background: REPORT_GRADIENTS.hero,
           boxShadow:
@@ -93,7 +93,7 @@ export function MobileTOC() {
                   type="button"
                   onClick={() => setOpen(false)}
                   aria-label="Close table of contents"
-                  className="w-8 h-8 rounded-full flex items-center justify-center text-[var(--color-text-muted)] hover:bg-[rgba(15,23,42,0.05)] hover:text-[var(--color-text-primary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)]"
+                  className="w-8 h-8 rounded-full flex items-center justify-center text-[var(--color-text-muted)] hover:bg-[rgba(15,23,42,0.05)] hover:text-[var(--color-text-primary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-report-accent-ring)]"
                 >
                   <X className="w-4 h-4" aria-hidden="true" />
                 </button>
@@ -111,7 +111,7 @@ export function MobileTOC() {
                         <a
                           href={`#${e.id}`}
                           onClick={() => setOpen(false)}
-                          className={`flex items-center gap-3 px-3 py-3 rounded-xl text-[14px] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] ${
+                          className={`flex items-center gap-3 px-3 py-3 rounded-xl text-[14px] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-report-accent-ring)] ${
                             isActive
                               ? "bg-[rgba(108,71,255,0.08)] text-[var(--color-text-primary)] font-semibold"
                               : "text-[var(--color-text-secondary)] hover:bg-[rgba(15,23,42,0.04)]"
@@ -125,7 +125,7 @@ export function MobileTOC() {
                             aria-hidden
                             className={`inline-block h-[3px] rounded-full transition-all ${
                               isActive
-                                ? "w-6 bg-[var(--color-accent)]"
+                                ? "w-6 bg-[var(--color-report-accent)]"
                                 : "w-3 bg-[#CBD5E1]"
                             }`}
                           />

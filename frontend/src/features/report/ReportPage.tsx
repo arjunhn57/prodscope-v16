@@ -107,7 +107,7 @@ export function ReportPage() {
           <button
             type="button"
             onClick={() => navigate("/dashboard")}
-            className="inline-flex items-center gap-2 text-[12.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-ring)] rounded"
+            className="inline-flex items-center gap-2 text-[12.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-report-accent-ring)] rounded"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
             Back to dashboard
@@ -162,7 +162,7 @@ function PageShell({ title, children }: { title: string; children: React.ReactNo
 function LoadingState() {
   return (
     <div className="flex flex-col items-center justify-center py-24 gap-4">
-      <Loader2 className="w-5 h-5 animate-spin text-[var(--color-accent)]" />
+      <Loader2 className="w-5 h-5 animate-spin text-[var(--color-report-accent)]" />
       <div
         className="text-[13px] text-[var(--color-text-muted)]"
         style={{ fontFamily: "var(--font-sans)" }}
