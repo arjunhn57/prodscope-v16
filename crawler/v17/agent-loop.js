@@ -885,6 +885,31 @@ async function runAgentLoop(opts) {
       );
     }
 
+    // 2026-04-26 (Phase E8): the V18 dispatcher runs the Haiku classifier
+    // and (sometimes) Sonnet escalation BEFORE driver dispatch. Their
+    // token usage was previously dropped on the floor, which made the
+    // crawl-phase cost meter understate by ~$0.30/run (60 vision calls
+    // × ~5K image tokens). Bubble it up here so budget.recordLlmCall
+    // sees it. No-op for V17 runs (dispatcher returns no token fields).
+    const classifierTokens = dispatchResult && dispatchResult.classifierTokens;
+    if (classifierTokens && (classifierTokens.input_tokens > 0 || classifierTokens.output_tokens > 0)) {
+      budget.recordLlmCall(
+        "haiku",
+        classifierTokens.input_tokens,
+        classifierTokens.output_tokens,
+        classifierTokens.cached_input_tokens || 0,
+      );
+    }
+    const escalationTokens = dispatchResult && dispatchResult.escalationTokens;
+    if (escalationTokens && (escalationTokens.input_tokens > 0 || escalationTokens.output_tokens > 0)) {
+      budget.recordLlmCall(
+        "sonnet",
+        escalationTokens.input_tokens,
+        escalationTokens.output_tokens,
+        escalationTokens.cached_input_tokens || 0,
+      );
+    }
+
     // ── press_back guardrail on auth-looking screens ──
     // Drivers never emit press_back; this guardrail only fires against a
     // rogue LLMFallback action. The structural isAuthScreen test alone is

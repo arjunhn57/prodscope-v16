@@ -631,6 +631,14 @@ async function processJob(jobId, apkPath, opts) {
           if (v2Result.ok) {
             v2Report = v2Result.report;
             v2TokenUsage = v2Result.tokenUsage;
+            // 2026-04-26 (Phase E8): the cost-breakdown calc derives V2
+            // synthesis spend by subtracting annotation tokens from the
+            // total Sonnet accumulator. That subtraction needs the V2
+            // synth tokens to actually be IN the accumulator first —
+            // previously they only lived in v2TokenUsage and the breakdown
+            // showed reportSynthesis: $0 even on successful runs.
+            sonnetTokensAccum.input_tokens += v2TokenUsage.input_tokens || 0;
+            sonnetTokensAccum.output_tokens += v2TokenUsage.output_tokens || 0;
             // Persist V2 to disk for offline inspection — separate from
             // the SQLite blob so even large reports don't bloat the row.
             try {
@@ -657,6 +665,9 @@ async function processJob(jobId, apkPath, opts) {
           } else {
             v2Errors = v2Result.errors;
             v2TokenUsage = v2Result.tokenUsage || v2TokenUsage;
+            // E8: even a validation-failure cost real Sonnet tokens.
+            sonnetTokensAccum.input_tokens += v2TokenUsage.input_tokens || 0;
+            sonnetTokensAccum.output_tokens += v2TokenUsage.output_tokens || 0;
             log.warn(
               { jobId, errors: v2Result.errors.slice(0, 5) },
               "V2 synthesis returned validation failure",

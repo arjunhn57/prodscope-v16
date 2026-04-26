@@ -22,8 +22,25 @@ const {
   validatePlan,
   applyInputTypeShortCircuit,
   mergeClassifications,
+  extractUsage,
   LOW_CONFIDENCE_THRESHOLD,
 } = require("./semantic-classifier");
+
+/**
+ * Accumulate token usage into a caller-provided sink. Used so a failed /
+ * malformed Sonnet call still reports its cost while the function keeps
+ * returning null for the plan-success contract the dispatcher expects.
+ *
+ * @param {object|undefined} sink
+ * @param {{input_tokens:number, output_tokens:number, cached_input_tokens:number}} usage
+ */
+function addToSink(sink, usage) {
+  if (!sink || !usage) return;
+  sink.input_tokens = (sink.input_tokens || 0) + (usage.input_tokens || 0);
+  sink.output_tokens = (sink.output_tokens || 0) + (usage.output_tokens || 0);
+  sink.cached_input_tokens =
+    (sink.cached_input_tokens || 0) + (usage.cached_input_tokens || 0);
+}
 
 const log = logger.child({ component: "v18-sonnet-escalation" });
 
@@ -183,12 +200,16 @@ function getDefaultClient() {
  *
  * deps.escalationBudget — shared mutable counter `{used:number, max:number}`.
  * The wrapper increments `used` when a call is actually made.
+ * deps.tokenSink — optional `{input_tokens, output_tokens, cached_input_tokens}`
+ * mutated in place when a network call happens (success OR malformed). Lets
+ * the dispatcher charge the cost meter for tokens we actually spent, even
+ * on paths where this function returns null.
  *
  * @param {object} graph
  * @param {object} observation
  * @param {string} xmlText
  * @param {object} priorPlan  - Haiku's plan (low-confidence or missing)
- * @param {object} deps       - { anthropic, escalationBudget, reason, timeoutMs, cache }
+ * @param {object} deps       - { anthropic, escalationBudget, reason, timeoutMs, cache, tokenSink }
  * @returns {Promise<{plan:object, clickables:object[]}|null>}
  */
 async function escalate(graph, observation, xmlText, priorPlan, deps = {}) {
@@ -225,6 +246,9 @@ async function escalate(graph, observation, xmlText, priorPlan, deps = {}) {
 
     const response = await anthropic.messages.create(request, { signal: controller.signal });
     const durationMs = Date.now() - startedAt;
+    // Charge tokens BEFORE any null-return branch so the meter stays honest
+    // on malformed / validation-fail paths.
+    addToSink(deps.tokenSink, extractUsage(response));
     const toolInput = extractToolInput(response);
     if (!toolInput) {
       log.warn({ durationMs, stopReason: response && response.stop_reason }, "escalation: no tool_use block");
@@ -270,6 +294,9 @@ async function escalate(graph, observation, xmlText, priorPlan, deps = {}) {
     } else {
       log.warn({ err: msg, durationMs }, "escalation: Sonnet call failed");
     }
+    // No usage to record — exception thrown before / during response, so
+    // we don't have a usage object to read from. The budget.used increment
+    // above still consumed an attempt slot.
     return null;
   } finally {
     clearTimeout(timer);

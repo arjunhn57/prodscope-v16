@@ -122,6 +122,13 @@ async function dispatch(observation, state, deps = {}) {
       typeof state.dispatchCount === "number" ? state.dispatchCount + 1 : 1;
   }
 
+  // Token meters. The classifier already returns its own usage; the Sonnet
+  // escalation writes into the sink we hand it (it returns null on
+  // malformed/timeout but we still want to bill those tokens). Both are
+  // bubbled up to the agent-loop via the dispatch result so
+  // budget.recordLlmCall can charge them properly.
+  const escalationTokenSink = { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0 };
+
   // 1. Run the semantic classifier (Haiku). One call per unique fp; cached.
   const graph = parseClickableGraph(observation.xml || "");
   const classifierObs = Object.assign({}, observation, {
@@ -135,6 +142,11 @@ async function dispatch(observation, state, deps = {}) {
     cache: deps.classifierCache,
     timeoutMs: deps.timeoutMs,
   });
+  const classifierTokens = classification.tokenUsage || {
+    input_tokens: 0,
+    output_tokens: 0,
+    cached_input_tokens: 0,
+  };
 
   // 2. Sonnet escalation on low confidence or stuck loop.
   if (shouldEscalate(classification.plan, { stuckFingerprintFamily: !!deps.stuckFingerprintFamily })) {
@@ -146,6 +158,7 @@ async function dispatch(observation, state, deps = {}) {
       cache: deps.classifierCache,
       reason: deps.stuckFingerprintFamily ? "stuck_family" : "low_confidence",
       timeoutMs: deps.timeoutMs,
+      tokenSink: escalationTokenSink,
     });
     if (escalated) classification = escalated;
   }
@@ -217,7 +230,12 @@ async function dispatch(observation, state, deps = {}) {
         },
         "dispatcher: engine action took over",
       );
-      return Object.assign(engineActionResult, { diagnostics: { claimedButNull: [], claimThrew: [], decideThrew: [] }, plan });
+      return Object.assign(engineActionResult, {
+        diagnostics: { claimedButNull: [], claimThrew: [], decideThrew: [] },
+        plan,
+        classifierTokens,
+        escalationTokens: escalationTokenSink,
+      });
     }
   }
 
@@ -283,7 +301,14 @@ async function dispatch(observation, state, deps = {}) {
     );
     recordTapIfAny(action, classifiedClickables, logicalFp, deps);
     recordActionOnTrajectory(action, driver.name, plan.fingerprint, state, deps, plan.screenType, observation.activity);
-    return { driver: driver.name, action, diagnostics, plan };
+    return {
+      driver: driver.name,
+      action,
+      diagnostics,
+      plan,
+      classifierTokens,
+      escalationTokens: escalationTokenSink,
+    };
   }
 
   // 6. LLMFallback (unchanged contract).
@@ -307,6 +332,8 @@ async function dispatch(observation, state, deps = {}) {
     action: fallbackAction,
     diagnostics,
     plan,
+    classifierTokens,
+    escalationTokens: escalationTokenSink,
     llmFallbackReason: fallbackDeps.lastLlmFallbackReason || null,
     llmFallbackSignature: fallbackDeps.lastLlmFallbackSignature || null,
   };

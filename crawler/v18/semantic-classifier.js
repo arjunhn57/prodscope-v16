@@ -561,11 +561,46 @@ function buildRequest(graph, xmlText, observation, screenshotBlock) {
 }
 
 /**
+ * Zero-token stub for cache hits / short-circuits / failed calls — keeps the
+ * caller's accumulator math uniform regardless of whether the network was
+ * actually touched.
+ */
+const ZERO_USAGE = Object.freeze({ input_tokens: 0, output_tokens: 0, cached_input_tokens: 0 });
+
+/**
+ * Extract token usage from an Anthropic response, handling both the legacy
+ * shape (`usage.input_tokens`) and the cache-aware fields
+ * (`usage.cache_read_input_tokens`, `usage.cache_creation_input_tokens`).
+ *
+ * Returns the totals in a shape that matches what budget.recordLlmCall
+ * expects: `input_tokens` is the TOTAL input (uncached + cached + creation),
+ * `cached_input_tokens` is the read-from-cache slice.
+ *
+ * @param {object} [response]
+ * @returns {{input_tokens:number, output_tokens:number, cached_input_tokens:number}}
+ */
+function extractUsage(response) {
+  const u = response && response.usage;
+  if (!u) return { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0 };
+  const cacheRead = u.cache_read_input_tokens || 0;
+  const cacheCreate = u.cache_creation_input_tokens || 0;
+  // u.input_tokens is the uncached portion. Total input = uncached + cached_read
+  // + cache_creation (creation is billed at 1.25× input rate but for our purposes
+  // we treat it as uncached input — recordLlmCall doesn't model creation premium).
+  const totalInput = (u.input_tokens || 0) + cacheRead + cacheCreate;
+  return {
+    input_tokens: totalInput,
+    output_tokens: u.output_tokens || 0,
+    cached_input_tokens: cacheRead,
+  };
+}
+
+/**
  * Call Haiku with a hard AbortController timeout.
  *
  * @param {object} request
  * @param {{anthropic:any, timeoutMs?:number}} deps
- * @returns {Promise<object|null>}
+ * @returns {Promise<{toolInput:object, usage:{input_tokens:number,output_tokens:number,cached_input_tokens:number}}|null>}
  */
 async function callHaiku(request, deps) {
   const timeoutMs = typeof deps.timeoutMs === "number" ? deps.timeoutMs : HAIKU_TIMEOUT_MS;
@@ -577,16 +612,18 @@ async function callHaiku(request, deps) {
       signal: controller.signal,
     });
     const durationMs = Date.now() - startedAt;
+    const usage = extractUsage(response);
     const toolInput = extractToolInput(response);
     if (!toolInput) {
       log.warn(
         { stopReason: response && response.stop_reason, durationMs },
         "classifier: no tool_use block",
       );
-      return null;
+      // Still return usage — a malformed response cost real tokens.
+      return { toolInput: null, usage };
     }
     log.info({ durationMs, timeoutMs }, "classifier: haiku call ok");
-    return toolInput;
+    return { toolInput, usage };
   } catch (err) {
     const durationMs = Date.now() - startedAt;
     const msg = (err && err.message) || "";
@@ -667,11 +704,16 @@ function buildDefaultPlan(clickables, fingerprint) {
  * Classify a screen end-to-end. Returns a ScreenPlan + the classified
  * clickables. On total failure, returns a conservative default plan.
  *
+ * `tokenUsage` is the cost meter signal — zero on cache hit / short-circuit
+ * / no-network paths, populated when Haiku was actually called (including
+ * malformed responses, which still cost real tokens). Caller threads this
+ * up to budget.recordLlmCall.
+ *
  * @param {ClickableGraph} graph
  * @param {ObservationLike} observation
  * @param {string} xmlText
  * @param {ClassifierDeps} [deps]
- * @returns {Promise<{plan:ScreenPlan, clickables:ClassifiedClickable[]}>}
+ * @returns {Promise<{plan:ScreenPlan, clickables:ClassifiedClickable[], tokenUsage:{input_tokens:number,output_tokens:number,cached_input_tokens:number}}>}
  */
 async function classifyScreen(graph, observation, xmlText, deps = {}) {
   const clickables = (graph && graph.clickables) || [];
@@ -685,7 +727,11 @@ async function classifyScreen(graph, observation, xmlText, deps = {}) {
   if (cache && cache.has(fingerprint)) {
     const cached = cache.get(fingerprint);
     log.info({ fingerprint, source: "cache", screenType: cached.screenType }, "classifier: cache hit");
-    return { plan: cached, clickables: mergeClassifications(clickables, cached.nodeClassifications) };
+    return {
+      plan: cached,
+      clickables: mergeClassifications(clickables, cached.nodeClassifications),
+      tokenUsage: { ...ZERO_USAGE },
+    };
   }
 
   // Tiny graphs → trivial plan without burning a Haiku call.
@@ -712,25 +758,42 @@ async function classifyScreen(graph, observation, xmlText, deps = {}) {
       nodeClassifications: shortCircuited,
     };
     if (cache) cache.set(fingerprint, plan);
-    return { plan, clickables: mergeClassifications(clickables, shortCircuited) };
+    return {
+      plan,
+      clickables: mergeClassifications(clickables, shortCircuited),
+      tokenUsage: { ...ZERO_USAGE },
+    };
   }
 
   const anthropic = deps.anthropic || getDefaultClient();
   const screenshotBlock = loadScreenshotBlock(observation && observation.screenshotPath);
   const request = buildRequest(graph, xmlText, observation, screenshotBlock);
 
-  const toolInput = await callHaiku(request, { anthropic, timeoutMs: deps.timeoutMs });
+  const haikuResult = await callHaiku(request, { anthropic, timeoutMs: deps.timeoutMs });
+  // haikuResult is null only on hard failures (timeout / network) — those
+  // produced no usage record. Otherwise we got a response (possibly malformed)
+  // and tokens were burned; report them so the meter is honest.
+  const tokenUsage = haikuResult ? haikuResult.usage : { ...ZERO_USAGE };
+  const toolInput = haikuResult ? haikuResult.toolInput : null;
   if (!toolInput) {
     const plan = buildDefaultPlan(clickables, fingerprint);
     log.warn({ fingerprint, reason: "haiku_unavailable" }, "classifier: using default plan");
-    return { plan, clickables: mergeClassifications(clickables, plan.nodeClassifications) };
+    return {
+      plan,
+      clickables: mergeClassifications(clickables, plan.nodeClassifications),
+      tokenUsage,
+    };
   }
 
   const plan = validatePlan(toolInput, clickables.length, fingerprint);
   if (!plan) {
     const fallback = buildDefaultPlan(clickables, fingerprint);
     log.warn({ fingerprint, reason: "schema_validation_failed" }, "classifier: using default plan");
-    return { plan: fallback, clickables: mergeClassifications(clickables, fallback.nodeClassifications) };
+    return {
+      plan: fallback,
+      clickables: mergeClassifications(clickables, fallback.nodeClassifications),
+      tokenUsage,
+    };
   }
 
   // Layer short-circuit classifications on top — they're deterministic and
@@ -750,10 +813,17 @@ async function classifyScreen(graph, observation, xmlText, deps = {}) {
       allowedIntents: plan.allowedIntents.join(","),
       budget: plan.actionBudget,
       classifiedNodes: plan.nodeClassifications.size,
+      inputTokens: tokenUsage.input_tokens,
+      outputTokens: tokenUsage.output_tokens,
+      cachedInputTokens: tokenUsage.cached_input_tokens,
     },
     "classifier: fresh classification",
   );
-  return { plan, clickables: mergeClassifications(clickables, plan.nodeClassifications) };
+  return {
+    plan,
+    clickables: mergeClassifications(clickables, plan.nodeClassifications),
+    tokenUsage,
+  };
 }
 
 module.exports = {
@@ -765,6 +835,8 @@ module.exports = {
   mergeClassifications,
   loadScreenshotBlock,
   createCache,
+  extractUsage,
+  ZERO_USAGE,
   CLASSIFY_TOOL,
   HAIKU_MODEL,
   HAIKU_TIMEOUT_MS,
