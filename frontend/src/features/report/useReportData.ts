@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { useJobStatus, usePublicReport } from "../../api/hooks";
+import { API_BASE } from "../../lib/constants";
 import type {
   CrawlReport,
   CoverageRow,
@@ -58,6 +59,62 @@ function matchFixture(jobId: string | undefined): CrawlReport | null {
  * V2 fields (v2Report, v2Errors, annotations) live on the JOB, not the
  * report blob, so they are passed in separately by the caller.
  */
+/**
+ * Resolve a raw screenshot path to a URL the browser can fetch.
+ *
+ * Backend stores the absolute filesystem path on the VM (e.g.
+ * "/tmp/screenshots-<jobId>/step-1.png"). The browser cannot load that;
+ * the served URL is "/api/v1/job-screenshot/<jobId>/<filename>".
+ *
+ * Already-absolute http(s) URLs are returned unchanged.
+ */
+function resolveScreenshotUrl(
+  rawPath: string | null | undefined,
+  jobId: string
+): string | null {
+  if (!rawPath) return null;
+  if (/^https?:\/\//i.test(rawPath)) return rawPath;
+  // Last segment is the filename — handles both "/tmp/screenshots-x/step-1.png"
+  // and "step-1.png" alone.
+  const filename = rawPath.split(/[\\/]/).pop() ?? "";
+  if (!filename) return null;
+  const base = API_BASE.replace(/\/+$/, "");
+  return `${base}/job-screenshot/${encodeURIComponent(jobId)}/${encodeURIComponent(filename)}`;
+}
+
+/**
+ * Synthesize a screens array from a list of screenshot paths when the V1
+ * deterministic report didn't surface one (e.g. when V1 was suppressed
+ * because triage coverage was low). Step number is extracted from the
+ * filename pattern "step-N.png".
+ */
+function synthesizeScreensFromPaths(
+  jobId: string,
+  paths: string[]
+): ScreenRecord[] {
+  const out: ScreenRecord[] = [];
+  for (const p of paths || []) {
+    if (typeof p !== "string") continue;
+    const filename = p.split(/[\\/]/).pop() ?? "";
+    const match = filename.match(/^step-(\d+)\.png$/i);
+    if (!match) continue;
+    const step = Number(match[1]);
+    const url = resolveScreenshotUrl(p, jobId);
+    if (!url) continue;
+    out.push({
+      index: step,
+      step,
+      path: url,
+      activity: "",
+      timestamp: null,
+      screenType: "unknown",
+      feature: "",
+      fuzzyFp: "",
+    });
+  }
+  return out.sort((a, b) => a.step - b.step);
+}
+
 function normalizeReport(
   jobId: string,
   raw: unknown,
@@ -65,6 +122,7 @@ function normalizeReport(
     v2Report?: unknown;
     v2Errors?: unknown;
     annotations?: unknown;
+    screenshots?: unknown;
   }
 ): CrawlReport | null {
   // The backend serializes job.report as a JSON STRING in some paths
@@ -94,9 +152,24 @@ function normalizeReport(
   }
   const r = parsed as Record<string, unknown>;
 
-  const screens = Array.isArray(r.screens)
+  // Pull screens from V1 report if present; otherwise synthesize from the
+  // screenshot paths exposed at the job level. Either way, normalize each
+  // screen's `path` to a URL the browser can actually fetch (the raw VM
+  // filesystem path won't load).
+  const rawScreens = Array.isArray(r.screens)
     ? (r.screens as ScreenRecord[])
     : [];
+  const synthesized =
+    rawScreens.length === 0 && Array.isArray(jobLevel?.screenshots)
+      ? synthesizeScreensFromPaths(jobId, jobLevel!.screenshots as string[])
+      : [];
+  const screens: ScreenRecord[] =
+    rawScreens.length > 0
+      ? rawScreens.map((s) => ({
+          ...s,
+          path: resolveScreenshotUrl(s.path, jobId),
+        }))
+      : synthesized;
   const oracleFindings = Array.isArray(r.oracleFindings)
     ? (r.oracleFindings as Finding[])
     : Array.isArray(r.findings)
@@ -220,6 +293,7 @@ export function useReportData(
       v2Report: jobAny.v2Report,
       v2Errors: jobAny.v2Errors,
       annotations: jobAny.annotations,
+      screenshots: jobAny.screenshots,
     });
   }, [fixture, job, jobId]);
 
