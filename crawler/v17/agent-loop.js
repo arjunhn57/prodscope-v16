@@ -649,9 +649,15 @@ async function runAgentLoop(opts) {
     } catch (err) {
       log.warn({ err: err.message, step }, "recordVisit failed");
     }
+    // 2026-04-26: previously only `index` was set on screen records, but
+    // downstream consumers (oracle/triage, V2 synthesizer's tagScreensWithIds)
+    // read `s.step`. Without `step` set, V2 returned `no_screens_to_cite`
+    // for every run despite 30+ screens captured. Set both fields for
+    // backward compat with anything still reading `index`.
     screens.push({
       path: observation.screenshotPath,
       xml: observation.xml,
+      step: step,
       index: step,
       fingerprint: observation.fingerprint,
       structuralFingerprint: observation.structuralFingerprint,
