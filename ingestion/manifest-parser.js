@@ -5,11 +5,45 @@
  *
  * Uses aapt2 to dump APK metadata: package name, launcher activity,
  * permissions, and activity list.
+ *
+ * For .xapk / .apks / .apkm bundles, aapt2 cannot read the zip directly
+ * ("could not identify format of APK"). Detect the extension up front,
+ * extract just `base.apk` from inside the bundle, run aapt2 against that,
+ * clean up. base.apk holds the manifest for the whole logical app.
  */
 
 const { execFileSync } = require("child_process");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const { logger } = require("../lib/logger");
 const log = logger.child({ component: "manifest-parser" });
+
+const BUNDLE_EXTENSIONS = new Set([".xapk", ".apks", ".apkm"]);
+
+/**
+ * Extract just the base.apk entry from a bundle to a temp dir.
+ * Caller owns cleanup of `tempDir`.
+ *
+ * @param {string} bundlePath
+ * @returns {{ baseApk: string, tempDir: string }}
+ */
+function extractBaseApkFromBundle(bundlePath) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "prodscope-base-apk-"));
+  try {
+    execFileSync("unzip", ["-q", "-j", "-o", bundlePath, "base.apk", "-d", tempDir], {
+      timeout: 60000,
+    });
+    const baseApk = path.join(tempDir, "base.apk");
+    if (!fs.existsSync(baseApk)) {
+      throw new Error(`base.apk not found inside ${path.basename(bundlePath)}`);
+    }
+    return { baseApk, tempDir };
+  } catch (err) {
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (_) {}
+    throw err;
+  }
+}
 
 /**
  * @typedef {Object} AppProfile
@@ -30,8 +64,22 @@ const log = logger.child({ component: "manifest-parser" });
  * @returns {AppProfile}
  */
 function parseApk(apkPath) {
+  const ext = path.extname(apkPath).toLowerCase();
+  const isBundle = BUNDLE_EXTENSIONS.has(ext);
+  let bundleTempDir = null;
+  let aaptTarget = apkPath;
+  if (isBundle) {
+    try {
+      const extracted = extractBaseApkFromBundle(apkPath);
+      bundleTempDir = extracted.tempDir;
+      aaptTarget = extracted.baseApk;
+    } catch (err) {
+      log.error({ err: err.message, apkPath }, "Failed to extract base.apk from bundle");
+      return parseApkFallback(apkPath);
+    }
+  }
   try {
-    const output = execFileSync("aapt2", ["dump", "badging", apkPath], {
+    const output = execFileSync("aapt2", ["dump", "badging", aaptTarget], {
       encoding: "utf-8",
       timeout: 30000,
       maxBuffer: 10 * 1024 * 1024,
@@ -103,19 +151,27 @@ function parseApk(apkPath) {
     };
   } catch (err) {
     log.error({ err: err.message, apkPath }, "Failed to parse APK");
-    const fallbackPkg = apkPath.match(/([a-z][a-z0-9_.]+)\.(apk|xapk)$/i);
-    return {
-      packageName: fallbackPkg ? fallbackPkg[1] : "unknown",
-      launcherActivity: null,
-      activities: [],
-      permissions: [],
-      features: [],
-      glEsVersion: null,
-      appCategory: null,
-      isGame: false,
-      appName: "Unknown App",
-    };
+    return parseApkFallback(apkPath);
+  } finally {
+    if (bundleTempDir) {
+      try { fs.rmSync(bundleTempDir, { recursive: true, force: true }); } catch (_) {}
+    }
   }
+}
+
+function parseApkFallback(apkPath) {
+  const fallbackPkg = apkPath.match(/([a-z][a-z0-9_.]+)\.(apk|xapk|apks|apkm)$/i);
+  return {
+    packageName: fallbackPkg ? fallbackPkg[1] : "unknown",
+    launcherActivity: null,
+    activities: [],
+    permissions: [],
+    features: [],
+    glEsVersion: null,
+    appCategory: null,
+    isGame: false,
+    appName: "Unknown App",
+  };
 }
 
 module.exports = { parseApk };
