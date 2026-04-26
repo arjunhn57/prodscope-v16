@@ -119,6 +119,18 @@ const DRIFT_ALLOWLIST = new Set([
   "com.google.android.inputmethod.latin", // Gboard
   "com.android.inputmethod.latin",
   "com.android.systemui",
+  // 2026-04-26 (Phase F1 follow-up): system file/media pickers are
+  // legitimate intent overlays. biztoso run 19fe42e8 hit
+  // package_drift_unrecoverable when its "change profile photo" CTA
+  // opened the Android 12+ photo picker — relaunch couldn't dismiss
+  // the modal, drift counter ticked 5× and terminated. The picker is
+  // contained: ExplorationDriver can navigate inside, back-press
+  // returns to the calling app. Same logic for the Storage Access
+  // Framework (documentsui) used by file uploads in many apps.
+  "com.google.android.providers.media.module", // Android 12+ photo picker
+  "com.android.providers.media",                // Legacy photo / media provider
+  "com.google.android.documentsui",             // SAF / file picker (modern)
+  "com.android.documentsui",                    // SAF / file picker (legacy)
 ]);
 
 /**
