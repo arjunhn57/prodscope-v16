@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate, Navigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { GoogleLogin, type CredentialResponse } from "@react-oauth/google";
 import { AuthBackdrop } from "./components/AuthBackdrop";
@@ -8,6 +8,12 @@ import { AuthCard } from "./components/AuthCard";
 import { AuthTrustStrip } from "./components/AuthTrustStrip";
 import { useGoogleAuth } from "./googleAuth";
 import { EDITORIAL_EASE } from "../report/tokens";
+
+// Temporary guest mode (paired with backend GUEST_MODE_ENABLED). When on,
+// the LoginPage skips the Google sign-in form entirely and redirects to
+// the upload page. Marketing-CTA "Login" / "Get Started" clicks land
+// directly in the app.
+const GUEST_MODE = import.meta.env.VITE_GUEST_MODE === "true";
 
 interface LocationState {
   from?: { pathname?: string };
@@ -18,6 +24,10 @@ export function LoginPage() {
   const location = useLocation();
   const locationState = location.state as LocationState | null;
   const redirectTo = locationState?.from?.pathname ?? "/upload";
+
+  if (GUEST_MODE) {
+    return <Navigate to={redirectTo} replace />;
+  }
 
   const googleAuth = useGoogleAuth();
   const [googleErr, setGoogleErr] = useState<string | null>(null);
