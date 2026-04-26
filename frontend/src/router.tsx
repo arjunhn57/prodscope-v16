@@ -76,6 +76,29 @@ export const router = createBrowserRouter([
       })),
   },
   {
+    // Phase D2: trust pages — methodology + FAQ. Public, unauthenticated.
+    path: "/methodology",
+    lazy: () =>
+      import("./features/marketing/MethodologyPage").then((m) => ({
+        Component: m.MethodologyPage,
+      })),
+  },
+  {
+    path: "/faq",
+    lazy: () =>
+      import("./features/marketing/FaqPage").then((m) => ({
+        Component: m.FaqPage,
+      })),
+  },
+  {
+    // Phase D2: /sample is a stable marketing-friendly URL that resolves
+    // to the existing public sample-report fixture (`/r/sample`). Lets us
+    // share `prodscope.app/sample` in outreach without exposing the
+    // share-link URL pattern.
+    path: "/sample",
+    element: <Navigate to="/r/sample" replace />,
+  },
+  {
     path: "/privacy",
     lazy: () =>
       import("./features/legal/PrivacyPage").then((m) => ({

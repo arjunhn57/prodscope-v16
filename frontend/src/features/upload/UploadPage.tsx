@@ -181,9 +181,38 @@ export function UploadPage() {
               className="mt-5 text-[15.5px] md:text-[17px] text-[var(--color-text-secondary)] leading-[1.65] max-w-[620px] mx-auto"
               style={{ fontFamily: "var(--font-sans)" }}
             >
-              Drop an Android build. Get a premium intelligence report in minutes — screens mapped,
-              flows graded, blockers surfaced.
+              Drop an Android build. We'll capture every screen, surface findings with annotated
+              proof, and email you a diligence-grade report in 5–8 minutes.
             </p>
+
+            {/* Phase D3: expectation-setting strip + sample link.
+                Sets concrete promises (delivered to inbox, in 5-8 min,
+                annotated screenshots) and offers a sample report so the
+                user can see the deliverable before uploading. */}
+            <div className="mt-7 flex flex-wrap items-center justify-center gap-x-5 gap-y-2.5">
+              <ExpectationPill label="Delivered in" value="5–8 min" />
+              <ExpectationPill label="Captured" value="30+ screens" />
+              <ExpectationPill label="Proof" value="annotated screenshots" />
+              <a
+                href="/sample"
+                className="inline-flex items-center gap-1.5 text-[13px] font-medium text-[var(--color-report-accent)] hover:opacity-80 transition-opacity focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-report-accent-ring)] rounded"
+                style={{ fontFamily: "var(--font-sans)" }}
+              >
+                See a sample report
+                <svg
+                  className="w-3 h-3"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <path d="M5 12h14M13 6l6 6-6 6" />
+                </svg>
+              </a>
+            </div>
           </motion.header>
 
           <motion.section
@@ -413,5 +442,29 @@ export function UploadPage() {
         </div>
       </motion.div>
     </div>
+  );
+}
+
+interface ExpectationPillProps {
+  label: string;
+  value: string;
+}
+
+function ExpectationPill({ label, value }: ExpectationPillProps) {
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 text-[12px] text-[var(--color-text-secondary)]"
+      style={{ fontFamily: "var(--font-sans)" }}
+    >
+      <span
+        className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--color-text-muted)]"
+        style={{ fontFamily: "var(--font-label)" }}
+      >
+        {label}
+      </span>
+      <span className="font-semibold text-[var(--color-text-primary)]">
+        {value}
+      </span>
+    </span>
   );
 }
