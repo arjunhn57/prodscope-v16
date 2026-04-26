@@ -1,0 +1,212 @@
+/* ──────────────────────────────────────────────────────────────────────────
+ * Report print stylesheet — Phase C (2026-04-26)
+ *
+ * Browser-side "Save as PDF" via window.print(). When the user clicks the
+ * print button on the Masthead, the system print dialog opens with the
+ * report styled per the rules below — no nav, no sticky bars, no buttons,
+ * tightened spacing, A4 page setup, ProdScope wordmark in the corner.
+ *
+ * Imported by ReportPage.tsx and PublicReportPage.tsx so the styles ship
+ * with the report bundle only (not the marketing pages, login, etc.).
+ *
+ * Targeting: every rule lives under @media print. Screen rendering is
+ * unaffected.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+@media print {
+  /* ── Page setup ──────────────────────────────────────────────────────── */
+  @page {
+    size: A4;
+    margin: 16mm 14mm 18mm 14mm;
+  }
+
+  @page :first {
+    /* Cover page gets a tighter margin so the gradient header lands edge-to-edge.
+       The cover content adds its own padding inside. */
+    margin: 0;
+  }
+
+  /* ── Reset page chrome ───────────────────────────────────────────────── */
+  html,
+  body {
+    background: #ffffff !important;
+    color: #0f172a !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Hide everything outside the report article. */
+  nav,
+  header[role="banner"],
+  aside,
+  [data-no-print],
+  .StickyUpgradeBar,
+  [data-component="sticky-upgrade-bar"],
+  [data-component="topbar"],
+  [data-component="side-rail-toc"],
+  [data-component="mobile-toc"] {
+    display: none !important;
+  }
+
+  /* ── Cover page (page 1) ─────────────────────────────────────────────── */
+  .report-print-cover {
+    display: block !important;
+    width: 100%;
+    height: 297mm; /* A4 height */
+    box-sizing: border-box;
+    padding: 32mm 28mm 26mm 28mm;
+    background: linear-gradient(
+      135deg,
+      #1e1b4b 0%,
+      #4c1d95 28%,
+      #6c47ff 58%,
+      #d62b4d 100%
+    );
+    color: #ffffff;
+    page-break-after: always;
+    break-after: page;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .report-print-cover .cover-wordmark {
+    font-size: 11pt;
+    font-weight: 600;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    opacity: 0.85;
+  }
+
+  .report-print-cover .cover-app-name {
+    margin-top: 60mm;
+    font-size: 38pt;
+    font-weight: 700;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+  }
+
+  .report-print-cover .cover-package {
+    margin-top: 8mm;
+    font-size: 12pt;
+    font-family: ui-monospace, SFMono-Regular, "Geist Mono", monospace;
+    opacity: 0.78;
+  }
+
+  .report-print-cover .cover-verdict {
+    margin-top: 28mm;
+    font-size: 14pt;
+    line-height: 1.55;
+    max-width: 130mm;
+    opacity: 0.92;
+  }
+
+  .report-print-cover .cover-meta {
+    position: absolute;
+    bottom: 24mm;
+    left: 28mm;
+    right: 28mm;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    font-size: 10pt;
+    opacity: 0.75;
+  }
+
+  /* ── Body content ────────────────────────────────────────────────────── */
+  /* The main report article — strip outer page chrome / max-widths so the
+     content uses the full A4 column. */
+  .report-print-article {
+    width: 100% !important;
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  .report-print-article > article {
+    max-width: none !important;
+    width: 100% !important;
+  }
+
+  /* ProdScope masthead (in-body, not the cover) — drop the gradient
+     buttons and tighten the header so it doesn't eat half the second page. */
+  .report-print-article section[id*="masthead"] {
+    padding-top: 0 !important;
+    padding-bottom: 8mm !important;
+    border-bottom: 1px solid #e2e8f0 !important;
+  }
+
+  /* Section vertical rhythm: shrink generous screen padding to print rhythm. */
+  .report-print-article section {
+    padding-top: 8mm !important;
+    padding-bottom: 8mm !important;
+  }
+
+  /* Avoid splitting key cards across pages. */
+  .report-print-article article,
+  .report-print-article [data-print-keep-together] {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  /* Hero finding always starts a fresh page after the executive summary
+     so the spotlight reads with full whitespace. */
+  .report-print-article #report-hero {
+    break-before: auto;
+    break-inside: avoid;
+  }
+
+  /* Critical findings: one per page where space allows. */
+  .report-print-article #report-findings article {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  /* ── Color preservation ──────────────────────────────────────────────── */
+  /* Tailwind background-color utilities + inline gradients won't print
+     by default — force them. -webkit-print-color-adjust on html covers
+     most cases; this is the belt + suspenders for inline styles. */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* ── Links ───────────────────────────────────────────────────────────── */
+  /* In-document anchors: drop the underline for cleaner print. External
+     URLs print with their href so the reader can copy them. */
+  a[href^="#"] {
+    color: inherit !important;
+    text-decoration: none !important;
+  }
+  a[href^="http"]::after {
+    content: " (" attr(href) ")";
+    font-size: 0.85em;
+    opacity: 0.7;
+  }
+
+  /* ── Footer (every page after the cover) ─────────────────────────────── */
+  /* Page-margin boxes have spotty browser support for content rendering.
+     Skip custom page numbers — most users see them in their own print
+     dialog "Headers and footers" toggle. We surface the report ID +
+     wordmark via a fixed footer instead. */
+  .report-print-footer {
+    display: block !important;
+    position: fixed;
+    bottom: 6mm;
+    left: 14mm;
+    right: 14mm;
+    font-size: 8.5pt;
+    color: #64748b;
+    border-top: 1px solid #e2e8f0;
+    padding-top: 3mm;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-family: var(--font-label, system-ui);
+  }
+}
+
+/* ── Always-hidden cover + footer when on screen ─────────────────────────── */
+.report-print-cover,
+.report-print-footer {
+  display: none;
+}

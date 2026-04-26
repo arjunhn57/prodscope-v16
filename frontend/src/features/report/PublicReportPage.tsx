@@ -1,9 +1,12 @@
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Loader2 } from "lucide-react";
 import { useReportData, computeScore, isPublicFixtureJob } from "./useReportData";
 import { EDITORIAL_EASE } from "./tokens";
+import "./print.css";
+import { PrintCover } from "./components/PrintCover";
+import { PrintFooter } from "./components/PrintFooter";
 import { Masthead } from "./components/Masthead";
 import { VerdictHeadline } from "./components/VerdictHeadline";
 import { HeroFinding } from "./components/HeroFinding";
@@ -30,6 +33,10 @@ export function PublicReportPage() {
   });
 
   const score = useMemo(() => (report ? computeScore(report) : null), [report]);
+
+  const handlePrint = useCallback(() => {
+    if (typeof window !== "undefined") window.print();
+  }, []);
 
   if (!token && !isPublicSample) {
     return (
@@ -71,12 +78,14 @@ export function PublicReportPage() {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.3, ease: EDITORIAL_EASE }}
-        className="min-h-screen"
+        className="min-h-screen report-print-article"
         style={{ background: "#FAFAFA" }}
       >
+        <PrintCover report={report} score={score} />
+        <PrintFooter report={report} />
         <div className="mx-auto max-w-[960px] px-4 md:px-8 lg:px-10 py-10 md:py-16">
           <article className="min-w-0">
-            <Masthead report={report} />
+            <Masthead report={report} onPrint={handlePrint} />
             <VerdictHeadline report={report} score={score} />
             <HeroFinding report={report} />
             <SignalCluster score={score} />

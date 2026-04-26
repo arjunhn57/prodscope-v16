@@ -7,6 +7,9 @@ import { StickyUpgradeBar } from "../../components/shared/StickyUpgradeBar";
 import { useShareLink } from "../../api/hooks";
 import { useReportData, computeScore } from "./useReportData";
 import { EDITORIAL_EASE } from "./tokens";
+import "./print.css";
+import { PrintCover } from "./components/PrintCover";
+import { PrintFooter } from "./components/PrintFooter";
 import { Masthead } from "./components/Masthead";
 import { VerdictHeadline } from "./components/VerdictHeadline";
 import { HeroFinding } from "./components/HeroFinding";
@@ -74,6 +77,12 @@ export function ReportPage() {
     window.open(downloadHref, "_blank", "noopener,noreferrer");
   }, [downloadHref]);
 
+  // Phase C: browser-side "Save as PDF" via the system print dialog.
+  // The print stylesheet (print.css) handles cover, footer, page setup.
+  const handlePrint = useCallback(() => {
+    if (typeof window !== "undefined") window.print();
+  }, []);
+
   if (isLoading) {
     return <PageShell title="Report"><LoadingState /></PageShell>;
   }
@@ -100,9 +109,11 @@ export function ReportPage() {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.3, ease: EDITORIAL_EASE }}
-        className="min-h-screen"
+        className="min-h-screen report-print-article"
         style={{ background: "#FAFAFA" }}
       >
+        <PrintCover report={report} score={score} />
+        <PrintFooter report={report} />
         <div className="mx-auto max-w-[1200px] px-4 md:px-8 lg:px-10 py-10 md:py-16">
           <button
             type="button"
@@ -125,6 +136,7 @@ export function ReportPage() {
                 onShare={shareUrl ? handleShare : undefined}
                 shareCopied={shareCopied}
                 onExport={downloadHref ? handleExport : undefined}
+                onPrint={handlePrint}
               />
               <VerdictHeadline report={report} score={score} />
               <HeroFinding report={report} />

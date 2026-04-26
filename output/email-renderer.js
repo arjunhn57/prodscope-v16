@@ -1,11 +1,19 @@
 "use strict";
 
 /**
- * email-renderer.js — Professional HTML email report renderer
+ * email-renderer.js — diligence-report email body.
  *
- * Converts structured JSON report (from report-builder.js) into a polished,
- * responsive HTML email with: app metadata, score, summary, coverage breakdown,
- * deterministic findings, AI findings, suggestions, and crawl health stats.
+ * Phase C2 (2026-04-26): rewritten to be V2-first. The email is the FIRST
+ * thing a design partner sees, so it gets:
+ *   - Lead with the V2 verdict claim 1 (the headline)
+ *   - The executive-summary's lead_sentence as supporting paragraph
+ *   - Top 3 findings as bullets (critical_bugs > ux_issues sorted by severity)
+ *   - Strengths count line (so it doesn't read as one-sided)
+ *   - Big magenta "Open the full report" CTA → magic-link URL
+ *   - Quiet footer: report ID + "ProdScope automated diligence"
+ *
+ * V1-only fallback path preserved for legacy / V2-suppressed runs (ships
+ * a tight one-paragraph summary instead of the old kitchen-sink layout).
  */
 
 function escapeHtml(value) {
@@ -17,275 +25,302 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-// -------------------------------------------------------------------------
-// Reusable rendering helpers
-// -------------------------------------------------------------------------
-
-function renderList(items) {
-  if (!Array.isArray(items) || items.length === 0) {
-    return '<p style="margin:8px 0 0;color:#6b7280;font-size:14px;">None found</p>';
+function severityToken(severity) {
+  switch ((severity || "").toLowerCase()) {
+    case "critical":
+      return { label: "Critical", color: "#9F1239", bg: "#FFE4EA" };
+    case "high":
+      return { label: "High", color: "#B45309", bg: "#FFFBEB" };
+    case "medium":
+      return { label: "Medium", color: "#A16207", bg: "#FEFCE8" };
+    case "low":
+      return { label: "Low", color: "#475569", bg: "#F1F5F9" };
+    case "concern":
+      return { label: "Concern", color: "#9F1239", bg: "#FFE4EA" };
+    case "watch_item":
+      return { label: "Watch", color: "#B45309", bg: "#FFFBEB" };
+    default:
+      return { label: "Note", color: "#475569", bg: "#F1F5F9" };
   }
-  return (
-    '<ul style="margin:8px 0 0 18px;padding:0;color:#111827;">' +
-    items.map((item) => `<li style="margin:6px 0;line-height:1.5;">${escapeHtml(item)}</li>`).join("") +
-    "</ul>"
-  );
 }
 
-function renderCard(item, colors) {
-  if (typeof item === "string") {
-    return `<div style="border:1px solid ${colors.border};border-radius:10px;padding:12px 16px;margin:8px 0;background:${colors.bg};">
-      <div style="color:#111827;line-height:1.6;font-size:14px;">${escapeHtml(item)}</div>
-    </div>`;
+const SEVERITY_RANK = {
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+};
+
+/**
+ * Pick the top N V2 findings to feature in the email body. Critical bugs
+ * outrank UX issues; within each, severity ladder; ties broken by
+ * confidence (observed > inferred > hypothesis).
+ *
+ * @param {object} v2
+ * @param {number} max
+ */
+function pickTopFindings(v2, max) {
+  const all = [];
+  for (const b of v2.critical_bugs || []) {
+    all.push({ ...b, _kind: "bug" });
   }
-
-  const title = item.title || item.category || item.id || "Finding";
-  const severity = item.severity
-    ? `<span style="display:inline-block;background:${severityColor(item.severity)};color:#fff;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600;margin-left:8px;">${escapeHtml(item.severity).toUpperCase()}</span>`
-    : "";
-  const confidence = item.confidence
-    ? `<span style="font-size:11px;color:#6b7280;margin-left:6px;">(${Math.round(item.confidence * 100)}% confidence)</span>`
-    : "";
-  const desc = item.description
-    ? `<div style="margin-top:6px;color:#374151;line-height:1.5;font-size:14px;">${escapeHtml(item.description)}</div>`
-    : "";
-  const detail = item.detail
-    ? `<div style="margin-top:6px;color:#374151;line-height:1.5;font-size:14px;">${escapeHtml(item.detail)}</div>`
-    : "";
-  const impact = item.impact
-    ? `<div style="margin-top:4px;font-size:12px;color:#6b7280;">Impact: ${escapeHtml(item.impact)}</div>`
-    : "";
-  const items = Array.isArray(item.items) ? renderList(item.items) : "";
-  const recommendations = Array.isArray(item.recommendations) ? renderList(item.recommendations) : "";
-  const fixes = Array.isArray(item.fixes) ? renderList(item.fixes) : "";
-  const issues = Array.isArray(item.issues) ? renderList(item.issues) : "";
-
-  return `<div style="border:1px solid ${colors.border};border-radius:10px;padding:12px 16px;margin:8px 0;background:${colors.bg};">
-    <div style="font-weight:700;color:#111827;font-size:14px;">${escapeHtml(title)}${severity}${confidence}</div>
-    ${desc}${detail}${issues}${recommendations}${fixes}${items}${impact}
-  </div>`;
-}
-
-function renderCards(items, colors) {
-  if (!Array.isArray(items) || items.length === 0) {
-    return '<p style="margin:8px 0 0;color:#6b7280;font-size:14px;">None found</p>';
+  for (const u of v2.ux_issues || []) {
+    all.push({ ...u, _kind: "ux" });
   }
-  return items.map((item) => renderCard(item, colors)).join("");
+  all.sort((a, b) => {
+    if (a._kind !== b._kind) return a._kind === "bug" ? -1 : 1;
+    const ar = SEVERITY_RANK[a.severity] ?? 99;
+    const br = SEVERITY_RANK[b.severity] ?? 99;
+    return ar - br;
+  });
+  return all.slice(0, max);
 }
 
-function severityColor(severity) {
-  const s = (severity || "").toLowerCase();
-  if (s === "critical") return "#dc2626";
-  if (s === "high") return "#ea580c";
-  if (s === "medium") return "#d97706";
-  if (s === "low") return "#2563eb";
-  return "#6b7280";
-}
+/**
+ * Render the V2-first email body when V2 + executive summary are present.
+ *
+ * @param {{
+ *   appName?: string,
+ *   packageName?: string,
+ *   jobId?: string,
+ *   v2Report: object,
+ *   executiveSummary?: object|null,
+ *   shareUrl?: string|null,
+ * }} payload
+ */
+function renderV2EmailBody(payload) {
+  const {
+    appName,
+    packageName,
+    jobId,
+    v2Report,
+    executiveSummary,
+    shareUrl,
+  } = payload;
 
-function scoreColor(score) {
-  if (score >= 80) return { bg: "#f0fdf4", text: "#15803d", border: "#bbf7d0" };
-  if (score >= 60) return { bg: "#fefce8", text: "#a16207", border: "#fde68a" };
-  if (score >= 40) return { bg: "#fff7ed", text: "#c2410c", border: "#fed7aa" };
-  return { bg: "#fef2f2", text: "#dc2626", border: "#fecaca" };
-}
+  const verdictClaim =
+    v2Report?.verdict?.claims?.[0]?.claim ||
+    "Diligence-grade analysis of this build is ready.";
 
-// -------------------------------------------------------------------------
-// Coverage summary renderer
-// -------------------------------------------------------------------------
+  const leadSentence =
+    executiveSummary?.lead_sentence ||
+    `ProdScope explored ${
+      v2Report?.coverage_summary?.screens_reached ?? "the available"
+    } unique screens and surfaced ${
+      (v2Report?.critical_bugs?.length || 0) +
+      (v2Report?.ux_issues?.length || 0) +
+      (v2Report?.diligence_flags?.length || 0)
+    } findings.`;
 
-function renderCoverage(coverage) {
-  if (!coverage) return "";
+  const topFindings = pickTopFindings(v2Report, 3);
+  const strengthCount = (v2Report?.diligence_flags || []).filter(
+    (f) => f.severity === "strength"
+  ).length;
 
-  const summary = coverage.summary || coverage;
-  if (typeof summary !== "object") return "";
+  const findingsHtml = topFindings.length
+    ? topFindings
+        .map((f) => {
+          const tok = severityToken(f.severity);
+          const evidence = (f.evidence_screen_ids || [])[0] || "";
+          const evidenceTag = evidence
+            ? `<span style="display:inline-block;margin-left:8px;font-family:ui-monospace,SFMono-Regular,monospace;font-size:11.5px;color:#94A3B8;">${escapeHtml(
+                evidence
+              )}</span>`
+            : "";
+          return `
+        <li style="margin:0 0 14px;padding:0;list-style:none;">
+          <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
+            <span style="display:inline-block;background:${tok.bg};color:${tok.color};border-radius:9999px;padding:2px 9px;font-size:10.5px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;">
+              ${escapeHtml(tok.label)}
+            </span>
+            <span style="font-size:14px;font-weight:600;color:#0F172A;line-height:1.45;">${escapeHtml(
+              f.title || (f.claim || "").slice(0, 60)
+            )}</span>
+            ${evidenceTag}
+          </div>
+          <div style="margin-top:6px;font-size:13.5px;line-height:1.55;color:#475569;">
+            ${escapeHtml(f.claim)}
+          </div>
+        </li>`;
+        })
+        .join("")
+    : `<li style="margin:0;color:#475569;font-size:14px;list-style:none;">
+          No material findings surfaced in this run.
+        </li>`;
 
-  const entries = Object.entries(summary);
-  if (entries.length === 0) return "";
+  const strengthsLine =
+    strengthCount > 0
+      ? `<div style="margin:18px 0 0;padding:10px 14px;background:#F0FDFA;border:1px solid rgba(20,184,166,0.22);border-radius:10px;font-size:13px;color:#0F766E;">
+          <strong>${strengthCount} ${
+        strengthCount === 1 ? "strength" : "strengths"
+      } cited</strong> — areas where the build demonstrates craft worth highlighting in the full report.
+        </div>`
+      : "";
 
-  const rows = entries.map(([feature, data]) => {
-    const status = (data.status || "unknown").toLowerCase();
-    const statusColor = status === "saturated" ? "#15803d" : status === "covered" ? "#2563eb" : status === "exploring" ? "#d97706" : "#6b7280";
-    const screens = data.uniqueScreens || 0;
-    const visits = data.visitCount || 0;
+  const ctaBlock = shareUrl
+    ? `<div style="margin:28px 0 8px;text-align:center;">
+        <a href="${escapeHtml(shareUrl)}"
+           style="display:inline-block;background:linear-gradient(120deg,#6C47FF 0%,#D62B4D 100%);color:#FFFFFF;text-decoration:none;padding:14px 28px;border-radius:9999px;font-size:14.5px;font-weight:600;letter-spacing:-0.01em;box-shadow:0 4px 12px rgba(214,43,77,0.20);">
+          Open the full report →
+        </a>
+        <div style="margin-top:10px;font-size:11.5px;color:#94A3B8;line-height:1.5;">
+          Annotated screenshots, founder questions, and the full screen atlas live in the interactive report.
+          <br>Forward this link to teammates — no login required. Keep it private.
+        </div>
+      </div>`
+    : "";
 
-    return `<tr>
-      <td style="padding:6px 12px;border-bottom:1px solid #f3f4f6;font-size:13px;">${escapeHtml(feature)}</td>
-      <td style="padding:6px 12px;border-bottom:1px solid #f3f4f6;font-size:13px;text-align:center;">${screens}</td>
-      <td style="padding:6px 12px;border-bottom:1px solid #f3f4f6;font-size:13px;text-align:center;">${visits}</td>
-      <td style="padding:6px 12px;border-bottom:1px solid #f3f4f6;font-size:13px;text-align:center;"><span style="color:${statusColor};font-weight:600;">${escapeHtml(status)}</span></td>
-    </tr>`;
-  }).join("");
+  const heading = appName || packageName || "Your build";
+  const subhead = packageName && appName ? packageName : "";
 
   return `
-    <div style="margin:0 0 24px;">
-      <h2 style="margin:0 0 10px;font-size:18px;color:#111827;">Coverage Breakdown</h2>
-      <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">
-        <thead>
-          <tr style="background:#f9fafb;">
-            <th style="padding:8px 12px;text-align:left;font-size:12px;color:#6b7280;font-weight:600;">Feature</th>
-            <th style="padding:8px 12px;text-align:center;font-size:12px;color:#6b7280;font-weight:600;">Screens</th>
-            <th style="padding:8px 12px;text-align:center;font-size:12px;color:#6b7280;font-weight:600;">Visits</th>
-            <th style="padding:8px 12px;text-align:center;font-size:12px;color:#6b7280;font-weight:600;">Status</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
+    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;max-width:640px;margin:0 auto;padding:32px 24px;background:#FAFAFA;color:#0F172A;">
+      <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-radius:18px;padding:32px 28px;box-shadow:0 1px 3px rgba(15,23,42,0.04),0 8px 24px -12px rgba(15,23,42,0.08);">
+
+        <!-- Header -->
+        <div style="margin:0 0 6px;font-size:10.5px;font-weight:700;letter-spacing:0.22em;text-transform:uppercase;color:#94A3B8;">
+          ProdScope · Diligence Report
+        </div>
+        <h1 style="margin:6px 0 4px;font-size:26px;font-weight:600;color:#0F172A;line-height:1.2;letter-spacing:-0.02em;">
+          ${escapeHtml(heading)}
+        </h1>
+        ${
+          subhead
+            ? `<div style="margin:0 0 18px;font-family:ui-monospace,SFMono-Regular,monospace;font-size:12px;color:#94A3B8;">${escapeHtml(
+                subhead
+              )}</div>`
+            : `<div style="height:18px;"></div>`
+        }
+
+        <!-- Verdict -->
+        <p style="margin:0 0 14px;font-size:17px;line-height:1.55;color:#0F172A;font-weight:500;letter-spacing:-0.01em;">
+          ${escapeHtml(verdictClaim)}
+        </p>
+        <p style="margin:0 0 22px;font-size:14px;line-height:1.65;color:#475569;">
+          ${escapeHtml(leadSentence)}
+        </p>
+
+        <!-- Top findings -->
+        <div style="margin:0 0 4px;font-size:11px;font-weight:700;letter-spacing:0.18em;text-transform:uppercase;color:#94A3B8;">
+          Top findings
+        </div>
+        <ul style="margin:8px 0 0;padding:0;">
+          ${findingsHtml}
+        </ul>
+
+        ${strengthsLine}
+
+        ${ctaBlock}
+
+        <!-- Quiet footer -->
+        <div style="margin:28px 0 0;padding:14px 0 0;border-top:1px solid #E2E8F0;font-size:11px;color:#94A3B8;line-height:1.6;">
+          ${
+            jobId
+              ? `Report ID: <span style="font-family:ui-monospace,SFMono-Regular,monospace;">${escapeHtml(
+                  jobId.slice(0, 12)
+                )}</span><br>`
+              : ""
+          }
+          Generated by ProdScope · automated mobile-app diligence.
+        </div>
+
+      </div>
     </div>
   `;
 }
 
-// -------------------------------------------------------------------------
-// Deterministic findings renderer
-// -------------------------------------------------------------------------
+/**
+ * V1-only fallback. Tight version — the old kitchen-sink layout was
+ * removed because design-partner runs always have V2.
+ *
+ * @param {object} report  V1 report (parsed)
+ * @param {object} options
+ */
+function renderV1FallbackBody(report, options = {}) {
+  const shareUrl = options.shareUrl || null;
+  const summary = report?.summary || "Analysis complete.";
+  const score = report?.overall_score;
+  const stats = report?.crawl_stats || report?.crawl_health || {};
 
-function renderDeterministicFindings(findings) {
-  if (!Array.isArray(findings) || findings.length === 0) return "";
+  const ctaBlock = shareUrl
+    ? `<div style="margin:24px 0 8px;text-align:center;">
+        <a href="${escapeHtml(shareUrl)}"
+           style="display:inline-block;background:linear-gradient(120deg,#6C47FF 0%,#D62B4D 100%);color:#FFFFFF;text-decoration:none;padding:12px 24px;border-radius:9999px;font-size:14px;font-weight:600;">
+          Open the full report →
+        </a>
+      </div>`
+    : "";
 
   return `
-    <div style="margin:0 0 24px;">
-      <h2 style="margin:0 0 10px;font-size:18px;color:#111827;">Automated Findings</h2>
-      <p style="margin:0 0 10px;color:#6b7280;font-size:13px;">Detected automatically during crawl — zero AI tokens used</p>
-      ${renderCards(findings, { bg: "#fef2f2", border: "#fecaca" })}
+    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:640px;margin:0 auto;padding:32px 24px;background:#FAFAFA;color:#0F172A;">
+      <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-radius:18px;padding:28px 24px;">
+        <div style="margin:0 0 6px;font-size:10.5px;font-weight:700;letter-spacing:0.22em;text-transform:uppercase;color:#94A3B8;">
+          ProdScope · Report Ready
+        </div>
+        <h1 style="margin:6px 0 14px;font-size:22px;font-weight:600;color:#0F172A;line-height:1.25;">
+          ${escapeHtml(report?.package_name || "Your build")}
+        </h1>
+        <p style="margin:0 0 14px;font-size:14px;line-height:1.65;color:#475569;">
+          ${escapeHtml(summary)}
+        </p>
+        ${
+          typeof score === "number"
+            ? `<div style="margin:0 0 14px;font-size:13px;color:#475569;">
+                Overall quality: <strong style="color:#0F172A;">${score}/100</strong> · Steps: <strong>${
+                stats.totalSteps || "?"
+              }</strong> · Unique screens: <strong>${
+                stats.uniqueStates || "?"
+              }</strong>
+              </div>`
+            : ""
+        }
+        ${ctaBlock}
+      </div>
     </div>
   `;
 }
 
-// -------------------------------------------------------------------------
-// Main renderer
-// -------------------------------------------------------------------------
+/**
+ * Top-level renderer. Routes between V2 and V1-fallback based on payload
+ * shape.
+ *
+ * Backward-compat: `renderReportEmail(reportText, analysesCount, options)`
+ * still works (legacy V1 call sites).
+ *
+ * Modern path: `renderReportEmail({ v2Report, executiveSummary, appName,
+ * packageName, jobId, report, shareUrl })`.
+ */
+function renderReportEmail(arg1, arg2, arg3) {
+  // Modern path: single payload object.
+  if (arg1 && typeof arg1 === "object" && (arg1.v2Report || arg1.executiveSummary || arg1.appName || arg1.report)) {
+    if (arg1.v2Report) {
+      return renderV2EmailBody({
+        appName: arg1.appName,
+        packageName: arg1.packageName,
+        jobId: arg1.jobId,
+        v2Report: arg1.v2Report,
+        executiveSummary: arg1.executiveSummary || null,
+        shareUrl: arg1.shareUrl || null,
+      });
+    }
+    return renderV1FallbackBody(arg1.report, { shareUrl: arg1.shareUrl });
+  }
 
-function renderShareCta(shareUrl) {
-  if (!shareUrl) return "";
-  const safe = escapeHtml(shareUrl);
-  return `
-        <div style="margin:0 0 20px;padding:16px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;">
-          <div style="font-size:13px;color:#1e3a8a;margin-bottom:8px;font-weight:600;">Full interactive report</div>
-          <a href="${safe}" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:10px 18px;border-radius:8px;font-size:14px;font-weight:600;">View full report online &rarr;</a>
-          <div style="font-size:12px;color:#475569;margin-top:10px;line-height:1.5;">Forward this link to teammates — no login required. Keep it private.</div>
-        </div>`;
-}
-
-function renderReportEmail(reportText, analysesCount, options = {}) {
-  const shareUrl = options && options.shareUrl ? options.shareUrl : null;
+  // Legacy path: stringified V1 report.
+  const reportText = arg1;
+  const options = arg3 || {};
   let report;
-  const cleanedReportText = String(reportText || "")
+  const cleaned = String(reportText || "")
     .replace(/^```json\s*/i, "")
     .replace(/^```\s*/i, "")
     .replace(/\s*```$/i, "")
     .trim();
-
   try {
-    report = JSON.parse(cleanedReportText);
-  } catch (e) {
-    return `
-      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:760px;margin:0 auto;padding:24px;background:#f9fafb;color:#111827;">
-        <div style="background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;padding:24px;">
-          <h1 style="margin:0 0 8px;font-size:24px;">ProdScope QA Report</h1>
-          <p style="margin:0 0 16px;color:#6b7280;">Could not format structured report. Raw output below.</p>
-          ${renderShareCta(shareUrl)}
-          <div style="background:#f3f4f6;border:1px solid #e5e7eb;border-radius:8px;padding:16px;white-space:pre-wrap;font-family:monospace;font-size:13px;line-height:1.5;">${escapeHtml(cleanedReportText)}</div>
-        </div>
-      </div>
-    `;
+    report = JSON.parse(cleaned);
+  } catch {
+    report = { summary: cleaned || "Report ready." };
   }
-
-  // Extract metadata
-  const score = report.overall_score;
-  const sc = scoreColor(typeof score === "number" ? score : 0);
-  const health = report.crawl_health || {};
-  const stats = report.crawl_stats || {};
-  const tokenUsage = report.token_usage || {};
-  const pkgName = report.package_name || report.packageName || "";
-
-  return `
-    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:760px;margin:0 auto;padding:24px;background:#f9fafb;color:#111827;">
-      <div style="background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;padding:28px;">
-
-        <!-- Header -->
-        <div style="margin:0 0 20px;">
-          <h1 style="margin:0 0 4px;font-size:24px;color:#111827;">ProdScope QA Report</h1>
-          ${pkgName ? `<p style="margin:0;color:#6b7280;font-size:14px;">${escapeHtml(pkgName)}</p>` : ""}
-        </div>
-
-        ${renderShareCta(shareUrl)}
-
-        <!-- Stats bar -->
-        <div style="display:flex;gap:12px;flex-wrap:wrap;margin:0 0 20px;">
-          <div style="background:${sc.bg};border:1px solid ${sc.border};border-radius:10px;padding:12px 18px;text-align:center;min-width:100px;">
-            <div style="font-size:28px;font-weight:800;color:${sc.text};">${typeof score === "number" ? score : "N/A"}</div>
-            <div style="font-size:11px;color:${sc.text};font-weight:600;">SCORE</div>
-          </div>
-          <div style="background:#f3f4f6;border:1px solid #e5e7eb;border-radius:10px;padding:12px 18px;text-align:center;min-width:80px;">
-            <div style="font-size:22px;font-weight:700;color:#111827;">${stats.totalSteps || health.totalSteps || "?"}</div>
-            <div style="font-size:11px;color:#6b7280;font-weight:600;">STEPS</div>
-          </div>
-          <div style="background:#f3f4f6;border:1px solid #e5e7eb;border-radius:10px;padding:12px 18px;text-align:center;min-width:80px;">
-            <div style="font-size:22px;font-weight:700;color:#111827;">${stats.uniqueStates || health.uniqueStates || "?"}</div>
-            <div style="font-size:11px;color:#6b7280;font-weight:600;">SCREENS</div>
-          </div>
-          <div style="background:#f3f4f6;border:1px solid #e5e7eb;border-radius:10px;padding:12px 18px;text-align:center;min-width:80px;">
-            <div style="font-size:22px;font-weight:700;color:#111827;">${analysesCount || health.aiScreensAnalyzed || 0}</div>
-            <div style="font-size:11px;color:#6b7280;font-weight:600;">AI ANALYZED</div>
-          </div>
-        </div>
-
-        <!-- Summary -->
-        <div style="margin:0 0 24px;padding:16px;background:#f3f4f6;border-radius:12px;">
-          <h2 style="margin:0 0 8px;font-size:18px;color:#111827;">Summary</h2>
-          <div style="color:#374151;line-height:1.7;font-size:14px;">${escapeHtml(report.summary || "No summary available.")}</div>
-        </div>
-
-        <!-- Critical Bugs -->
-        <div style="margin:0 0 24px;">
-          <h2 style="margin:0 0 10px;font-size:18px;color:#111827;">Critical Bugs</h2>
-          ${renderCards(report.critical_bugs || [], { bg: "#fef2f2", border: "#fecaca" })}
-        </div>
-
-        <!-- UX Issues -->
-        <div style="margin:0 0 24px;">
-          <h2 style="margin:0 0 10px;font-size:18px;color:#111827;">UX Issues</h2>
-          ${renderCards(report.ux_issues || [], { bg: "#eff6ff", border: "#bfdbfe" })}
-        </div>
-
-        <!-- Suggestions -->
-        <div style="margin:0 0 24px;">
-          <h2 style="margin:0 0 10px;font-size:18px;color:#111827;">Suggestions</h2>
-          ${renderCards(report.suggestions || [], { bg: "#eff6ff", border: "#bfdbfe" })}
-        </div>
-
-        <!-- Quick Wins -->
-        <div style="margin:0 0 24px;">
-          <h2 style="margin:0 0 10px;font-size:18px;color:#111827;">Quick Wins</h2>
-          ${renderCards(report.quick_wins || [], { bg: "#f0fdf4", border: "#bbf7d0" })}
-        </div>
-
-        <!-- Deterministic Findings (oracle) -->
-        ${renderDeterministicFindings(report.deterministic_findings)}
-
-        <!-- Coverage Breakdown -->
-        ${renderCoverage(report.coverage)}
-
-        <!-- Crawl Health -->
-        <div style="margin:0 0 20px;padding:14px 16px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;">
-          <h2 style="margin:0 0 8px;font-size:16px;color:#111827;">Crawl Health</h2>
-          <div style="font-size:13px;color:#374151;line-height:1.8;">
-            Stop reason: <strong>${escapeHtml(health.stopReason || stats.stopReason || "unknown")}</strong><br>
-            ${health.oracleFindingsCount != null ? `Oracle findings: <strong>${health.oracleFindingsCount}</strong><br>` : ""}
-            ${health.aiScreensAnalyzed != null ? `AI screens analyzed: <strong>${health.aiScreensAnalyzed}</strong> (${health.aiScreensSkipped || 0} skipped by triage)<br>` : ""}
-          </div>
-        </div>
-
-        <!-- Footer -->
-        <div style="margin:20px 0 0;padding:14px 0 0;border-top:1px solid #e5e7eb;">
-          <div style="font-size:12px;color:#9ca3af;line-height:1.6;">
-            Generated by ProdScope automated app testing<br>
-            ${tokenUsage.input_tokens ? `Tokens used: ${(tokenUsage.input_tokens || 0) + (tokenUsage.output_tokens || 0)} (${tokenUsage.input_tokens} in / ${tokenUsage.output_tokens} out)` : ""}
-          </div>
-        </div>
-
-      </div>
-    </div>
-  `;
+  return renderV1FallbackBody(report, { shareUrl: options.shareUrl });
 }
 
 module.exports = { renderReportEmail };

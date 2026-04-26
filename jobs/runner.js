@@ -833,12 +833,24 @@ async function processJob(jobId, apkPath, opts) {
             "Magic-link share URL unavailable — email will be sent without a 'View online' CTA (set MAGIC_LINK_SECRET and PUBLIC_APP_URL)"
           );
         }
-        const emailResult = await sendReportEmail(
-          opts.email,
+        // Phase C2: pass the full payload — V2 report + executive
+        // summary + app identity — so the email body can lead with the
+        // V2 verdict + analyst-voice paragraph + top 3 findings + a
+        // big magenta "Open the full report" CTA. Subject also gets
+        // built from appName/packageName for inbox specificity.
+        // V2/exec are persisted to the job blob inside the V2 block;
+        // we read them back here so we don't depend on closure scope.
+        const persisted = store.getJob(jobId) || {};
+        const emailResult = await sendReportEmail(opts.email, {
           report,
-          triageResult.screensToAnalyze.length,
-          { shareUrl }
-        );
+          v2Report: persisted.v2Report || null,
+          executiveSummary: persisted.executiveSummary || null,
+          appName: appProfile.appName || "",
+          packageName: appProfile.packageName || "",
+          jobId,
+          shareUrl,
+          analysesCount: triageResult.screensToAnalyze.length,
+        });
         store.updateJob(jobId, { emailStatus: emailResult.status });
         if (emailResult.error) {
           store.updateJob(jobId, { emailError: emailResult.error });

@@ -1,5 +1,5 @@
 import { motion, useReducedMotion } from "framer-motion";
-import { Check, Download, Link2, RefreshCw } from "lucide-react";
+import { Check, Download, Link2, Printer, RefreshCw } from "lucide-react";
 import type { CrawlReport } from "../types";
 import { REPORT_GRADIENTS, SECTION_IDS, EDITORIAL_EASE } from "../tokens";
 
@@ -8,6 +8,12 @@ interface MastheadProps {
   onRunAgain?: () => void;
   onExport?: () => void;
   onShare?: () => void;
+  /**
+   * Phase C (2026-04-26): browser-side print → "Save as PDF" via the
+   * system print dialog. Caller passes a function that calls
+   * window.print(); the print stylesheet (print.css) handles layout.
+   */
+  onPrint?: () => void;
   shareCopied?: boolean;
 }
 
@@ -31,6 +37,7 @@ export function Masthead({
   onRunAgain,
   onExport,
   onShare,
+  onPrint,
   shareCopied = false,
 }: MastheadProps) {
   const reduceMotion = useReducedMotion();
@@ -86,7 +93,18 @@ export function Masthead({
           </dl>
         </div>
 
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap" data-no-print>
+          {onPrint && (
+            <button
+              type="button"
+              onClick={onPrint}
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-full text-[13px] font-medium text-[var(--color-text-secondary)] bg-white border border-[var(--color-border-default)] hover:border-[var(--color-border-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-report-accent-ring)] transition-colors"
+              aria-label="Print or save as PDF"
+            >
+              <Printer className="w-3.5 h-3.5" />
+              Save as PDF
+            </button>
+          )}
           {onShare && (
             <button
               type="button"
