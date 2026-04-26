@@ -61,16 +61,35 @@ app.set("trust proxy", 1);
 app.use(helmet());
 
 // ─── CORS (restricted in production) ─────────────────────────────────────────
+//
+// Two env vars compose the allow-list:
+//   CORS_ALLOWED_ORIGINS       — comma-separated exact origins (production + dev)
+//   CORS_ALLOWED_ORIGIN_REGEX  — single regex covering Vercel preview deploys
+//                                e.g. ^https://prodscope-v16-[a-z0-9-]+\.vercel\.app$
+//
+// In NODE_ENV=development with no allow-list set, all origins are allowed
+// (mirrors the previous behavior).
 
-const corsOrigins = process.env.CORS_ALLOWED_ORIGINS
-  ? process.env.CORS_ALLOWED_ORIGINS.split(",").map((s) => s.trim())
-  : [];
+const corsOrigins = (process.env.CORS_ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+const corsOriginRegex = process.env.CORS_ALLOWED_ORIGIN_REGEX
+  ? new RegExp(process.env.CORS_ALLOWED_ORIGIN_REGEX)
+  : null;
+
+function isCorsOriginAllowed(origin) {
+  if (!origin) return true; // server-to-server / curl — no Origin header
+  if (corsOrigins.includes(origin)) return true;
+  if (corsOriginRegex && corsOriginRegex.test(origin)) return true;
+  if (process.env.NODE_ENV === "development" && corsOrigins.length === 0) return true;
+  return false;
+}
 
 app.use(
   cors({
-    origin: corsOrigins.length > 0
-      ? corsOrigins
-      : (process.env.NODE_ENV === "development" ? true : false),
+    origin: (origin, cb) => cb(null, isCorsOriginAllowed(origin)),
     methods: ["GET", "POST"],
     allowedHeaders: ["Content-Type", "Authorization", "X-API-Key"],
     maxAge: 86400,
