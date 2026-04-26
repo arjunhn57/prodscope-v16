@@ -49,14 +49,16 @@ const DiligenceFlagSchema = z.object({
   claim: z.string().min(20).max(280),
   confidence: ConfidenceEnum,
   evidence_screen_ids: ScreenIdsArray,
-  severity_rationale: z.string().max(220).optional(),
+  severity_rationale: z.string().max(280).optional(),
   // The deliverable's killer feature: every flag ends with a specific
   // question to ask the founder. Generic UX-platitude questions are
-  // worse than no question — minimum length forces specificity.
+  // worse than no question — minimum length forces specificity. Hard
+  // cap at 350 (was 220 — too tight in practice; specific diligence
+  // questions anchored to evidence often need to set context first).
   founder_question: z
     .string()
     .min(15, "Founder question must be specific enough to actually ask")
-    .max(220),
+    .max(350),
 });
 
 const VerdictSchema = z.object({

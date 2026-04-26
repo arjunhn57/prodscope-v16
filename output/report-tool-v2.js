@@ -105,16 +105,16 @@ const DILIGENCE_FLAG = {
     },
     severity_rationale: {
       type: "string",
-      maxLength: 220,
+      maxLength: 280,
       description:
         "Why this severity (concern/watch/strength) is justified — one sentence.",
     },
     founder_question: {
       type: "string",
       minLength: 15,
-      maxLength: 220,
+      maxLength: 350,
       description:
-        "The specific question a diligence reader should ask the founder, anchored in this finding. Avoid generic mobile-UX questions; the question must be answerable only because the reader saw THIS evidence.",
+        "The specific question a diligence reader should ask the founder, anchored in this finding. Avoid generic mobile-UX questions; the question must be answerable only because the reader saw THIS evidence. Aim for one sentence — under 200 chars when possible; hard cap is 350.",
     },
   },
   required: [
