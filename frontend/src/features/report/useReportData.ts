@@ -11,7 +11,6 @@ import type {
   ScreenRecord,
   Severity,
   V2DiligenceFlag,
-  V2EvidencedFinding,
   V2Report,
   V2AnnotationsPayload,
 } from "./types";
