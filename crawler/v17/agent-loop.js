@@ -119,19 +119,47 @@ const DRIFT_ALLOWLIST = new Set([
   "com.google.android.inputmethod.latin", // Gboard
   "com.android.inputmethod.latin",
   "com.android.systemui",
-  // 2026-04-26 (Phase F1 follow-up): system file/media pickers are
-  // legitimate intent overlays. biztoso run 19fe42e8 hit
-  // package_drift_unrecoverable when its "change profile photo" CTA
-  // opened the Android 12+ photo picker — relaunch couldn't dismiss
-  // the modal, drift counter ticked 5× and terminated. The picker is
-  // contained: ExplorationDriver can navigate inside, back-press
-  // returns to the calling app. Same logic for the Storage Access
-  // Framework (documentsui) used by file uploads in many apps.
+  // 2026-04-26 (Phase F1 follow-up): explicit overlays kept here for
+  // log clarity, but the heuristic in isDriftAllowed below covers the
+  // long tail (any com.android.providers.* / com.google.android.providers.*
+  // and the SAF / share-sheet packages) without enumerating every variant.
   "com.google.android.providers.media.module", // Android 12+ photo picker
   "com.android.providers.media",                // Legacy photo / media provider
   "com.google.android.documentsui",             // SAF / file picker (modern)
   "com.android.documentsui",                    // SAF / file picker (legacy)
 ]);
+
+/**
+ * Heuristic predicate for "this package is a legitimate Android system
+ * overlay, not a destination app drift." Built to cover the long tail of
+ * intent-driven modals we haven't enumerated explicitly: contact picker,
+ * calendar picker, downloads provider, share sheet (intentresolver), etc.
+ *
+ * Pattern: every Android system content / intent provider lives under a
+ * `*.providers.*` or recognised system-overlay namespace. Third-party
+ * destination apps (com.spotify.*, com.example.*, com.android.chrome
+ * standalone) do NOT match these patterns, so real drift still fires.
+ *
+ * Companion to the press-back-first recovery in the drift block: even if
+ * something IS drift (regex misses), back-press recovers ~90% of overlays
+ * cheaply before the relaunch counter ticks.
+ *
+ * @param {string} pkg
+ * @returns {boolean}
+ */
+function isDriftAllowed(pkg) {
+  if (!pkg) return false;
+  if (DRIFT_ALLOWLIST.has(pkg)) return true;
+  // System content-provider namespaces (media, contacts, calendar,
+  // downloads, …) — pure overlay, never a destination app.
+  if (/^com\.android\.providers\./.test(pkg)) return true;
+  if (/^com\.google\.android\.providers\./.test(pkg)) return true;
+  // Storage Access Framework / file pickers under any vendor prefix.
+  if (pkg === "com.android.documentsui" || pkg === "com.google.android.documentsui") return true;
+  // "Open with" / share sheet picker (Android 13+).
+  if (pkg === "com.android.intentresolver") return true;
+  return false;
+}
 
 /**
  * @typedef {Object} RunOptions
@@ -528,6 +556,43 @@ async function runAgentLoop(opts) {
     // RECOVERIES unsuccessful attempts, concede with a clear stopReason instead
     // of letting the crawler keep exploring the wrong app.
     if (detectPackageDrift(observation, opts.targetPackage)) {
+      // 2026-04-26 (Phase F1 follow-up): try press_back FIRST — most
+      // "drift" is actually a modal overlay (Custom Tab, GMS sign-in,
+      // Play Store rate-prompt, etc.) that dismisses with back-press
+      // and returns to the calling app. If that succeeds we skip the
+      // full relaunch + counter increment. Only fall through to relaunch
+      // when back-press doesn't return us to the target app.
+      let recoveredViaBack = false;
+      try {
+        deps.adb.pressBack();
+        await driftSleep(800);
+        const probePkg = deps.adb.getCurrentPackage && deps.adb.getCurrentPackage();
+        if (probePkg === opts.targetPackage) {
+          recoveredViaBack = true;
+          log.info(
+            {
+              jobId: opts.jobId,
+              step,
+              from: observation.packageName,
+              via: "press_back",
+            },
+            "drift recovered cheaply via press_back",
+          );
+        }
+      } catch (err) {
+        log.warn(
+          { err: err.message, step },
+          "drift recovery: press_back probe failed; falling through to relaunch",
+        );
+      }
+      if (recoveredViaBack) {
+        // Cheaper recovery — no counter increment. Consume a budget step
+        // (the back-press is a real action) and let the next iteration
+        // re-capture observation on the target app.
+        budget.step();
+        prevObservation = observation;
+        continue;
+      }
       driverState.driftRecoveryAttempts += 1;
       const attempt = driverState.driftRecoveryAttempts;
       log.warn(
@@ -1148,7 +1213,7 @@ function detectPackageDrift(observation, targetPackage) {
   // have a real packageName once the activity resolver catches up.
   if (observation.packageName === "unknown") return false;
   if (observation.packageName === targetPackage) return false;
-  if (DRIFT_ALLOWLIST.has(observation.packageName)) return false;
+  if (isDriftAllowed(observation.packageName)) return false;
   return true;
 }
 
