@@ -80,8 +80,30 @@ const EVIDENCED_FINDING = {
       minItems: 1,
       items: { type: "string" },
     },
+    explanation_md: {
+      type: "string",
+      minLength: 60,
+      maxLength: 600,
+      description:
+        "2-3 sentence markdown explaining WHY this finding matters: the friction or user impact, why a VC / PM diligence reader should care. Anchor in the cited evidence — describe what a real user would experience on these screens, not generic mobile-UX platitudes. Plain sentences, light markdown only (bold for emphasis). No headings, no bullet lists.",
+    },
+    recommendation_md: {
+      type: "string",
+      minLength: 30,
+      maxLength: 280,
+      description:
+        "1-2 sentence concrete remediation. Specific enough to assign to an engineer (e.g., 'Replace the blank loading state on screen_4 with a skeleton placeholder using the existing card component') — not generic ('Improve loading UX'). Plain sentences, light markdown only.",
+    },
   },
-  required: ["title", "claim", "severity", "confidence", "evidence_screen_ids"],
+  required: [
+    "title",
+    "claim",
+    "severity",
+    "confidence",
+    "evidence_screen_ids",
+    "explanation_md",
+    "recommendation_md",
+  ],
 };
 
 const DILIGENCE_FLAG = {

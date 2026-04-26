@@ -102,13 +102,17 @@ test("Verdict: requires exactly 3 claims", () => {
 
 // ── EvidencedFinding ───────────────────────────────────────────────────
 
-test("EvidencedFinding: requires title + claim + severity + evidence", () => {
+test("EvidencedFinding: requires title + claim + severity + evidence + explanation_md + recommendation_md", () => {
   const valid = {
     title: "OTP screen does not paste from clipboard",
     claim: "Tested on screen_9: long-press did not surface a paste affordance.",
     severity: "medium",
     confidence: "observed",
     evidence_screen_ids: ["screen_9"],
+    explanation_md:
+      "Pasting OTPs is the dominant pattern for SMS-based auth — every social and fintech app supports it. Without paste on screen_9, every user who opens the SMS app to read the code has to remember 6 digits and re-type, doubling the median time to first session.",
+    recommendation_md:
+      "Wire the system clipboard listener into the OTP input on screen_9 — Android's autofill framework offers this for free.",
   };
   assert.equal(EvidencedFindingSchema.safeParse(valid).success, true);
 
@@ -122,6 +126,16 @@ test("EvidencedFinding: requires title + claim + severity + evidence", () => {
     EvidencedFindingSchema.safeParse({ ...valid, evidence_screen_ids: [] }).success,
     false,
   );
+
+  // Missing explanation_md (Phase B4 requirement)
+  const noExpl = { ...valid };
+  delete noExpl.explanation_md;
+  assert.equal(EvidencedFindingSchema.safeParse(noExpl).success, false);
+
+  // Missing recommendation_md (Phase B4 requirement)
+  const noRec = { ...valid };
+  delete noRec.recommendation_md;
+  assert.equal(EvidencedFindingSchema.safeParse(noRec).success, false);
 });
 
 // ── ReportV2 + cross-field validator ───────────────────────────────────
@@ -218,6 +232,10 @@ test("validateReportV2: critical_bugs with hallucinated screen id rejected", () 
         severity: "critical",
         confidence: "observed",
         evidence_screen_ids: ["screen_99"], // <- not in validIds
+        explanation_md:
+          "Resume crashes are user-facing bug-class one — every backgrounded user loses their session. Sustained at this rate the median 7-day retention number will be unreliable.",
+        recommendation_md:
+          "Capture and ship the crash log via Firebase Crashlytics + reproduce on the test fixture before re-shipping.",
       },
     ],
     coverage_summary: { screens_reached: 5 },

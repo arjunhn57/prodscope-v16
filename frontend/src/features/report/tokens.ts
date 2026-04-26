@@ -141,6 +141,7 @@ export const EDITORIAL_EASE: [number, number, number, number] = [0.22, 0.61, 0.3
 export const SECTION_IDS = {
   masthead: "report-masthead",
   verdict: "report-verdict",
+  hero: "report-hero",
   signals: "report-signals",
   summary: "report-summary",
   keyNumbers: "report-key-numbers",

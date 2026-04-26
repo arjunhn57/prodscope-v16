@@ -589,6 +589,38 @@ async function runAgentLoop(opts) {
         // Cheaper recovery — no counter increment. Consume a budget step
         // (the back-press is a real action) and let the next iteration
         // re-capture observation on the target app.
+        //
+        // 2026-04-26 (loop-bug fix): record the recovery on the trajectory
+        // so the agent's recentActions show that the PREVIOUS action led
+        // to an overlay → was backed out. Without this, the agent's
+        // exploration frontier still treats the previous tap target as
+        // "untapped" and the LLM keeps re-tapping it, producing the
+        // profile-photo ↔ profile loop biztoso surfaced. The summariser
+        // emits a "do NOT repeat <causingAction>" directive when it sees
+        // this outcome string, mirroring the relaunch-path treatment
+        // below.
+        const trajectory =
+          (deps && deps.extraDispatchDeps && deps.extraDispatchDeps.trajectory) || null;
+        if (trajectory) {
+          const causingAction =
+            (lastAction && typeof lastAction.type === "string" && lastAction.type) ||
+            "unknown";
+          try {
+            recordTrajectoryAction(trajectory, {
+              step,
+              driver: "drift-recovery",
+              actionType: "press_back",
+              targetText: null,
+              fingerprint: (prevObservation && prevObservation.fingerprint) || "",
+              outcome: `press_back_recovered_from_overlay_after_${causingAction}`,
+            });
+          } catch (err) {
+            log.warn(
+              { err: err.message, step },
+              "press_back drift-recovery: recordAction threw",
+            );
+          }
+        }
         budget.step();
         prevObservation = observation;
         continue;

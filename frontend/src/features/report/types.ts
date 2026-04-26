@@ -161,6 +161,12 @@ export interface V2EvidencedFinding {
   severity: Severity;
   confidence: V2Confidence;
   evidence_screen_ids: string[];
+  // Phase B4 (2026-04-26): per-finding "why this matters" + "fix it like this".
+  // Optional in the type (older reports won't have them) but the backend
+  // schema requires them on new reports — frontend should treat absence as
+  // a legacy report and fall back to claim-only rendering.
+  explanation_md?: string;
+  recommendation_md?: string;
 }
 
 export interface V2BlockedArea {

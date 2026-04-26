@@ -6,6 +6,7 @@ import { useReportData, computeScore, isPublicFixtureJob } from "./useReportData
 import { EDITORIAL_EASE } from "./tokens";
 import { Masthead } from "./components/Masthead";
 import { VerdictHeadline } from "./components/VerdictHeadline";
+import { HeroFinding } from "./components/HeroFinding";
 import { SignalCluster } from "./components/SignalCluster";
 import { ExecutiveSummary } from "./components/ExecutiveSummary";
 import { KeyNumbers } from "./components/KeyNumbers";
@@ -77,6 +78,7 @@ export function PublicReportPage() {
           <article className="min-w-0">
             <Masthead report={report} />
             <VerdictHeadline report={report} score={score} />
+            <HeroFinding report={report} />
             <SignalCluster score={score} />
             <ExecutiveSummary report={report} score={score} />
             <KeyNumbers report={report} score={score} />

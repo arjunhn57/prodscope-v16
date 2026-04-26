@@ -841,6 +841,10 @@ export interface DisplayFinding extends Finding {
   fromV2?: boolean;
   /** When V2-sourced, the original verbose claim text. */
   claim?: string;
+  /** Phase B4: WHY this finding matters \u2014 user impact paragraph. V2 only. */
+  explanationMd?: string;
+  /** Phase B4: concrete remediation step. V2 only. */
+  recommendationMd?: string;
 }
 
 const V2_SEVERITY_TO_V1: Record<string, Severity> = {
@@ -861,7 +865,9 @@ function v2FindingToDisplay(
   claim: string,
   severity: string,
   evidenceScreenIds: string[],
-  founderQuestion?: string
+  founderQuestion?: string,
+  explanationMd?: string,
+  recommendationMd?: string
 ): DisplayFinding {
   const firstEvidence = evidenceScreenIds[0] ?? "";
   const stepMatch = firstEvidence.match(/^screen_(\d+)$/);
@@ -881,6 +887,8 @@ function v2FindingToDisplay(
     evidenceScreenIds,
     fromV2: true,
     claim,
+    explanationMd,
+    recommendationMd,
   };
 }
 
@@ -913,7 +921,10 @@ export function displayFindings(report: CrawlReport): DisplayFinding[] {
         b.title,
         b.claim,
         b.severity,
-        b.evidence_screen_ids
+        b.evidence_screen_ids,
+        undefined,
+        b.explanation_md,
+        b.recommendation_md
       )
     )
   );
@@ -926,7 +937,10 @@ export function displayFindings(report: CrawlReport): DisplayFinding[] {
         u.title,
         u.claim,
         u.severity,
-        u.evidence_screen_ids
+        u.evidence_screen_ids,
+        undefined,
+        u.explanation_md,
+        u.recommendation_md
       )
     )
   );
@@ -951,4 +965,43 @@ export function displayFindings(report: CrawlReport): DisplayFinding[] {
   return out.sort(
     (a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]
   );
+}
+
+// ── Hero finding (Phase B2) ────────────────────────────────────────────
+
+/**
+ * Pick the single sharpest finding to render above-the-fold as the hero.
+ *
+ * Selection rules (in order):
+ *   1. Highest-severity V2 critical_bug with both explanation_md and an
+ *      annotated screenshot — the "wow" moment for first-time viewers.
+ *   2. Else highest-severity V2 ux_issue with explanation_md.
+ *   3. Else top V1 oracleFinding (legacy reports without V2).
+ *   4. Returns null when there's no finding worth featuring (clean run).
+ *
+ * The hero is *removed* from the CriticalFindings list by id so the same
+ * finding doesn't appear twice on the page. The caller does that filter.
+ */
+export function heroFinding(report: CrawlReport): DisplayFinding | null {
+  const all = displayFindings(report);
+  if (all.length === 0) return null;
+
+  // Prefer V2 critical_bugs first — they're the highest-impact items by
+  // schema. Within them, the displayFindings sort already puts severity
+  // 'critical' first; we just take the head.
+  const v2CriticalWithExplanation = all.find(
+    (f) => f.fromV2 && f.type === "crash" && f.explanationMd
+  );
+  if (v2CriticalWithExplanation) return v2CriticalWithExplanation;
+
+  // Fall through to highest-severity ux_issue with explanation, then
+  // anything with an evidence screen + explanation, then just anything.
+  const v2UxWithExplanation = all.find(
+    (f) => f.fromV2 && f.type === "ux_issue" && f.explanationMd
+  );
+  if (v2UxWithExplanation) return v2UxWithExplanation;
+
+  // Legacy V1 path or V2 without explanation_md (older runs) — just the
+  // top of the sorted list.
+  return all[0] ?? null;
 }

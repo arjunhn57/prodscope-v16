@@ -163,6 +163,10 @@ function validReport() {
         severity: "medium",
         confidence: "observed",
         evidence_screen_ids: ["screen_4"],
+        explanation_md:
+          "Pasting OTPs is the dominant pattern for SMS-based auth — every social and fintech app supports it. Without paste on screen_4, every user who opens the SMS app to read the code has to remember 6 digits and re-type, doubling median time to first session.",
+        recommendation_md:
+          "Wire the system clipboard listener into the OTP input on screen_4 — Android's autofill framework offers this for free.",
       },
     ],
     coverage_summary: {

@@ -281,6 +281,10 @@ export function CriticalFindings({ report }: CriticalFindingsProps) {
                       {finding.detail}
                     </p>
 
+                    {/* Phase B4: prefer the LLM-authored explanation
+                        (per-finding, evidence-anchored) over the static
+                        type-based fallback. The fallback ships when V2 is
+                        absent or older reports without explanation_md. */}
                     <div
                       className="mt-1 text-[12.5px] leading-[1.55] pl-3 border-l-2 text-[var(--color-text-muted)]"
                       style={{ borderColor: palette.ring }}
@@ -291,9 +295,32 @@ export function CriticalFindings({ report }: CriticalFindingsProps) {
                       >
                         Why this matters —
                       </span>{" "}
-                      {FINDING_TYPE_EXPLAINER[String(finding.type)] ??
+                      {finding.explanationMd ??
+                        FINDING_TYPE_EXPLAINER[String(finding.type)] ??
                         "This finding reduces the quality signal of the release."}
                     </div>
+
+                    {/* Phase B4: concrete recommendation. Only V2 supplies
+                        this — V1-only reports skip the block entirely. */}
+                    {finding.recommendationMd && (
+                      <div
+                        className="mt-1 text-[12.5px] leading-[1.55] pl-3 border-l-2"
+                        style={{ borderColor: palette.dot }}
+                      >
+                        <span
+                          className="font-semibold"
+                          style={{
+                            fontFamily: "var(--font-label)",
+                            color: palette.fg,
+                          }}
+                        >
+                          Recommended fix —
+                        </span>{" "}
+                        <span className="text-[var(--color-text-secondary)]">
+                          {finding.recommendationMd}
+                        </span>
+                      </div>
+                    )}
 
                     {/* V2 founder_question — the deliverable's killer
                         feature. Renders below "Why this matters" with the

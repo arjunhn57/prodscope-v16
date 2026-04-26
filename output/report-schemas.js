@@ -42,6 +42,19 @@ const EvidencedFindingSchema = z.object({
   severity: SeverityEnum,
   confidence: ConfidenceEnum,
   evidence_screen_ids: ScreenIdsArray,
+  // 2026-04-26 (Phase B4): per-finding "why this matters" + "fix it like
+  // this." The frontend renders these as the body of each finding card,
+  // turning a one-line claim into a paragraph-of-context-plus-action that
+  // reads like a senior analyst wrote it. Hard-required so the prompt
+  // can't drop them under load — re-validated end-to-end.
+  explanation_md: z
+    .string()
+    .min(60, "Explanation must be substantive (>= 60 chars) — no one-liners")
+    .max(600, "Explanation must stay scannable — break larger thoughts into multiple findings"),
+  recommendation_md: z
+    .string()
+    .min(30, "Recommendation must be concrete (>= 30 chars) — no platitudes")
+    .max(280, "Recommendation must fit on a card — concise, assignable"),
 });
 
 const DiligenceFlagSchema = z.object({
