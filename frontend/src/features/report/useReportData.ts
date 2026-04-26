@@ -68,8 +68,32 @@ function normalizeReport(
     annotations?: unknown;
   }
 ): CrawlReport | null {
-  if (!raw || typeof raw !== "object") return null;
-  const r = raw as Record<string, unknown>;
+  // The backend serializes job.report as a JSON STRING in some paths
+  // (the SQLite blob round-trip stringifies the V1 report on store).
+  // Parse it back to an object before normalizing — bailing here
+  // produced "Report unavailable" even on otherwise-good runs.
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // If it's an unparseable string but jobLevel V2 data is present,
+      // we can still render the V2-only sections — synthesize a minimal
+      // report shell.
+      parsed = {};
+    }
+  }
+  if (!parsed || typeof parsed !== "object") {
+    // Last resort: if V2 fields exist on the job envelope we still want
+    // to render. Build a near-empty report shell so the V2 sections can
+    // hydrate from jobLevel.
+    if (jobLevel?.v2Report) {
+      parsed = {};
+    } else {
+      return null;
+    }
+  }
+  const r = parsed as Record<string, unknown>;
 
   const screens = Array.isArray(r.screens)
     ? (r.screens as ScreenRecord[])
