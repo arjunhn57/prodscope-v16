@@ -36,11 +36,12 @@ const SONNET_MODEL = "claude-sonnet-4-6";
 const SONNET_TIMEOUT_MS = 25000;
 const SONNET_MAX_TOKENS = 2000;
 
-/** Hard cap per crawl. 2026-04-25 v6: raised from 2 to 6 — feature-rich
- *  apps need more escalations to navigate ambiguous hubs. The cost cap
- *  ($0.20) and novelty-stall stop are the actual brakes; this is a
- *  ceiling, not a target. */
-const MAX_SONNET_ESCALATIONS_PER_CRAWL = 6;
+/** Hard cap per crawl. 2026-04-26 (Phase E2): 6 → 2. In-crawl Sonnet
+ *  escalation rarely fires (recent runs hit 0). Sonnet stays primarily
+ *  for V2 report synthesis. 2 leaves a buffer for genuinely hard auth
+ *  / cred screens. The cost cap and novelty-stall stop are the actual
+ *  brakes; this is a ceiling. */
+const MAX_SONNET_ESCALATIONS_PER_CRAWL = 2;
 
 const SYSTEM_PROMPT = `You are the senior-QA-engineer escalation layer for a mobile app crawler.
 
@@ -151,7 +152,17 @@ function buildRequest(graph, xmlText, observation, screenshotBlock, priorPlan, r
     model: SONNET_MODEL,
     max_tokens: SONNET_MAX_TOKENS,
     temperature: 0,
-    system: SYSTEM_PROMPT,
+    // 2026-04-26 (Phase E4): cache the static system prompt so escalation
+    // calls 2..N (capped at MAX_SONNET_ESCALATIONS_PER_CRAWL = 2) reuse
+    // the cached prefix at 10% of normal rate. Marginal savings since
+    // escalations rarely fire (~$0.001-0.005/run typical) but free.
+    system: [
+      {
+        type: "text",
+        text: SYSTEM_PROMPT,
+        cache_control: { type: "ephemeral" },
+      },
+    ],
     tools: [CLASSIFY_TOOL],
     tool_choice: { type: "tool", name: CLASSIFY_TOOL.name },
     messages: [{ role: "user", content }],

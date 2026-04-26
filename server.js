@@ -569,6 +569,13 @@ app.get("/api/v1/job-status/:jobId", statusLimiter, async (req, res) => {
     appPackage: job.appPackage,
     appName: job.appName,
     launcherActivity: job.launcherActivity,
+    // Full-job cost (Phase E7) — total Anthropic spend across all phases
+    // (crawl Haiku + Stage 1 + Stage 2 + V2 synth + annotations). Lets the
+    // operator see what each run actually costs without checking the
+    // dashboard. Was previously $0.10 reported when actual was $0.97 due
+    // to a measurement bug; now reflects all phases.
+    costUsd: job.costUsd,
+    costBreakdown: job.costBreakdown,
     stopReason: job.stopReason,
     crawlQuality: job.crawlQuality,
     error: job.error,

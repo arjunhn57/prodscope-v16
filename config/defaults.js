@@ -8,7 +8,12 @@ module.exports = {
   SKIP_AI_FOR_TESTS: process.env.SKIP_AI_FOR_TESTS === "true",
   UPLOAD_DEST: "/tmp/uploads/",
   SCREENSHOT_DIR_PREFIX: "/tmp/screenshots-",
-  MAX_CRAWL_STEPS: 120,
+  // 2026-04-26 (Phase E1): 120 → 60. Even with v6 fixes the agent wastes
+  // ~30% of late steps on hub-bouncing on feature-rich apps. Capping at
+  // 60 cuts Haiku classifier calls + total walltime substantially.
+  // Trade-off: ~40 unique screens captured vs ~73 at 120 — V2 only cited
+  // ~3 anyway, so no functional loss to the deliverable.
+  MAX_CRAWL_STEPS: 60,
   EMULATOR_AVD: "prodscope-test",
   SNAPSHOT_NAME: process.env.SNAPSHOT_NAME || "prodscope-ready",
   SNAPSHOT_BOOT_TIMEOUT: 30,   // seconds — snapshot restore should be fast
@@ -30,7 +35,10 @@ module.exports = {
   // MAX_AI_TRIAGE_SCREENS stays as a fallback for the pre-Stage-1 code path
   // until everything's wired — do NOT delete yet.
   MAX_AI_TRIAGE_SCREENS: 5,
-  MAX_DEEP_ANALYZE_SCREENS: Number(process.env.MAX_DEEP_ANALYZE_SCREENS) || 10,
+  // 2026-04-26 (Phase E6): 10 → 5. K=10 is generous when V2 only cites
+  // ~3 screens anyway. Halves Stage 2 oracle cost. Roll back to 10 if
+  // V2 narrative quality drops materially.
+  MAX_DEEP_ANALYZE_SCREENS: Number(process.env.MAX_DEEP_ANALYZE_SCREENS) || 5,
   // Feature flag: setting ORACLE_STAGE1_ENABLED=false bypasses Stage 1 and
   // the Stage 3 high-signal router, falling back to the legacy unconditional
   // Sonnet pipeline. This is the documented rollback path for Phase 3.1.
@@ -90,5 +98,8 @@ module.exports = {
   // Drill-down preference + hub-revisit detector do the heavy lifting on
   // efficiency; this only adds a modest budget cushion.
   V16_MAX_COST_USD: Number(process.env.V16_MAX_COST_USD) || 0.20,
-  V16_MAX_SONNET_ESCALATIONS: Number(process.env.V16_MAX_SONNET_ESCALATIONS) || 6,
+  // 2026-04-26 (Phase E2): 6 → 2. Sonnet stays reserved primarily for
+  // V2 report synthesis; in-crawl escalations rarely fire (biztoso=0,
+  // Bluesky=0). 2 is a buffer for genuinely hard auth/cred screens.
+  V16_MAX_SONNET_ESCALATIONS: Number(process.env.V16_MAX_SONNET_ESCALATIONS) || 2,
 };

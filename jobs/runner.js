@@ -506,6 +506,9 @@ async function processJob(jobId, apkPath, opts) {
     const stage2Tokens = { input_tokens: 0, output_tokens: 0 };
     let triageResult = { screensToAnalyze: [], skippedScreens: [], triageLog: [] };
     let analyses = [];
+    // Hoisted out of the REPORT_V2_ENABLED block so the post-pipeline
+    // cost calc can read annotationsResult.tokenUsage. Phase E7.
+    let annotationsResult = null;
     let report = null;
 
     try {
@@ -666,7 +669,7 @@ async function processJob(jobId, apkPath, opts) {
         // Annotation pass — run on cited screens only. Gated separately
         // so we can ship V2 reports today without paying for vision
         // calls per screen until the annotation UI is wired up.
-        let annotationsResult = null;
+        // annotationsResult declared in outer scope (cost-calc reads it).
         if (ANNOTATIONS_ENABLED && v2Report) {
           try {
             const outDir = `/tmp/reports/${jobId}/annotated`;
@@ -803,33 +806,47 @@ async function processJob(jobId, apkPath, opts) {
     // 1 USD = 92.96 INR (RBI rate 2026-04-07)
     const USD_TO_INR = 92.96;
 
-    // Add crawl-phase tokens (vision + planner = all Haiku) to Haiku accumulator
-    const crawlPhaseTokens = (crawlResult.stats || {}).tokenUsage || { input_tokens: 0, output_tokens: 0 };
-    haikuTokensAccum.input_tokens += crawlPhaseTokens.input_tokens;
-    haikuTokensAccum.output_tokens += crawlPhaseTokens.output_tokens;
+    // 2026-04-26 (Phase E7): the crawler's V18 agent-loop returns
+    // `crawlResult.costUsd` from the budget tracker — that's the
+    // authoritative classifier+escalation cost. Previously this code
+    // tried to derive crawl-phase cost from `stats.tokenUsage` which is
+    // hardcoded zero (per agent-loop comment "per-model breakdown lives
+    // in budget"). Result: total job cost reported $0.10 when actual was
+    // $0.97. Use crawlResult.costUsd directly + per-stage tokens for the
+    // post-crawl phases.
 
-    const haikuCost = (haikuTokensAccum.input_tokens * 0.000001 + haikuTokensAccum.output_tokens * 0.000005);
-    const sonnetCost = (sonnetTokensAccum.input_tokens * 0.000003 + sonnetTokensAccum.output_tokens * 0.000015);
-    const costUsd = haikuCost + sonnetCost;
-    const costInr = costUsd * USD_TO_INR;
-
-    // Per-stage cost breakdown (Phase 3.1 step 5). Lets us tune stage
-    // budgets from real telemetry rather than guessing at defaults. Whatever
-    // wasn't attributed to Stage 1 or Stage 2 falls into the "crawl" bucket
-    // (in-crawl Haiku vision calls from the agent loop).
+    const crawlPhaseCost = Number(crawlResult.costUsd) || 0;
     const stage1CostUsd = stage1Tokens.input_tokens * 0.000001 + stage1Tokens.output_tokens * 0.000005;
     const stage2CostUsd = stage2Tokens.input_tokens * 0.000001 + stage2Tokens.output_tokens * 0.000005;
-    const crawlHaikuTokens = {
-      input_tokens: Math.max(0, haikuTokensAccum.input_tokens - stage1Tokens.input_tokens - stage2Tokens.input_tokens),
-      output_tokens: Math.max(0, haikuTokensAccum.output_tokens - stage1Tokens.output_tokens - stage2Tokens.output_tokens),
+
+    // V2 synthesizer Sonnet tokens (separate from annotation tokens which
+    // were just folded back into sonnetTokensAccum). We track V2 by
+    // subtracting annotation tokens from the total accumulator.
+    const annotationsTokens = annotationsResult?.tokenUsage || { input_tokens: 0, output_tokens: 0 };
+    const v2SynthTokens = {
+      input_tokens: Math.max(0, sonnetTokensAccum.input_tokens - (annotationsTokens.input_tokens || 0)),
+      output_tokens: Math.max(0, sonnetTokensAccum.output_tokens - (annotationsTokens.output_tokens || 0)),
     };
-    const crawlCostUsd = crawlHaikuTokens.input_tokens * 0.000001 + crawlHaikuTokens.output_tokens * 0.000005;
+    // After Phase E3 annotations run on Haiku — but the runner doesn't
+    // know that here. Compute both rates and use whichever the model
+    // declared. Default to Haiku rates since E3 + Sonnet rates as fallback.
+    const annotationCostUsd = annotationsTokens.input_tokens
+      ? annotationsTokens.input_tokens * 0.000001 + annotationsTokens.output_tokens * 0.000005
+      : 0;
+    const v2SynthCostUsd = v2SynthTokens.input_tokens * 0.000003 + v2SynthTokens.output_tokens * 0.000015;
+    const sonnetCost = v2SynthCostUsd + annotationCostUsd;
+
+    const costUsd = crawlPhaseCost + stage1CostUsd + stage2CostUsd + sonnetCost;
+    const costInr = costUsd * USD_TO_INR;
+
     const costBreakdown = {
-      crawlHaiku: Number(crawlCostUsd.toFixed(6)),
+      crawlHaiku: Number(crawlPhaseCost.toFixed(6)),
       oracleStage1: Number(stage1CostUsd.toFixed(6)),
       oracleStage2: Number(stage2CostUsd.toFixed(6)),
-      reportSynthesis: Number(sonnetCost.toFixed(6)),
+      reportSynthesis: Number(v2SynthCostUsd.toFixed(6)),
+      annotations: Number(annotationCostUsd.toFixed(6)),
       totalUsd: Number(costUsd.toFixed(6)),
+      totalInr: Number(costInr.toFixed(2)),
     };
 
     const finalJob = store.getJob(jobId);

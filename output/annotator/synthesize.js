@@ -20,7 +20,7 @@ const { logger } = require("../../lib/logger");
 const { ANNOTATION_TOOL } = require("./tool");
 const { buildAnnotationPrompt } = require("./prompt");
 const { validateScreenAnnotations } = require("./schema");
-const { ANALYSIS_MODEL, REPORT_MODEL } = require("../../config/defaults");
+const { ANALYSIS_MODEL } = require("../../config/defaults");
 
 const log = logger.child({ component: "annotator-synthesize" });
 
@@ -117,7 +117,12 @@ async function synthesizeAnnotations(params) {
     context,
   });
 
-  const model = REPORT_MODEL || ANALYSIS_MODEL;
+  // 2026-04-26 (Phase E3): annotations don't need Sonnet's reasoning
+  // depth — they're "draw box around element X with caption Y". Switched
+  // to Haiku to save ~$0.10/run (3 annotations × ~$0.035 each on Sonnet
+  // vs ~$0.005 each on Haiku). Sonnet stays reserved for V2 synthesis.
+  // Override-able via deps.client + deps.model for tests/escalation.
+  const model = (deps && deps.model) || ANALYSIS_MODEL;
 
   let response;
   try {

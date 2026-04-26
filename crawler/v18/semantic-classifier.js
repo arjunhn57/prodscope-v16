@@ -543,7 +543,17 @@ function buildRequest(graph, xmlText, observation, screenshotBlock) {
     model: HAIKU_MODEL,
     max_tokens: HAIKU_MAX_TOKENS,
     temperature: 0,
-    system: SYSTEM_PROMPT,
+    // 2026-04-26 (Phase E4): system prompt is identical across all
+    // ~60 calls per crawl. Wrap with cache_control:ephemeral so calls
+    // 2..N pay 10% of normal input rate on these tokens (~3000 cached
+    // input tokens). Saves ~$0.06–0.08/run.
+    system: [
+      {
+        type: "text",
+        text: SYSTEM_PROMPT,
+        cache_control: { type: "ephemeral" },
+      },
+    ],
     tools: [CLASSIFY_TOOL],
     tool_choice: { type: "tool", name: CLASSIFY_TOOL.name },
     messages: [{ role: "user", content }],
