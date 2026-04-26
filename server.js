@@ -1167,6 +1167,22 @@ async function startServer() {
   // Initialize BullMQ queue (connects to Redis)
   await queue.init();
 
+  // Idempotent guest user provisioning (env-gated). Pairs with
+  // GUEST_MODE_ENABLED in middleware/auth.js — when on, unauthenticated
+  // requests fall through as this user (role=admin, no credit charge).
+  if (process.env.GUEST_MODE_ENABLED === "true") {
+    try {
+      store.ensureGuestUser({
+        id: "u_guest_test",
+        email: "guest@prodscope.local",
+        name: "Guest (test)",
+      });
+      logger.warn({ component: "auth" }, "GUEST_MODE_ENABLED — unauthenticated requests admitted as guest admin");
+    } catch (err) {
+      logger.error({ err: err.message }, "Failed to ensure guest user; guest mode will fail");
+    }
+  }
+
   app.listen(PORT, "0.0.0.0", function () {
     const authStatus = (process.env.JWT_SECRET || process.env.PRODSCOPE_API_KEY)
       ? "ENABLED"

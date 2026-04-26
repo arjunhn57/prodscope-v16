@@ -120,6 +120,25 @@ function createAuthMiddleware(config) {
     throw new Error("AUTH_DISABLED=true is not allowed in production.");
   }
 
+  // ── Guest mode (temporary, env-gated) ────────────────────────────────
+  // When GUEST_MODE_ENABLED=true, requests without a Bearer or X-API-Key
+  // are treated as a synthetic admin user. Used for friction-free smoke
+  // tests when the team doesn't want to sign in every session. Off by
+  // default; flip the env var to enable; logs a warning at startup so
+  // it's hard to leave on by accident.
+  const guestModeEnabled = process.env.GUEST_MODE_ENABLED === "true";
+  if (guestModeEnabled) {
+    // eslint-disable-next-line no-console
+    console.warn("[auth] GUEST_MODE_ENABLED=true — unauthenticated requests are admitted as guest admin");
+  }
+  const GUEST_USER = {
+    type: "guest",
+    sub: "u_guest_test",
+    userId: "u_guest_test",
+    email: "guest@prodscope.local",
+    role: "admin",
+  };
+
   return function authMiddleware(req, res, next) {
     // Skip public routes
     if (isPublicRoute(req.path)) return next();
@@ -183,6 +202,15 @@ function createAuthMiddleware(config) {
         req.user = { type: "api_key_query" };
         return next();
       }
+    }
+
+    // If guest mode is on AND the caller presented no credential, fall
+    // through as the guest admin. If they presented an INVALID credential
+    // we still reject — guest mode is a missing-creds bypass, not a
+    // wrong-creds bypass.
+    if (guestModeEnabled && !credentialPresented) {
+      req.user = GUEST_USER;
+      return next();
     }
 
     const code = credentialPresented ? "INVALID_API_KEY" : "MISSING_API_KEY";

@@ -543,6 +543,25 @@ function upsertUserFromGoogle({ googleId, email, name = "", picture = "" }) {
   return stmts.userGetById.get(id);
 }
 
+/**
+ * Idempotent insert of a synthetic guest admin user. Called from server.js
+ * at startup when GUEST_MODE_ENABLED=true. The user's role=admin so
+ * billing.chargeRun's role-exempt branch fires and no credits are touched.
+ *
+ * @param {{ id: string, email: string, name?: string }} input
+ */
+function ensureGuestUser({ id, email, name = "Guest" }) {
+  const existing = stmts.userGetById.get(id);
+  if (existing) return existing;
+  try {
+    stmts.userInsert.run(id, email, null, name, null, "admin");
+  } catch (err) {
+    // UNIQUE-violation on email is the expected race / idempotency case
+    if (!/UNIQUE/i.test(err.message)) throw err;
+  }
+  return stmts.userGetById.get(id);
+}
+
 function getUserById(id) {
   return stmts.userGetById.get(id) || null;
 }
@@ -855,7 +874,7 @@ function adminSummary() {
 
 module.exports = {
   createJob, getJob, updateJob, listJobs, jobEvents, db, cleanupOldJobs,
-  upsertUserFromGoogle, getUserById, getUserByEmail, setUserRole,
+  upsertUserFromGoogle, ensureGuestUser, getUserById, getUserByEmail, setUserRole,
   getUserCredits, decrementUserCredits, incrementUserCredits, setUserEmailVerified,
   createApplication, getApplicationsByEmail, listApplications,
   setApplicationStatus, setApplicationLoiStatus, getApplicationById,
