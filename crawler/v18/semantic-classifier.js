@@ -61,18 +61,20 @@ const SCREENSHOT_MAX_DIM = Number(process.env.CLASSIFIER_SCREENSHOT_MAX_DIM) || 
 
 /**
  * Skip Haiku entirely on near-empty graphs — WebView covers, cold splashes,
- * trivial modals, simple auth/permission screens with 4-5 elements.
- * LLMFallback handles those fine and it's wasteful to pay vision-API
- * latency for a low-information plan.
+ * and trivial modals with a single close icon. LLMFallback handles those
+ * fine and it's wasteful to pay vision-API latency for a 1-element plan.
  *
- * 2026-04-26 (Phase F1.2): raised 3 → 6. ~30% of classifier calls in
- * production traces hit graphs with 3-5 clickables (typical auth pages,
- * permission prompts, "Welcome / Continue" landings). Their plans were
- * always low-confidence and the screen-level decision was already
- * structurally obvious. Trades 60 cheap-classifier-hits for ~5
- * LLMFallback-hits per crawl; net cost positive.
+ * 2026-04-26 (Phase F1.2 attempted, then reverted): raised 3 → 6 to skip
+ * auth/permission screens with 4-5 elements. Production run 0155e509
+ * showed this broke drift recovery — biztoso's "Sign in with Google" flow
+ * drifts to GMS, the V18 classifier's engine_action=relaunch is the
+ * recovery signal, and the short-circuit was emitting
+ * engine_action="proceed" on every drift. 5 cascading drifts →
+ * package_drift_unrecoverable at step 17. Reverted to 3 — F1.1 image
+ * downscale alone cut crawlHaiku 83% ($0.21 → $0.036), so the savings
+ * target is still met without the reliability hit.
  */
-const MIN_CLICKABLES_FOR_CLASSIFICATION = 6;
+const MIN_CLICKABLES_FOR_CLASSIFICATION = 3;
 
 /** Confidence below this triggers Sonnet escalation (see sonnet-escalation.js). */
 const LOW_CONFIDENCE_THRESHOLD = 0.5;
