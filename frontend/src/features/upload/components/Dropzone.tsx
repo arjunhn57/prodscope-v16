@@ -251,7 +251,7 @@ export function Dropzone({ onFileAccepted, disabled = false }: DropzoneProps) {
         <input
           ref={inputRef}
           type="file"
-          accept={`.apk,${APK_MIME}`}
+          accept={`.apk,.xapk,.apks,.apkm,${APK_MIME}`}
           className="hidden"
           onChange={onInputChange}
           disabled={disabled}

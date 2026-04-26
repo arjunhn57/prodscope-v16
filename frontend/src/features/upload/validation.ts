@@ -1,29 +1,44 @@
 export const MAX_APK_BYTES = 200 * 1024 * 1024;
 export const APK_MIME = "application/vnd.android.package-archive";
 
+// Bundles (.xapk / .apks / .apkm) ship as zips of split APKs. Backend expands
+// them via `adb install-multiple` after extraction. Browser MIME types for
+// these are inconsistent (zip / octet-stream depending on OS), so extension
+// is the load-bearing signal here — APK_MIME stays as a hint.
+const INSTALLABLE_EXTENSIONS = [".apk", ".xapk", ".apks", ".apkm"] as const;
+
 export type ValidationResult =
   | { ok: true }
   | { ok: false; reason: string };
 
-function hasApkExtension(name: string): boolean {
-  return name.toLowerCase().endsWith(".apk");
+function hasInstallableExtension(name: string): boolean {
+  const lower = name.toLowerCase();
+  return INSTALLABLE_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 
 export function validateApk(file: File): ValidationResult {
-  if (!hasApkExtension(file.name) && file.type !== APK_MIME) {
-    return { ok: false, reason: "APK files only — this build didn't match .apk." };
+  const lowerName = (file.name || "").toLowerCase();
+  if (lowerName.endsWith(".aab")) {
+    return {
+      ok: false,
+      reason: ".aab files cannot be installed directly. Convert to .xapk via APKMirror or bundletool, then re-upload.",
+    };
+  }
+
+  if (!hasInstallableExtension(lowerName) && file.type !== APK_MIME) {
+    return { ok: false, reason: "APK files only — accepts .apk, .xapk, .apks, .apkm." };
   }
 
   if (file.size > MAX_APK_BYTES) {
     const mb = (file.size / (1024 * 1024)).toFixed(0);
     return {
       ok: false,
-      reason: `This APK is ${mb}MB. Max accepted size is 200MB.`,
+      reason: `This file is ${mb}MB. Max accepted size is 200MB.`,
     };
   }
 
   if (file.size === 0) {
-    return { ok: false, reason: "This APK appears to be empty." };
+    return { ok: false, reason: "This file appears to be empty." };
   }
 
   return { ok: true };
@@ -39,7 +54,7 @@ export function looksLikeApkFromDataTransfer(dt: DataTransfer): boolean {
   }
   if (dt.files && dt.files.length > 0) {
     const f = dt.files[0];
-    return hasApkExtension(f.name) || f.type === APK_MIME;
+    return hasInstallableExtension(f.name) || f.type === APK_MIME;
   }
   return true;
 }

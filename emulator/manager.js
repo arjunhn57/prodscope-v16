@@ -1,6 +1,9 @@
 "use strict";
 
 const { execSync, execFileSync, exec } = require("child_process");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const { sleep } = require("../utils/sleep");
 const {
   EMULATOR_AVD,
@@ -139,8 +142,62 @@ async function saveSnapshot() {
   log.info("Snapshot saved.");
 }
 
+// ---------------------------------------------------------------------------
+// Install
+// ---------------------------------------------------------------------------
+
 /**
- * Install an APK onto the running emulator.
+ * Extract the package name of the install-blocking app from an adb error.
+ *
+ * Anchored on canonical install-error phrasings adb emits — NOT a generic
+ * "any dotted identifier" sweep. The earlier broad regex would happily match
+ * the .apk filename embedded in the error path (e.g. "f4d5549510b6.apk")
+ * before reaching the real package name ("org.wikipedia"), causing the
+ * retry to uninstall a bogus package and the install to fail again.
+ *
+ * Falls through to `aapt2 dump badging` on the supplied APK as the
+ * authoritative manifest lookup — whatever package the APK we're trying to
+ * install declares is, by definition, the package blocking the install.
+ *
+ * @param {Error} err     the rejection from `adb install` / `install-multiple`
+ * @param {string} apkPath path to a .apk file we can read the manifest from
+ *                          (for bundles, pass the base.apk)
+ * @returns {string|null}
+ */
+function extractBlockingPackageFromError(err, apkPath) {
+  const errStr = (err && err.message) || "";
+  const PKG_TOKEN = "([a-z][a-z0-9_]+(?:\\.[a-z0-9_]+)+)";
+  const PHRASE_REGEXES = [
+    new RegExp(`Existing package ${PKG_TOKEN} signatures`, "i"),
+    new RegExp(`Package ${PKG_TOKEN} is already installed`, "i"),
+    new RegExp(`Package ${PKG_TOKEN} signatures do not match`, "i"),
+  ];
+  const BUNDLE_EXTS = new Set([".apk", ".aab", ".xapk", ".apks", ".apkm"]);
+  for (const re of PHRASE_REGEXES) {
+    const m = errStr.match(re);
+    if (!m || !m[1]) continue;
+    let isFilename = false;
+    for (const ext of BUNDLE_EXTS) {
+      if (m[1].toLowerCase().endsWith(ext)) { isFilename = true; break; }
+    }
+    if (!isFilename) return m[1];
+  }
+  // Manifest fallback — authoritative.
+  if (apkPath) {
+    try {
+      const badging = execFileSync("aapt2", ["dump", "badging", apkPath], {
+        timeout: 15000, encoding: "utf-8",
+      });
+      const m = badging.match(/package:\s+name='([^']+)'/);
+      if (m) return m[1];
+    } catch (_) { /* aapt2 may not be on PATH on every box — swallow */ }
+  }
+  return null;
+}
+
+/**
+ * Install a single APK onto the running emulator.
+ *
  * Large APKs (80MB+) can take 60-90s on emulator — allow up to 120s with one retry.
  *
  * Flags used:
@@ -154,58 +211,15 @@ async function saveSnapshot() {
  * Also uses execFileSync with an args array instead of shell-concatenated
  * strings — eliminates a latent shell-injection surface on apkPath.
  */
-function installApk(apkPath) {
+function installSingleApk(apkPath) {
   log.info({ apkPath }, "Installing APK (this may take up to 2 minutes for large apps)...");
   const args = ["install", "-r", "-d", "-t", apkPath];
   try {
     execFileSync("adb", args, { timeout: 120000 });
   } catch (err) {
     log.warn({ errCode: err.code, errMsg: err.message }, "First install attempt failed — retrying after adb reconnect");
-    try {
-      execFileSync("adb", ["wait-for-device"], { timeout: 15000 });
-    } catch (_) {}
-    // Second attempt: if it's still failing, try an explicit uninstall of
-    // the target package first to defeat stubborn signature / test-only /
-    // profile-owner collisions that -r -d alone can't resolve.
-    //
-    // Extraction is anchored on the canonical install-error phrasings adb
-    // emits — NOT a generic "any dotted identifier" sweep. The earlier
-    // broad regex would happily match the .apk filename embedded in the
-    // error path (e.g. "f4d5549510b6.apk") before reaching the real
-    // package name ("org.wikipedia"), causing the retry to uninstall a
-    // bogus package and the install to fail again. Specific phrases:
-    //   - "Existing package <pkg> signatures do not match"
-    //   - "Package <pkg> is already installed"
-    //   - "INSTALL_FAILED_*: <pkg>"
-    // 2026-04-25: also fall through to the APK-manifest aapt2 lookup as
-    // an authoritative fallback (always safe — the package name we're
-    // about to install must be the package blocking the install).
-    const errStr = (err && err.message) || "";
-    let blockingPkg = null;
-    const PKG_TOKEN = "([a-z][a-z0-9_]+(?:\\.[a-z0-9_]+)+)";
-    const PHRASE_REGEXES = [
-      new RegExp(`Existing package ${PKG_TOKEN} signatures`, "i"),
-      new RegExp(`Package ${PKG_TOKEN} is already installed`, "i"),
-      new RegExp(`Package ${PKG_TOKEN} signatures do not match`, "i"),
-    ];
-    for (const re of PHRASE_REGEXES) {
-      const m = errStr.match(re);
-      if (m && m[1] && !m[1].endsWith(".apk") && !m[1].endsWith(".aab") && !m[1].endsWith(".xapk")) {
-        blockingPkg = m[1];
-        break;
-      }
-    }
-    // Manifest fallback — authoritative. Whatever package the APK we're
-    // installing declares is, by definition, the package blocking us.
-    if (!blockingPkg) {
-      try {
-        const badging = execFileSync("aapt2", ["dump", "badging", apkPath], {
-          timeout: 15000, encoding: "utf-8",
-        });
-        const m = badging.match(/package:\s+name='([^']+)'/);
-        if (m) blockingPkg = m[1];
-      } catch (_) { /* aapt2 may not be on PATH on every box — swallow */ }
-    }
+    try { execFileSync("adb", ["wait-for-device"], { timeout: 15000 }); } catch (_) {}
+    const blockingPkg = extractBlockingPackageFromError(err, apkPath);
     if (blockingPkg) {
       try {
         execFileSync("adb", ["uninstall", blockingPkg], { timeout: 15000, stdio: "ignore" });
@@ -215,6 +229,190 @@ function installApk(apkPath) {
     execFileSync("adb", args, { timeout: 120000 });
   }
   log.info("APK installed successfully");
+}
+
+/**
+ * Foreign architectures we never want to ship to our x86_64 emulator.
+ * Keeping arm splits inflates `/data` with native libs the device can't load
+ * and on some apps trips INSTALL_FAILED_NO_MATCHING_ABIS at install time.
+ */
+const FOREIGN_ARCH_SPLITS = new Set(["arm64_v8a", "armeabi_v7a", "armeabi", "mips", "mips64"]);
+
+/**
+ * Pick the right files out of an already-extracted bundle directory.
+ *
+ * Pulled out as a separate function so unit tests can exercise the picker
+ * against a fixture directory without shelling out to `unzip`.
+ *
+ * @param {string} extractedDir   path to an unzipped bundle
+ * @param {{ arch?: string, manifestApks?: string[]|null, manifestPackage?: string|null }} [opts]
+ * @returns {{ apkFiles: string[], obbFiles: Array<{src:string,dest:string}>, packageName: string|null }}
+ */
+function _pickSplitsFromTempDir(extractedDir, opts = {}) {
+  const arch = opts.arch || "x86_64";
+  let packageName = opts.manifestPackage || null;
+  let apkRelPaths = Array.isArray(opts.manifestApks) ? opts.manifestApks.slice() : null;
+
+  // Fallback: walk extractedDir for any *.apk files
+  if (!apkRelPaths || apkRelPaths.length === 0) {
+    apkRelPaths = [];
+    const walk = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.isFile() && entry.name.toLowerCase().endsWith(".apk")) apkRelPaths.push(full);
+      }
+    };
+    walk(extractedDir);
+  }
+
+  // Filter splits — drop foreign arch, keep base + matching arch + lang/dpi splits.
+  const matchingArchSplit = `split_config.${arch}.apk`;
+  const apkFiles = apkRelPaths
+    .map((rel) => (path.isAbsolute(rel) ? rel : path.join(extractedDir, rel)))
+    .filter((abs) => {
+      const name = path.basename(abs).toLowerCase();
+      if (name === "base.apk") return true;
+      if (name === matchingArchSplit) return true;
+      const m = name.match(/^split_config\.([a-z0-9_]+)\.apk$/);
+      if (m && FOREIGN_ARCH_SPLITS.has(m[1])) return false;
+      return true;
+    });
+
+  // Collect OBB pushes if Android/obb/<pkg>/ exists
+  const obbFiles = [];
+  const obbRoot = path.join(extractedDir, "Android", "obb");
+  if (fs.existsSync(obbRoot)) {
+    for (const pkg of fs.readdirSync(obbRoot)) {
+      const pkgDir = path.join(obbRoot, pkg);
+      if (!fs.statSync(pkgDir).isDirectory()) continue;
+      for (const f of fs.readdirSync(pkgDir)) {
+        if (f.toLowerCase().endsWith(".obb")) {
+          obbFiles.push({
+            src: path.join(pkgDir, f),
+            dest: `/sdcard/Android/obb/${pkg}/${f}`,
+          });
+        }
+      }
+    }
+  }
+
+  return { apkFiles, obbFiles, packageName };
+}
+
+/**
+ * Extract a .xapk / .apks / .apkm bundle to a temp dir and return the
+ * install plan (filtered split list + OBB pushes + manifest package name).
+ *
+ * Caller owns the returned `tempDir` — must `fs.rmSync(tempDir, recursive)`
+ * after install completes (or fails). Bundles can be 200+ MB extracted.
+ *
+ * @param {string} archivePath
+ * @param {{ arch?: string }} [opts]
+ * @returns {{ apkFiles: string[], obbFiles: Array<{src:string,dest:string}>, packageName: string|null, tempDir: string }}
+ */
+function extractBundleSplits(archivePath, opts = {}) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "prodscope-bundle-"));
+  try {
+    execFileSync("unzip", ["-q", "-o", archivePath, "-d", tempDir], { timeout: 60000 });
+  } catch (err) {
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (_) {}
+    throw new Error(`Failed to extract bundle ${archivePath}: ${err.message}`);
+  }
+
+  // APKMirror's xapk format includes a manifest.json describing the bundle.
+  // Use it as the authoritative install list when present.
+  let manifestApks = null;
+  let manifestPackage = null;
+  const manifestPath = path.join(tempDir, "manifest.json");
+  if (fs.existsSync(manifestPath)) {
+    try {
+      const m = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+      manifestPackage = m.package_name || m.packageName || null;
+      const splits = Array.isArray(m.split_apks) ? m.split_apks : [];
+      manifestApks = splits.map((s) => (s && typeof s === "object" ? s.file : s)).filter(Boolean);
+    } catch (_) { /* malformed manifest — fall through to fs walk */ }
+  }
+
+  const picked = _pickSplitsFromTempDir(tempDir, {
+    arch: opts.arch,
+    manifestApks,
+    manifestPackage,
+  });
+  return { ...picked, tempDir };
+}
+
+/**
+ * Install an APK or APK bundle onto the running emulator.
+ *
+ * Dispatches by file extension:
+ *   - .apk         → adb install (single)
+ *   - .xapk/.apks/.apkm → adb install-multiple after extraction + split filtering
+ *
+ * The bundle path additionally pushes any embedded OBB files to
+ * /sdcard/Android/obb/<pkg>/ since some apps refuse to launch without them.
+ *
+ * @param {string} apkPath
+ */
+function installApk(apkPath) {
+  const ext = path.extname(apkPath).toLowerCase();
+  if (ext === ".xapk" || ext === ".apks" || ext === ".apkm") {
+    return installAppBundle(apkPath);
+  }
+  return installSingleApk(apkPath);
+}
+
+/**
+ * Install an .xapk / .apks / .apkm bundle onto the running emulator.
+ *
+ * Unzips, picks splits matching x86_64, runs `adb install-multiple`, pushes
+ * OBB. Same retry shape as installSingleApk: on first failure, force-uninstall
+ * the blocking package (manifest is authoritative) and retry once.
+ */
+function installAppBundle(apkPath) {
+  log.info({ apkPath }, "Installing app bundle (this may take up to 4 minutes)...");
+  const { apkFiles, obbFiles, packageName, tempDir } = extractBundleSplits(apkPath);
+  if (apkFiles.length === 0) {
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (_) {}
+    throw new Error(`Bundle ${apkPath} contained no installable .apk files`);
+  }
+  log.info({ count: apkFiles.length, package: packageName, hasObb: obbFiles.length > 0 },
+    "Bundle splits selected");
+
+  // Find the base.apk (or first .apk) — used as the manifest source for the
+  // blocking-package fallback if adb's error output isn't enough.
+  const baseApk = apkFiles.find((f) => path.basename(f).toLowerCase() === "base.apk") || apkFiles[0];
+  const args = ["install-multiple", "-r", "-d", "-t", ...apkFiles];
+
+  try {
+    try {
+      execFileSync("adb", args, { timeout: 240000 });
+    } catch (err) {
+      log.warn({ errMsg: err.message }, "Bundle install failed — retrying after force-uninstall");
+      try { execFileSync("adb", ["wait-for-device"], { timeout: 15000 }); } catch (_) {}
+      const blockingPkg = packageName || extractBlockingPackageFromError(err, baseApk);
+      if (blockingPkg) {
+        try {
+          execFileSync("adb", ["uninstall", blockingPkg], { timeout: 15000, stdio: "ignore" });
+          log.info({ package: blockingPkg }, "Force-uninstalled blocking package");
+        } catch (_) {}
+      }
+      execFileSync("adb", args, { timeout: 240000 });
+    }
+    for (const { src, dest } of obbFiles) {
+      try {
+        execFileSync("adb", ["shell", "mkdir", "-p", path.posix.dirname(dest)],
+          { timeout: 10000, stdio: "ignore" });
+        execFileSync("adb", ["push", src, dest], { timeout: 120000 });
+        log.info({ obb: path.basename(src) }, "OBB pushed");
+      } catch (e) {
+        log.warn({ err: e.message, obb: path.basename(src) }, "OBB push failed — continuing");
+      }
+    }
+    log.info("Bundle installed successfully");
+  } finally {
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (_) {}
+  }
 }
 
 /**
@@ -308,4 +506,16 @@ async function resetEmulator(previousPackage) {
   }
 }
 
-module.exports = { bootEmulator, saveSnapshot, installApk, relaunchApp, killEmulator, resetEmulator };
+module.exports = {
+  bootEmulator,
+  saveSnapshot,
+  installApk,
+  installSingleApk,
+  installAppBundle,
+  extractBundleSplits,
+  _pickSplitsFromTempDir,
+  extractBlockingPackageFromError,
+  relaunchApp,
+  killEmulator,
+  resetEmulator,
+};

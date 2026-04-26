@@ -49,7 +49,12 @@ const staticInputsSchema = z
 // File validation
 // ---------------------------------------------------------------------------
 
-const ALLOWED_EXTENSIONS = new Set([".apk", ".aab", ".xapk"]);
+// .aab is an Android App Bundle (developer artifact). It cannot be installed
+// directly on a device — would need `bundletool` to produce device APKs.
+// Listed here as a known type so we can reject it with a clear error
+// pointing the user at .xapk / .apks instead.
+const INSTALLABLE_EXTENSIONS = new Set([".apk", ".xapk", ".apks", ".apkm"]);
+const ALLOWED_EXTENSIONS = new Set([...INSTALLABLE_EXTENSIONS, ".aab"]);
 // 200 MB — real-world apps (Spotify, social, gaming, fintech) commonly
 // ship 60–180 MB APKs. 50 MB rejected most non-trivial uploads.
 // 2026-04-25: bumped from 50 MB → 200 MB. The error message already
@@ -79,10 +84,16 @@ function validateFile(file) {
   // Check extension
   const ext = (file.originalname || "").toLowerCase().split(".").pop();
   const dotExt = ext ? `.${ext}` : "";
-  if (!ALLOWED_EXTENSIONS.has(dotExt)) {
+  if (dotExt === ".aab") {
     return {
       valid: false,
-      error: `Invalid file type: ${dotExt || "unknown"}. Allowed: ${[...ALLOWED_EXTENSIONS].join(", ")}`,
+      error: ".aab files cannot be installed directly. Convert to .xapk via APKMirror or bundletool, then re-upload.",
+    };
+  }
+  if (!INSTALLABLE_EXTENSIONS.has(dotExt)) {
+    return {
+      valid: false,
+      error: `Invalid file type: ${dotExt || "unknown"}. Allowed: ${[...INSTALLABLE_EXTENSIONS].join(", ")}`,
     };
   }
 
@@ -219,4 +230,5 @@ module.exports = {
   STATIC_INPUT_KEYS,
   MAX_FILE_SIZE_BYTES,
   ALLOWED_EXTENSIONS,
+  INSTALLABLE_EXTENSIONS,
 };
