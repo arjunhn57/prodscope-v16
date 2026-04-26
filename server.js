@@ -778,7 +778,13 @@ app.get("/api/v1/job-live-stream/:jobId", (req, res) => {
   let lastSentPath = null;
   const FRAME_DELAY_MS = 500;
 
-  function sendFrame() {
+  // Phase A5+: live-stream cloaking. Hide the Android system UI so the
+  // viewer sees the user's app, not "an emulator running a script."
+  // Suppresses launcher / recents / settings frames and crops the
+  // status + nav bars from every emitted frame.
+  const { isSystemUiActivity, cropAppBody, sanitizeMeta } = require("./lib/live-stream-cloak");
+
+  async function sendFrame() {
     if (stopped) return;
 
     // Re-read job state for fresh metadata
@@ -803,6 +809,14 @@ app.get("/api/v1/job-live-stream/:jobId", (req, res) => {
       return;
     }
 
+    // Cloak: if the foreground is launcher / recents / settings, hold
+    // the previous frame instead of emitting a "back at home" view.
+    // The viewer sees a steady image until the agent re-enters the app.
+    if (isSystemUiActivity(live.activity)) {
+      setTimeout(sendFrame, FRAME_DELAY_MS);
+      return;
+    }
+
     let pngBuf;
     try {
       pngBuf = fs.readFileSync(screenshotPath);
@@ -816,36 +830,39 @@ app.get("/api/v1/job-live-stream/:jobId", (req, res) => {
       return;
     }
 
+    // Cloak: crop status bar + nav bar so the frame doesn't render the
+    // Android time/battery/back-pill chrome.
+    let outBuf = pngBuf;
+    try {
+      outBuf = await cropAppBody(pngBuf);
+    } catch (_) {
+      outBuf = pngBuf;
+    }
+
     lastSentPath = screenshotPath;
 
-    // Format action header
-    let actionStr = "";
-    if (live.latestAction && typeof live.latestAction === "object") {
-      actionStr = [live.latestAction.type, live.latestAction.description]
-        .filter(Boolean)
-        .join(": ");
-    } else if (live.latestAction) {
-      actionStr = String(live.latestAction);
-    }
+    // Cloak: sanitize metadata headers (activity etc.) so the page
+    // never renders a launcher activity name or system intent string.
+    const meta = sanitizeMeta(live);
 
     // Write multipart frame
     const header =
       "--frame\r\n" +
       "Content-Type: image/png\r\n" +
-      "Content-Length: " + pngBuf.length + "\r\n" +
+      "Content-Length: " + outBuf.length + "\r\n" +
       "X-Phase: " + (phase || "running") + "\r\n" +
       "X-Step: " + (live.rawStep != null ? live.rawStep : "") + "\r\n" +
       "X-Total: " + (live.maxRawSteps != null ? live.maxRawSteps : "") + "\r\n" +
       "X-Unique: " + (live.countedUniqueScreens != null ? live.countedUniqueScreens : "") + "\r\n" +
-      "X-Activity: " + (live.activity || "") + "\r\n" +
-      "X-Intent: " + (live.intentType || "") + "\r\n" +
-      "X-Action: " + actionStr + "\r\n" +
-      "X-Message: " + (live.message || "") + "\r\n" +
+      "X-Activity: " + meta.activity + "\r\n" +
+      "X-Intent: " + meta.intentType + "\r\n" +
+      "X-Action: " + meta.action + "\r\n" +
+      "X-Message: " + meta.message + "\r\n" +
       "\r\n";
 
     try {
       res.write(header);
-      res.write(pngBuf);
+      res.write(outBuf);
       res.write("\r\n");
     } catch (_) {
       stopped = true;
