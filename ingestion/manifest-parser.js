@@ -56,6 +56,10 @@ function extractBaseApkFromBundle(bundlePath) {
  * @property {string|null} appCategory     android:appCategory value (e.g. "game", "social").
  * @property {boolean} isGame              Legacy android:isGame attribute.
  * @property {string} appName
+ * @property {boolean} usesGms             Phase A5: app declares Google Play Services /
+ *                                          Firebase dependency. Apps with this flag fail
+ *                                          on the bare AOSP emulator (no GSF). Used by
+ *                                          app-compatibility's pre-flight rejection.
  */
 
 /**
@@ -133,8 +137,34 @@ function parseApk(apkPath) {
     // Legacy android:isGame attribute.
     const isGame = /application:[^\n]*isGame='true'/.test(output);
 
+    // Phase A5: Google Play Services / Firebase dependency detection.
+    // Three signals — any one of them is evidence the app expects GMS:
+    //   1. Permissions referencing google.android.c2dm / gsf — FCM, Auth.
+    //   2. App-package itself a com.google.* (uses GMS by definition).
+    //   3. The aapt badging output mentions GMS / Firebase classes.
+    // Catches the common case (Wikipedia, Notion, Discord, anything using
+    // Firebase) without trying to parse the full manifest XML.
+    const usesGms =
+      permissions.some(
+        (p) =>
+          p === "com.google.android.c2dm.permission.RECEIVE" ||
+          p === "com.google.android.providers.gsf.permission.READ_GSERVICES" ||
+          p === "com.google.android.finsky.permission.BIND_GET_INSTALL_REFERRER_SERVICE"
+      ) ||
+      /^com\.google\./i.test(packageName) ||
+      /com\.google\.android\.gms|com\.google\.firebase/i.test(output);
+
     log.info(
-      { packageName, launcherActivity, activities: activities.length, features: features.length, glEsVersion, appCategory, isGame },
+      {
+        packageName,
+        launcherActivity,
+        activities: activities.length,
+        features: features.length,
+        glEsVersion,
+        appCategory,
+        isGame,
+        usesGms,
+      },
       "APK parsed",
     );
 
@@ -147,6 +177,7 @@ function parseApk(apkPath) {
       glEsVersion,
       appCategory,
       isGame,
+      usesGms,
       appName,
     };
   } catch (err) {
@@ -170,6 +201,7 @@ function parseApkFallback(apkPath) {
     glEsVersion: null,
     appCategory: null,
     isGame: false,
+    usesGms: false,
     appName: "Unknown App",
   };
 }
