@@ -2,6 +2,8 @@ node_modules/
 .env
 .env.*
 !.env.example
+# Frontend production build env — public URL only, no secrets
+!frontend/.env.production
 app.log
 *.log
 data/
