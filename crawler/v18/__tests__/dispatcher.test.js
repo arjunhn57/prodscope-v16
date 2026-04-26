@@ -67,7 +67,7 @@ test("dispatch: navigate-intent feed cards → ExplorationDriver taps a card", a
   const r = await dispatch(
     { xml, packageName: "com.app" },
     {},
-    { anthropic, classifierCache: new Map() },
+    { anthropic, classifierCache: new Map(), minClickables: 1 },
   );
   assert.equal(r.driver, "ExplorationDriver");
   assert.equal(r.action.type, "tap");
@@ -102,7 +102,7 @@ test("dispatch: all-write reply buttons → ExplorationDriver yields; dispatcher
   const r = await dispatch(
     { xml, packageName: "com.app" },
     {},
-    { anthropic, classifierCache: new Map(), llmFallback },
+    { anthropic, classifierCache: new Map(), minClickables: 1, llmFallback },
   );
   assert.equal(r.driver, "LLMFallback", "no driver should tap a write-intent Reply button");
   assert.equal(llmFallbackCalled, true);
@@ -139,7 +139,7 @@ test("dispatch: mixed intents → navigate-tagged Home is picked, write-tagged P
   const r = await dispatch(
     { xml, packageName: "com.app" },
     {},
-    { anthropic, classifierCache: new Map() },
+    { anthropic, classifierCache: new Map(), minClickables: 1 },
   );
   assert.equal(r.driver, "ExplorationDriver");
   assert.equal(r.action.type, "tap");
@@ -184,7 +184,7 @@ test("dispatch: engine_action=relaunch → emits launch_app, drivers never run",
     {},
     {
       anthropic,
-      classifierCache: new Map(),
+      classifierCache: new Map(), minClickables: 1,
       targetPackage: "com.biztoso.app",
       drivers: [spyDriver],
     },
@@ -219,7 +219,7 @@ test("dispatch: engine_action=press_back → emits press_back, drivers never run
   const r = await dispatch(
     { xml, packageName: "com.app", targetPackage: "com.app" },
     {},
-    { anthropic, classifierCache: new Map(), targetPackage: "com.app", drivers: [spyDriver] },
+    { anthropic, classifierCache: new Map(), minClickables: 1, targetPackage: "com.app", drivers: [spyDriver] },
   );
   assert.equal(r.action.type, "press_back");
   assert.equal(r.driver, "EngineAction:press_back");
@@ -245,7 +245,7 @@ test("dispatch: engine_action=wait → emits wait action", async () => {
   const r = await dispatch(
     { xml, packageName: "com.app", targetPackage: "com.app" },
     {},
-    { anthropic, classifierCache: new Map(), targetPackage: "com.app" },
+    { anthropic, classifierCache: new Map(), minClickables: 1, targetPackage: "com.app" },
   );
   assert.equal(r.action.type, "wait");
   assert.equal(r.action.ms, 1500);
@@ -274,7 +274,7 @@ test("dispatch: engine_action=proceed (default) → drivers dispatch normally", 
   const r = await dispatch(
     { xml, packageName: "com.app", targetPackage: "com.app" },
     {},
-    { anthropic, classifierCache: new Map(), targetPackage: "com.app" },
+    { anthropic, classifierCache: new Map(), minClickables: 1, targetPackage: "com.app" },
   );
   assert.equal(r.driver, "ExplorationDriver");
   assert.equal(r.action.type, "tap");
@@ -305,7 +305,7 @@ test("dispatch: after driver emits a tap, the tapped clickable is recorded in tr
   const r = await dispatch(
     { xml, packageName: "com.app" },
     {},
-    { anthropic, classifierCache: new Map(), trajectory },
+    { anthropic, classifierCache: new Map(), minClickables: 1, trajectory },
   );
   assert.equal(r.action.type, "tap");
   // One of the 3 cards is now marked tapped on this fp.
@@ -335,8 +335,8 @@ test("dispatch: classifier cache hit on second call — second tap records secon
   const anthropic = makeMockAnthropic([plan]); // Only ONE scripted plan — subsequent calls must be cache hits.
   const cache = new Map();
   const trajectory = createMemory();
-  const r1 = await dispatch({ xml, packageName: "com.app" }, {}, { anthropic, classifierCache: cache, trajectory });
-  const r2 = await dispatch({ xml, packageName: "com.app" }, {}, { anthropic, classifierCache: cache, trajectory });
+  const r1 = await dispatch({ xml, packageName: "com.app" }, {}, { anthropic, classifierCache: cache, minClickables: 1, trajectory });
+  const r2 = await dispatch({ xml, packageName: "com.app" }, {}, { anthropic, classifierCache: cache, minClickables: 1, trajectory });
   const fp = r1.plan.logicalFingerprint;
   assert.notEqual(r1.action.y, r2.action.y, "second call must pick a different card via frontier filter");
   assert.equal(trajectory.tappedEdgesByFp.get(fp).size, 2);
@@ -367,14 +367,14 @@ test("dispatch: frontier empty on detail screen → ExplorationDriver emits pres
   // Dispatch — classifier will compute its own fp. We need both pre-seed and
   // live fp to match. Simpler: dispatch first to learn the fp, then pre-seed
   // trajectory on that fp and dispatch again.
-  const r1 = await dispatch({ xml, packageName: "com.app" }, {}, { anthropic, classifierCache: new Map(), trajectory });
+  const r1 = await dispatch({ xml, packageName: "com.app" }, {}, { anthropic, classifierCache: new Map(), minClickables: 1, trajectory });
   const fp = r1.plan.logicalFingerprint;
   // Pre-seed all graph clickables as tapped on the real fp.
   for (const c of graph.clickables) recordTap(trajectory, fp, c);
   // Dispatch again with the same xml + fresh anthropic (need a second plan scripted).
   const anthropic2 = makeMockAnthropic([plan]);
   const cache2 = new Map();
-  const r2 = await dispatch({ xml, packageName: "com.app" }, {}, { anthropic: anthropic2, classifierCache: cache2, trajectory });
+  const r2 = await dispatch({ xml, packageName: "com.app" }, {}, { anthropic: anthropic2, classifierCache: cache2, minClickables: 1, trajectory });
   // r2 should emit press_back because frontier is empty on a detail screen.
   assert.equal(r2.action.type, "press_back");
   assert.equal(r2.driver, "ExplorationDriver");
@@ -402,13 +402,13 @@ test("dispatch: detail screen with ViewPager + empty frontier → emits swipe_ho
   const { parseClickableGraph } = require("../../v17/drivers/clickable-graph");
   const graph = parseClickableGraph(xml);
   const r0 = await dispatch({ xml, packageName: "com.app" }, {}, {
-    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory,
+    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), minClickables: 1, trajectory,
   });
   const fp = r0.plan.logicalFingerprint;
   for (const c of graph.clickables) recordTap(trajectory, fp, c);
   // Now frontier is empty. Expect swipe_horizontal (pager detected).
   const r = await dispatch({ xml, packageName: "com.app" }, {}, {
-    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory,
+    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), minClickables: 1, trajectory,
   });
   assert.equal(r.action.type, "swipe_horizontal");
   assert.equal(r.action.direction, "left");
@@ -437,14 +437,14 @@ test("dispatch: WebView detail screen with empty frontier → scroll_down before
   const { parseClickableGraph } = require("../../v17/drivers/clickable-graph");
   const graph = parseClickableGraph(xml);
   const r0 = await dispatch({ xml, packageName: "com.app" }, {}, {
-    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory,
+    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), minClickables: 1, trajectory,
   });
   const fp = r0.plan.logicalFingerprint;
   for (const c of graph.clickables) recordTap(trajectory, fp, c);
   // Empty frontier on a WebView detail screen → should emit scroll_down
   // before the back ladder.
   const r = await dispatch({ xml, packageName: "com.app" }, {}, {
-    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory,
+    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), minClickables: 1, trajectory,
   });
   assert.equal(r.action.type, "scroll_down", "WebView content should be scrolled before back-nav");
 });
@@ -467,7 +467,7 @@ test("dispatch: detail screen (no pager) empty frontier → press_back first, th
   const { parseClickableGraph } = require("../../v17/drivers/clickable-graph");
   const graph = parseClickableGraph(xml);
   const r0 = await dispatch({ xml, packageName: "com.app" }, {}, {
-    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory,
+    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), minClickables: 1, trajectory,
   });
   const fp = r0.plan.logicalFingerprint;
   for (const c of graph.clickables) recordTap(trajectory, fp, c);
@@ -475,12 +475,12 @@ test("dispatch: detail screen (no pager) empty frontier → press_back first, th
   const sharedState = {};
   // 1st empty-frontier: press_back
   const r1 = await dispatch({ xml, packageName: "com.app" }, sharedState, {
-    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory,
+    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), minClickables: 1, trajectory,
   });
   assert.equal(r1.action.type, "press_back", "step 1 of ladder must be press_back");
   // 2nd empty-frontier on same fp: edge_swipe_back
   const r2 = await dispatch({ xml, packageName: "com.app" }, sharedState, {
-    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory,
+    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), minClickables: 1, trajectory,
   });
   assert.equal(r2.action.type, "edge_swipe_back", "step 2 of ladder must be edge_swipe_back");
   // 3rd: yields → LLMFallback (default returns done). The assertion here is
@@ -491,7 +491,7 @@ test("dispatch: detail screen (no pager) empty frontier → press_back first, th
     return { type: "wait", ms: 500 };
   };
   const r3 = await dispatch({ xml, packageName: "com.app" }, sharedState, {
-    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory, llmFallback,
+    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), minClickables: 1, trajectory, llmFallback,
   });
   assert.equal(fallbackCalled, true, "ladder must yield to LLMFallback after 2 attempts");
   assert.notEqual(r3.action.type, "press_back");
@@ -517,7 +517,7 @@ test("dispatch: frontier empty on feed screen → ExplorationDriver yields to LL
   const graph = parseClickableGraph(xml);
   // Discover fp via a dry-run dispatch, then pre-seed all cards.
   const r0 = await dispatch({ xml, packageName: "com.app" }, {}, {
-    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory,
+    anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), minClickables: 1, trajectory,
   });
   const fp = r0.plan.logicalFingerprint;
   for (const c of graph.clickables) recordTap(trajectory, fp, c);
@@ -530,7 +530,7 @@ test("dispatch: frontier empty on feed screen → ExplorationDriver yields to LL
   const r = await dispatch(
     { xml, packageName: "com.app" },
     {},
-    { anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), trajectory, llmFallback },
+    { anthropic: makeMockAnthropic([plan]), classifierCache: new Map(), minClickables: 1, trajectory, llmFallback },
   );
   assert.equal(fallbackCalled, true, "LLMFallback should be invoked when frontier is empty on a feed screen");
   assert.equal(r.driver, "LLMFallback");
@@ -566,7 +566,7 @@ test("dispatch: compose sheet with a close affordance → DismissDriver acts, no
   const r = await dispatch(
     { xml, packageName: "com.app" },
     {},
-    { anthropic, classifierCache: new Map() },
+    { anthropic, classifierCache: new Map(), minClickables: 1 },
   );
   assert.equal(r.driver, "DismissDriver", "Dismiss owns close-sheet on compose screens");
   assert.equal(r.action.type, "tap");

@@ -97,7 +97,15 @@ module.exports = {
   // feature-rich apps (biztoso-class) room to drill past the bottom-nav.
   // Drill-down preference + hub-revisit detector do the heavy lifting on
   // efficiency; this only adds a modest budget cushion.
-  V16_MAX_COST_USD: Number(process.env.V16_MAX_COST_USD) || 0.20,
+  //
+  // 2026-04-26 (Phase F1.4): raised 0.20 → 0.30 transitionally. Phase E8
+  // wired the V18 classifier's vision tokens into the meter (previously
+  // invisible — it was undercounting by ~$0.20/run). With the meter now
+  // honest, the old cap fired at step 26/60 on biztoso. Bump while
+  // F1.1-F1.3 (image downscale, MIN_CLICKABLES raise, logical-fp cache)
+  // bring classifier cost down. Once F1 verify passes 3/3 apps, lower
+  // back to 0.18.
+  V16_MAX_COST_USD: Number(process.env.V16_MAX_COST_USD) || 0.30,
   // 2026-04-26 (Phase E2): 6 → 2. Sonnet stays reserved primarily for
   // V2 report synthesis; in-crawl escalations rarely fire (biztoso=0,
   // Bluesky=0). 2 is a buffer for genuinely hard auth/cred screens.

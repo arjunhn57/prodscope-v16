@@ -105,14 +105,20 @@ function node({
   );
 }
 
-// Biztoso-style comment list with Reply buttons — the real-world pattern
-// this whole V18 effort targets.
+// Biztoso-style comment list with Reply buttons + bottom nav — the
+// real-world pattern this whole V18 effort targets. 7 clickables: 4 reply
+// buttons (matches typical feed) + 3 nav tabs. Sized above
+// MIN_CLICKABLES_FOR_CLASSIFICATION (Phase F1.2 = 6) so the Haiku path
+// fires and tests can exercise the LLM round-trip.
 const biztosoCommentListXml = wrap(
   node({ text: "Great post!", resourceId: "com.biztoso:id/comment_body", cls: "android.widget.TextView", pkg: "com.biztoso", clickable: false, bounds: "[40,200][1040,360]" }),
   node({ text: "Reply", resourceId: "com.biztoso:id/reply_button", cls: "android.widget.Button", pkg: "com.biztoso", bounds: "[40,400][400,500]" }),
   node({ text: "Reply", resourceId: "com.biztoso:id/reply_button", cls: "android.widget.Button", pkg: "com.biztoso", bounds: "[40,620][400,720]" }),
   node({ text: "Reply", resourceId: "com.biztoso:id/reply_button", cls: "android.widget.Button", pkg: "com.biztoso", bounds: "[40,840][400,940]" }),
+  node({ text: "Reply", resourceId: "com.biztoso:id/reply_button", cls: "android.widget.Button", pkg: "com.biztoso", bounds: "[40,1060][400,1160]" }),
   node({ text: "Home", resourceId: "com.biztoso:id/nav_home", cls: "com.google.android.material.bottomnavigation.BottomNavigationItemView", pkg: "com.biztoso", bounds: "[0,2280][270,2400]" }),
+  node({ text: "Search", resourceId: "com.biztoso:id/nav_search", cls: "com.google.android.material.bottomnavigation.BottomNavigationItemView", pkg: "com.biztoso", bounds: "[270,2280][540,2400]" }),
+  node({ text: "Profile", resourceId: "com.biztoso:id/nav_profile", cls: "com.google.android.material.bottomnavigation.BottomNavigationItemView", pkg: "com.biztoso", bounds: "[810,2280][1080,2400]" }),
 );
 
 // Auth form — password + email short-circuit territory.
@@ -158,7 +164,7 @@ test("classifyScreen: parses a valid Haiku plan end-to-end", async () => {
   assert.ok(plan.fingerprint && plan.fingerprint.length === 12);
   // Every Reply button came back with intent=write → ExplorationDriver's filter will drop them.
   const replies = clickables.filter((c) => (c.label || "").toLowerCase() === "reply");
-  assert.equal(replies.length, 3);
+  assert.equal(replies.length, 4);
   for (const r of replies) assert.equal(r.intent, "write");
   // Home tab came back navigate.
   const home = clickables.find((c) => (c.label || "").toLowerCase() === "home");

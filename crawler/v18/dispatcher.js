@@ -137,10 +137,24 @@ async function dispatch(observation, state, deps = {}) {
     // decide engine_action=relaunch when we've drifted out of the target.
     targetPackage: deps.targetPackage || observation.targetPackage || "",
   });
+  // 2026-04-26 (Phase F1.3): compute logical fp BEFORE the classifier so it
+  // can short-circuit cache hits on content-rotated revisits (feed scroll,
+  // list pagination, etc.). Logical fp is the same one trajectory memory
+  // already keys on at line ~190 below; doing it twice is cheap (pure XML).
+  const logicalFp = computeLogicalFingerprint(
+    graph,
+    observation.packageName,
+    observation.activity,
+  );
   let classification = await classifyScreen(graph, classifierObs, observation.xml || "", {
     anthropic: deps.anthropic,
     cache: deps.classifierCache,
     timeoutMs: deps.timeoutMs,
+    logicalFp,
+    // Tests pass a smaller threshold so tight 3-clickable fixtures still
+    // exercise the Haiku path. Production runs leave this undefined →
+    // semantic-classifier uses MIN_CLICKABLES_FOR_CLASSIFICATION.
+    minClickables: deps.minClickables,
   });
   const classifierTokens = classification.tokenUsage || {
     input_tokens: 0,
@@ -166,23 +180,12 @@ async function dispatch(observation, state, deps = {}) {
   const { plan, clickables: classifiedClickables } = classification;
 
   // 3. Update trajectory memory.
-  // Phase 4: compute logical fp alongside structural fp. Coverage tracking
-  // (`logicalFingerprintsSeen`, `seenTypeCounts`) is keyed on logical fp so
-  // scroll-offset / content-rotation drift doesn't inflate counts.
-  // 2026-04-25 v2: per-fp edge tracking (`tappedEdgesByFp`) is now ALSO
-  // keyed on logical fp. Pre-v2 it used structural fp, which let any feed
-  // / list / timeline screen revive its frontier on every revisit because
-  // structural fp churns with content rotation — the agent could re-tap
-  // the same edge indefinitely. Logical fp stays stable across content
-  // variance, so once an edge is tapped on a screen it stays in the
-  // tapped set on subsequent revisits.
-  const logicalFp = computeLogicalFingerprint(
-    graph,
-    observation.packageName,
-    observation.activity,
-  );
-  // Attach to plan so downstream drivers / LLMFallback can read it without
-  // re-computing.
+  // Phase 4: logical fp drives coverage tracking (`logicalFingerprintsSeen`,
+  // `seenTypeCounts`, `tappedEdgesByFp`) so scroll-offset / content-rotation
+  // drift doesn't inflate counts and tapped edges persist across revisits.
+  // 2026-04-26 (F1.3): logicalFp is now computed pre-classifier so the
+  // classifier cache can hit on revisits — re-using it here, no recompute.
+  // Attach to plan so downstream drivers / LLMFallback can read it.
   plan.logicalFingerprint = logicalFp;
   if (deps.trajectory) {
     recordScreen(

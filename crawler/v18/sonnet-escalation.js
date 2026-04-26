@@ -15,7 +15,6 @@
  */
 
 const Anthropic = require("@anthropic-ai/sdk");
-const fs = require("fs");
 const { logger } = require("../../lib/logger");
 const {
   CLASSIFY_TOOL,
@@ -23,6 +22,7 @@ const {
   applyInputTypeShortCircuit,
   mergeClassifications,
   extractUsage,
+  loadScreenshotBlock,
   LOW_CONFIDENCE_THRESHOLD,
 } = require("./semantic-classifier");
 
@@ -87,29 +87,8 @@ function shouldEscalate(plan, signals) {
   return false;
 }
 
-/**
- * Load a screenshot as an image block, mirroring semantic-classifier.
- *
- * @param {string} [screenshotPath]
- * @returns {object|null}
- */
-function loadScreenshotBlock(screenshotPath) {
-  if (!screenshotPath || typeof screenshotPath !== "string") return null;
-  try {
-    const data = fs.readFileSync(screenshotPath);
-    return {
-      type: "image",
-      source: {
-        type: "base64",
-        media_type: "image/png",
-        data: data.toString("base64"),
-      },
-    };
-  } catch (err) {
-    log.warn({ err: err.message, screenshotPath }, "escalation: screenshot load failed");
-    return null;
-  }
-}
+// loadScreenshotBlock now imported from ./semantic-classifier so escalation
+// gets the same Phase F1.1 downscale path (was a local fs.readFileSync copy).
 
 function extractToolInput(message) {
   if (!message || !Array.isArray(message.content)) return null;
@@ -228,7 +207,7 @@ async function escalate(graph, observation, xmlText, priorPlan, deps = {}) {
   const anthropic = deps.anthropic || getDefaultClient();
   const timeoutMs = typeof deps.timeoutMs === "number" ? deps.timeoutMs : SONNET_TIMEOUT_MS;
   const reason = typeof deps.reason === "string" ? deps.reason : "low_confidence";
-  const screenshotBlock = loadScreenshotBlock(observation && observation.screenshotPath);
+  const screenshotBlock = await loadScreenshotBlock(observation && observation.screenshotPath);
   const request = buildRequest(graph, xmlText, observation, screenshotBlock, priorPlan, reason);
 
   const controller = new AbortController();
