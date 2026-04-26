@@ -12,6 +12,7 @@ import { VerdictHeadline } from "./components/VerdictHeadline";
 import { SignalCluster } from "./components/SignalCluster";
 import { ExecutiveSummary } from "./components/ExecutiveSummary";
 import { KeyNumbers } from "./components/KeyNumbers";
+import { StrengthsSection } from "./components/StrengthsSection";
 import { CriticalFindings } from "./components/CriticalFindings";
 import { ScreenAtlas } from "./components/ScreenAtlas";
 import { CoverageBreakdown } from "./components/CoverageBreakdown";
@@ -128,6 +129,7 @@ export function ReportPage() {
               <SignalCluster score={score} />
               <ExecutiveSummary report={report} score={score} />
               <KeyNumbers report={report} score={score} />
+              <StrengthsSection report={report} />
               <CriticalFindings report={report} />
               <ScreenAtlas report={report} />
               <CoverageBreakdown report={report} />

@@ -131,6 +131,69 @@ export interface ScoreBreakdown {
   performance: number;
 }
 
+// ── V2 report shape (synthesized by output/report-synthesis-v2.js) ──────────
+//
+// Mirrors the Zod schemas in output/report-schemas.js. The frontend only
+// reads — never validates — but the types here keep render code honest.
+
+export type V2FlagSeverity = "concern" | "watch_item" | "strength";
+export type V2Confidence = "observed" | "inferred" | "hypothesis";
+
+export interface V2EvidencedClaim {
+  claim: string;
+  severity: Severity;
+  confidence: V2Confidence;
+  evidence_screen_ids: string[];
+}
+
+export interface V2DiligenceFlag {
+  severity: V2FlagSeverity;
+  claim: string;
+  confidence: V2Confidence;
+  evidence_screen_ids: string[];
+  severity_rationale?: string;
+  founder_question: string;
+}
+
+export interface V2EvidencedFinding {
+  title: string;
+  claim: string;
+  severity: Severity;
+  confidence: V2Confidence;
+  evidence_screen_ids: string[];
+}
+
+export interface V2BlockedArea {
+  area: string;
+  reason: string;
+}
+
+export interface V2CoverageSummary {
+  screens_reached: number;
+  screens_attempted_blocked: V2BlockedArea[];
+  areas_not_attempted: string[];
+}
+
+export interface V2Report {
+  verdict: { claims: V2EvidencedClaim[] };
+  diligence_flags: V2DiligenceFlag[];
+  critical_bugs: V2EvidencedFinding[];
+  ux_issues: V2EvidencedFinding[];
+  coverage_summary: V2CoverageSummary;
+}
+
+export interface V2AnnotationsPayload {
+  annotatedScreens: string[];
+  failedScreens: string[];
+  perScreen?: Array<{
+    screenId: string;
+    ok: boolean;
+    files?: { json?: string; png?: string } | null;
+    errors?: string[] | null;
+  }>;
+  dir?: string;
+}
+
 export interface CrawlReport {
   jobId: string;
   packageName: string;
@@ -152,6 +215,13 @@ export interface CrawlReport {
   v2Coverage: V2Coverage;
   flows: FlowRecord[];
   metrics: CrawlMetrics;
+
+  /** Populated when V2 synthesis succeeded; null otherwise. */
+  v2Report: V2Report | null;
+  /** Validation/synthesis errors when V2 failed. */
+  v2Errors: string[] | null;
+  /** Annotation pipeline output (paths to PNG/JSON sidecars). */
+  annotations: V2AnnotationsPayload | null;
 }
 
 /**

@@ -11,6 +11,7 @@ export const TOC_ENTRIES: TOCEntry[] = [
   { id: SECTION_IDS.signals, label: "Signal Cluster" },
   { id: SECTION_IDS.summary, label: "Executive Summary" },
   { id: SECTION_IDS.keyNumbers, label: "Key Numbers" },
+  { id: SECTION_IDS.strengths, label: "Strengths" },
   { id: SECTION_IDS.findings, label: "Findings" },
   { id: SECTION_IDS.atlas, label: "Screen Atlas" },
   { id: SECTION_IDS.coverage, label: "Coverage" },

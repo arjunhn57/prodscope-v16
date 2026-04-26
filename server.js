@@ -555,6 +555,13 @@ app.get("/api/v1/job-status/:jobId", statusLimiter, async (req, res) => {
     steps: job.steps,
     screenshots: job.screenshots,
     report: job.report,
+    // V2 report + annotations — surfaced to the frontend so the report
+    // viewer can render strengths/concerns sections, the per-flag
+    // founder_question, and the annotation overlays. Without these,
+    // the entire V2 + annotator pipeline was invisible to customers.
+    v2Report: job.v2Report,
+    v2Errors: job.v2Errors,
+    annotations: job.annotations,
     stopReason: job.stopReason,
     crawlQuality: job.crawlQuality,
     error: job.error,
@@ -629,6 +636,9 @@ app.get("/api/v1/public-report/:jobId", statusLimiter, (req, res) => {
     wrapSuccess({
       status: job.status,
       report: job.report,
+      v2Report: job.v2Report,
+      v2Errors: job.v2Errors,
+      annotations: job.annotations,
       stopReason: job.stopReason,
       crawlQuality: job.crawlQuality,
       error: job.error,

@@ -144,6 +144,7 @@ export const SECTION_IDS = {
   signals: "report-signals",
   summary: "report-summary",
   keyNumbers: "report-key-numbers",
+  strengths: "report-strengths",
   findings: "report-findings",
   atlas: "report-atlas",
   coverage: "report-coverage",
@@ -151,6 +152,21 @@ export const SECTION_IDS = {
   timeline: "report-timeline",
   recommendations: "report-recommendations",
   footer: "report-footer",
+} as const;
+
+/**
+ * Strength palette — green/teal balance to the magenta-leaning severity scale.
+ * Mirrors the `STRENGTH_HALO = "#16A34A"` value in AnnotatedScreenshot.tsx so
+ * the badge on the screenshot matches the badge on the section card.
+ */
+export const STRENGTH_PALETTE = {
+  fg: "#0F766E",
+  bg: "#F0FDFA",
+  dot: "#16A34A",
+  ring: "rgba(22,163,74,0.32)",
+  border: "1px solid rgba(22,163,74,0.22)",
+  bgGradient:
+    "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(220,252,231,0.45) 100%)",
 } as const;
 
 export type SectionId = (typeof SECTION_IDS)[keyof typeof SECTION_IDS];

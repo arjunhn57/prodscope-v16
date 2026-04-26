@@ -10,6 +10,10 @@ import type {
   ScreenCluster,
   ScreenRecord,
   Severity,
+  V2DiligenceFlag,
+  V2EvidencedFinding,
+  V2Report,
+  V2AnnotationsPayload,
 } from "./types";
 import { SEVERITY_ORDER, FINDING_TYPE_LABEL, SCREEN_TYPE_LABEL } from "./tokens";
 
@@ -51,8 +55,19 @@ function matchFixture(jobId: string | undefined): CrawlReport | null {
 /**
  * Normalize a raw job payload into a typed CrawlReport.
  * Tolerant of missing fields — returns null only if we have nothing at all.
+ *
+ * V2 fields (v2Report, v2Errors, annotations) live on the JOB, not the
+ * report blob, so they are passed in separately by the caller.
  */
-function normalizeReport(jobId: string, raw: unknown): CrawlReport | null {
+function normalizeReport(
+  jobId: string,
+  raw: unknown,
+  jobLevel?: {
+    v2Report?: unknown;
+    v2Errors?: unknown;
+    annotations?: unknown;
+  }
+): CrawlReport | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
 
@@ -120,6 +135,25 @@ function normalizeReport(jobId: string, raw: unknown): CrawlReport | null {
       },
     flows: Array.isArray(r.flows) ? (r.flows as CrawlReport["flows"]) : [],
     metrics: (r.metrics as CrawlReport["metrics"]) ?? {},
+
+    // V2 fields piped through from the JOB envelope.
+    v2Report:
+      jobLevel?.v2Report && typeof jobLevel.v2Report === "object"
+        ? (jobLevel.v2Report as V2Report)
+        : (r.v2Report && typeof r.v2Report === "object"
+            ? (r.v2Report as V2Report)
+            : null),
+    v2Errors: Array.isArray(jobLevel?.v2Errors)
+      ? (jobLevel!.v2Errors as string[])
+      : Array.isArray(r.v2Errors)
+        ? (r.v2Errors as string[])
+        : null,
+    annotations:
+      jobLevel?.annotations && typeof jobLevel.annotations === "object"
+        ? (jobLevel.annotations as V2AnnotationsPayload)
+        : (r.annotations && typeof r.annotations === "object"
+            ? (r.annotations as V2AnnotationsPayload)
+            : null),
   };
 }
 
@@ -157,7 +191,13 @@ export function useReportData(
   const report = useMemo<CrawlReport | null>(() => {
     if (fixture && jobId) return { ...fixture, jobId };
     if (!job) return null;
-    return normalizeReport(jobId ?? "unknown", job.report);
+    // V2 fields live alongside `report` on the job envelope, not inside it.
+    const jobAny = job as unknown as Record<string, unknown>;
+    return normalizeReport(jobId ?? "unknown", job.report, {
+      v2Report: jobAny.v2Report,
+      v2Errors: jobAny.v2Errors,
+      annotations: jobAny.annotations,
+    });
   }, [fixture, job, jobId]);
 
   return {
@@ -469,4 +509,41 @@ export function humanizeDuration(report: CrawlReport): string {
   const mins = steps / Math.max(1, perMin);
   if (mins < 1) return `${Math.round(mins * 60)}s`;
   return `${mins.toFixed(1)} min`;
+}
+
+// \u2500\u2500 V2 selectors \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+/**
+ * Diligence flags marked as strengths \u2014 areas where the app demonstrates
+ * intentional craft, with citeable evidence and a founder question. The
+ * BALANCE RULE in brain/report-prompt-v2.js requires at least one per
+ * report, but we still defensively return [] on empty.
+ */
+export function strengthFlags(report: CrawlReport): V2DiligenceFlag[] {
+  const flags = report.v2Report?.diligence_flags ?? [];
+  return flags.filter((f) => f.severity === "strength");
+}
+
+/**
+ * Diligence flags marked as concern OR watch_item \u2014 the issues the report
+ * raises. Strengths are excluded; they have their own section.
+ */
+export function concernFlags(report: CrawlReport): V2DiligenceFlag[] {
+  const flags = report.v2Report?.diligence_flags ?? [];
+  return flags.filter(
+    (f) => f.severity === "concern" || f.severity === "watch_item"
+  );
+}
+
+/**
+ * Did the V2 pipeline produce a useful, populated report? Reports without
+ * V2 fall back to the V1 deterministic renderer for the visible sections.
+ */
+export function hasUsableV2(report: CrawlReport | null): boolean {
+  if (!report || !report.v2Report) return false;
+  const v2 = report.v2Report;
+  return (
+    (v2.verdict?.claims?.length ?? 0) > 0 &&
+    (v2.diligence_flags?.length ?? 0) > 0
+  );
 }
