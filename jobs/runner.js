@@ -232,6 +232,15 @@ async function processJob(jobId, apkPath, opts) {
       try {
         appProfile = parseApk(apkPath);
         log.info({ package: appProfile.packageName, launcher: appProfile.launcherActivity, activities: appProfile.activities.length }, "APK manifest parsed");
+        // Persist app identity so the frontend can render the title from
+        // it even when V1's deterministic report is suppressed (low-triage
+        // runs). Previously appProfile lived only in this scope and the
+        // report header rendered "Untitled build" for any suppressed run.
+        store.updateJob(jobId, {
+          appPackage: appProfile.packageName || null,
+          appName: appProfile.appName || null,
+          launcherActivity: appProfile.launcherActivity || null,
+        });
       } catch (e) {
         log.warn({ err: e }, "Manifest parsing failed, falling back to pm list");
       }

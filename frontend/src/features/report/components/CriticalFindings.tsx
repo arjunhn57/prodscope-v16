@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
-import { ChevronRight, AlertTriangle, Zap, Accessibility, Gauge } from "lucide-react";
-import type { CrawlReport, Finding, Severity } from "../types";
+import { ChevronRight, AlertTriangle, Zap, Accessibility, Gauge, MessageCircleQuestion } from "lucide-react";
+import type { CrawlReport, Severity } from "../types";
 import {
   REPORT_SURFACES,
   SECTION_IDS,
@@ -11,9 +11,10 @@ import {
   EDITORIAL_EASE,
 } from "../tokens";
 import {
-  sortedFindings,
+  displayFindings,
   buildReproductionTrail,
   findingTypeLabel,
+  type DisplayFinding,
 } from "../useReportData";
 import { CountTease } from "../../../components/shared/CountTease";
 import { useAuthStore, canAccessFeature } from "../../../stores/auth";
@@ -48,7 +49,15 @@ function iconFor(type: string) {
   }
 }
 
-function headlineFor(finding: Finding): string {
+function headlineFor(finding: DisplayFinding): string {
+  // V2-sourced findings carry the full claim — use the first sentence
+  // as the headline; falls back to the finding's `detail` (which itself
+  // may be a short title) or to the type label.
+  if (finding.fromV2 && finding.claim) {
+    const sentenceMatch = finding.claim.match(/^[^.!?]+[.!?]?/);
+    const headline = sentenceMatch ? sentenceMatch[0].trim() : finding.claim;
+    return headline.length > 0 ? headline : finding.detail;
+  }
   switch (finding.type) {
     case "crash":
       return `Crash on ${finding.element ?? "primary flow"}`;
@@ -70,7 +79,7 @@ export function CriticalFindings({ report }: CriticalFindingsProps) {
   const tier = useAuthStore((s) => s.tier);
   const allowAll = canAccessFeature(tier, "full_findings");
 
-  const all = useMemo(() => sortedFindings(report), [report]);
+  const all = useMemo(() => displayFindings(report), [report]);
   const visible = allowAll ? all : all.slice(0, 3);
 
   const lightboxScreens = useMemo<LightboxScreen[]>(
@@ -285,6 +294,30 @@ export function CriticalFindings({ report }: CriticalFindingsProps) {
                       {FINDING_TYPE_EXPLAINER[String(finding.type)] ??
                         "This finding reduces the quality signal of the release."}
                     </div>
+
+                    {/* V2 founder_question — the deliverable's killer
+                        feature. Renders below "Why this matters" with the
+                        same severity-tinted left border + a question icon. */}
+                    {finding.founderQuestion && (
+                      <div
+                        className="mt-1 text-[12.5px] leading-[1.55] pl-3 border-l-2"
+                        style={{ borderColor: palette.dot }}
+                      >
+                        <span
+                          className="inline-flex items-center gap-1.5 font-semibold"
+                          style={{
+                            fontFamily: "var(--font-label)",
+                            color: palette.fg,
+                          }}
+                        >
+                          <MessageCircleQuestion className="w-3.5 h-3.5" />
+                          Ask the founder —
+                        </span>{" "}
+                        <span className="text-[var(--color-text-secondary)]">
+                          {finding.founderQuestion}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </motion.article>
               );

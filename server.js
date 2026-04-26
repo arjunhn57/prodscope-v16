@@ -562,6 +562,13 @@ app.get("/api/v1/job-status/:jobId", statusLimiter, async (req, res) => {
     v2Report: job.v2Report,
     v2Errors: job.v2Errors,
     annotations: job.annotations,
+    // App identity from the manifest parser. Lets the report viewer
+    // render a real title (e.g. "Bluesky / xyz.blueskyweb.app") even
+    // when V1's deterministic report is suppressed and contains no
+    // packageName field.
+    appPackage: job.appPackage,
+    appName: job.appName,
+    launcherActivity: job.launcherActivity,
     stopReason: job.stopReason,
     crawlQuality: job.crawlQuality,
     error: job.error,
@@ -639,6 +646,9 @@ app.get("/api/v1/public-report/:jobId", statusLimiter, (req, res) => {
       v2Report: job.v2Report,
       v2Errors: job.v2Errors,
       annotations: job.annotations,
+      appPackage: job.appPackage,
+      appName: job.appName,
+      launcherActivity: job.launcherActivity,
       stopReason: job.stopReason,
       crawlQuality: job.crawlQuality,
       error: job.error,

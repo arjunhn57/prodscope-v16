@@ -138,6 +138,21 @@ export function ScreenAtlas({ report }: ScreenAtlasProps) {
           >
             No screens were captured during this analysis.
           </div>
+        ) : clusters.length === 1 ? (
+          /* Degraded flat-gallery mode: when classification didn't differentiate
+             the screens (typical for synthesized fallback where every screen is
+             "unknown"), show ALL thumbnails in a flat grid. No accordion, no
+             cover/tail split — easier to scan than a single oversized cluster. */
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+            {clusters[0].screens.map((s, idx) => (
+              <Thumb
+                key={`flat-${idx}`}
+                screen={s}
+                onOpen={() => openLightbox(clusters[0], idx)}
+                rounded="rounded-xl"
+              />
+            ))}
+          </div>
         ) : (
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
             {clusters.map((cluster, i) => {

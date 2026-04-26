@@ -1,7 +1,7 @@
 import { motion, useReducedMotion } from "framer-motion";
 import type { CrawlReport, ScoreBreakdown } from "../types";
 import { REPORT_GRADIENTS, REPORT_SURFACES, SECTION_IDS, EDITORIAL_EASE } from "../tokens";
-import { humanizeDuration } from "../useReportData";
+import { humanizeDuration, usableV2 } from "../useReportData";
 
 interface KeyNumbersProps {
   report: CrawlReport;
@@ -17,13 +17,34 @@ interface Tile {
 
 function buildTiles(report: CrawlReport, score: ScoreBreakdown): Tile[] {
   const uniqueScreens =
-    report.v2Coverage.uniqueScreens || report.screens.length || 0;
-  const steps = report.stats.totalSteps || report.screens.length || 0;
-  const findings = report.oracleFindings.length;
-  const criticalCount = report.oracleFindings.filter(
-    (f) => f.severity === "critical"
-  ).length;
-  const cost = report.v2Coverage.costUSD ?? 0;
+    (report.v2Coverage?.uniqueScreens ?? 0) || report.screens.length || 0;
+  const steps = report.stats?.totalSteps || report.screens.length || 0;
+
+  // Findings tile: prefer V1 oracleFindings count when present; otherwise
+  // synthesize from V2's critical_bugs + ux_issues + concern flags.
+  // Without this swap, suppressed-V1 runs showed "Findings: 0" even when
+  // V2 surfaced 5+ items.
+  let findings: number;
+  let criticalCount: number;
+  if (report.oracleFindings.length > 0) {
+    findings = report.oracleFindings.length;
+    criticalCount = report.oracleFindings.filter(
+      (f) => f.severity === "critical"
+    ).length;
+  } else if (usableV2(report)) {
+    const v2 = report.v2Report!;
+    const concerns = v2.diligence_flags.filter(
+      (f) => f.severity === "concern" || f.severity === "watch_item"
+    ).length;
+    findings =
+      (v2.critical_bugs?.length ?? 0) + (v2.ux_issues?.length ?? 0) + concerns;
+    criticalCount = v2.critical_bugs?.length ?? 0;
+  } else {
+    findings = 0;
+    criticalCount = 0;
+  }
+
+  const cost = report.v2Coverage?.costUSD ?? 0;
 
   return [
     {
@@ -35,21 +56,21 @@ function buildTiles(report: CrawlReport, score: ScoreBreakdown): Tile[] {
       label: "Steps taken",
       value: String(steps),
       sub:
-        report.v2Coverage.uniquePerStep > 0
-          ? `${Math.round(report.v2Coverage.uniquePerStep * 100)}% novel`
+        (report.v2Coverage?.uniquePerStep ?? 0) > 0
+          ? `${Math.round((report.v2Coverage!.uniquePerStep) * 100)}% novel`
           : undefined,
     },
     {
       label: "Coverage",
-      value: `${score.coverage}%`,
+      value: `${Number.isFinite(score.coverage) ? score.coverage : 0}%`,
       sub: "weighted avg",
     },
     {
       label: "Analysis time",
       value: humanizeDuration(report),
       sub:
-        report.v2Coverage.uniquePerMinute > 0
-          ? `${report.v2Coverage.uniquePerMinute.toFixed(1)}/min`
+        (report.v2Coverage?.uniquePerMinute ?? 0) > 0
+          ? `${report.v2Coverage!.uniquePerMinute.toFixed(1)}/min`
           : undefined,
     },
     {
@@ -60,10 +81,10 @@ function buildTiles(report: CrawlReport, score: ScoreBreakdown): Tile[] {
     },
     {
       label: "Cost",
-      value: `$${cost.toFixed(2)}`,
+      value: `$${(Number.isFinite(cost) ? cost : 0).toFixed(2)}`,
       sub:
-        report.v2Coverage.cacheHitRate > 0
-          ? `${Math.round(report.v2Coverage.cacheHitRate * 100)}% cache hit`
+        (report.v2Coverage?.cacheHitRate ?? 0) > 0
+          ? `${Math.round((report.v2Coverage!.cacheHitRate) * 100)}% cache hit`
           : undefined,
     },
   ];

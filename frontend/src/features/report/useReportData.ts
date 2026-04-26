@@ -123,6 +123,9 @@ function normalizeReport(
     v2Errors?: unknown;
     annotations?: unknown;
     screenshots?: unknown;
+    appPackage?: unknown;
+    appName?: unknown;
+    launcherActivity?: unknown;
   }
 ): CrawlReport | null {
   // The backend serializes job.report as a JSON STRING in some paths
@@ -181,10 +184,26 @@ function normalizeReport(
       ? (r.coverage as Record<string, number>)
       : {};
 
+  // App identity: prefer the job-level fields (populated from manifest
+  // parser, present even when V1 deterministic report is suppressed)
+  // and fall back to whatever V1 report contains.
+  const jobAppPackage =
+    typeof jobLevel?.appPackage === "string" && jobLevel.appPackage.length > 0
+      ? jobLevel.appPackage
+      : null;
+  const jobAppName =
+    typeof jobLevel?.appName === "string" && jobLevel.appName.length > 0
+      ? jobLevel.appName
+      : null;
+  const resolvedPackageName =
+    jobAppPackage ?? (r.packageName ? String(r.packageName) : "");
+  const resolvedAppName =
+    jobAppName ?? (r.appName ? String(r.appName) : undefined);
+
   return {
     jobId,
-    packageName: String(r.packageName ?? r.appName ?? ""),
-    appName: r.appName ? String(r.appName) : undefined,
+    packageName: resolvedPackageName,
+    appName: resolvedAppName,
     completedAt: String(r.completedAt ?? new Date().toISOString()),
     status: (r.status as CrawlReport["status"]) ?? "complete",
     stopReason: String(r.stopReason ?? "unknown"),
@@ -294,6 +313,9 @@ export function useReportData(
       v2Errors: jobAny.v2Errors,
       annotations: jobAny.annotations,
       screenshots: jobAny.screenshots,
+      appPackage: jobAny.appPackage,
+      appName: jobAny.appName,
+      launcherActivity: jobAny.launcherActivity,
     });
   }, [fixture, job, jobId]);
 
@@ -311,6 +333,16 @@ function clamp(n: number, min = 0, max = 100): number {
   return Math.max(min, Math.min(max, n));
 }
 
+/**
+ * Defensive cast — turns NaN/undefined into a finite fallback so downstream
+ * arithmetic never produces NaN. The score breakdown was rendering "NaN"
+ * in the radial when synthesized screens had no metrics attached.
+ */
+function safeNum(v: unknown, fallback = 0): number {
+  if (typeof v !== "number" || !Number.isFinite(v)) return fallback;
+  return v;
+}
+
 export function computeScore(report: CrawlReport): ScoreBreakdown {
   const findings = report.oracleFindings;
   const crashes = findings.filter((f) => f.type === "crash").length;
@@ -325,13 +357,31 @@ export function computeScore(report: CrawlReport): ScoreBreakdown {
   const stability = clamp(100 - (crashes * 28 + anrs * 18));
   const ux = clamp(100 - (a11y * 7 + slow * 6));
 
-  const coverageVals = Object.values(report.coverage ?? {});
-  const coverageAvg =
-    coverageVals.length > 0
-      ? Math.round(coverageVals.reduce((s, n) => s + n, 0) / coverageVals.length)
-      : clamp(Math.round((report.v2Coverage.uniqueScreens / 20) * 100));
+  // Coverage:
+  //   - V1 path: average of report.coverage map (per-area %)
+  //   - V2 fallback: derive from V2 coverage_summary if present
+  //   - last resort: scale from uniqueScreens (0..20+)
+  const coverageVals = Object.values(report.coverage ?? {})
+    .map((v) => safeNum(v))
+    .filter((v) => v > 0);
+  let coverageAvg: number;
+  if (coverageVals.length > 0) {
+    coverageAvg = Math.round(
+      coverageVals.reduce((s, n) => s + n, 0) / coverageVals.length
+    );
+  } else if (report.v2Report?.coverage_summary) {
+    const reached = safeNum(report.v2Report.coverage_summary.screens_reached);
+    const blocked = report.v2Report.coverage_summary.screens_attempted_blocked?.length ?? 0;
+    const notAttempted = report.v2Report.coverage_summary.areas_not_attempted?.length ?? 0;
+    const total = reached + blocked + notAttempted;
+    coverageAvg = total > 0 ? Math.round((reached / total) * 100) : safeNum(reached) > 0 ? 60 : 0;
+  } else {
+    const uniqueScreens = safeNum(report.v2Coverage?.uniqueScreens) || report.screens.length;
+    coverageAvg = clamp(Math.round((uniqueScreens / 20) * 100));
+  }
+  coverageAvg = clamp(safeNum(coverageAvg));
 
-  const avgStepMs = report.metrics.stepTimings?.avgMs ?? 0;
+  const avgStepMs = safeNum(report.metrics?.stepTimings?.avgMs);
   const performance = clamp(100 - Math.max(0, (avgStepMs - 2000) / 80));
 
   const overall = clamp(
@@ -339,11 +389,11 @@ export function computeScore(report: CrawlReport): ScoreBreakdown {
   );
 
   return {
-    overall,
-    stability,
-    ux,
-    coverage: coverageAvg,
-    performance: Math.round(performance),
+    overall: safeNum(overall),
+    stability: safeNum(stability),
+    ux: safeNum(ux),
+    coverage: safeNum(coverageAvg),
+    performance: safeNum(Math.round(performance)),
   };
 }
 
@@ -396,10 +446,53 @@ function qualifierFor(score: number, what: string): string {
   return `${what} is blocking`;
 }
 
+/**
+ * V2 is "usable" for narrative when the synthesizer produced both a
+ * verdict (3 claims) and at least one diligence flag. Below that bar
+ * we fall back to V1's deterministic builders.
+ */
+export function usableV2(report: CrawlReport | null | undefined): boolean {
+  if (!report || !report.v2Report) return false;
+  const v2 = report.v2Report;
+  return (
+    (v2.verdict?.claims?.length ?? 0) >= 1 &&
+    (v2.diligence_flags?.length ?? 0) >= 1
+  );
+}
+
+/**
+ * Pick a short highlight phrase from a longer V2 claim. Heuristic:
+ * grab the first noun-phrase-shaped fragment of 2-6 words. Fallback
+ * to the first 6 words. Used to gradient-highlight a portion of the
+ * hero verdict.
+ */
+function pickClaimHighlight(claim: string): string {
+  const cleaned = claim.replace(/\s+/g, " ").trim();
+  // Prefer phrases like "blank screen", "12 critical bugs", etc.
+  const phraseMatch = cleaned.match(
+    /\b(non-functional|blank|inconsistent|missing|unclear|polished|consistent|smooth|broken|critical|delayed|unresponsive|empty)\s+\w+(?:\s+\w+)?\b/i
+  );
+  if (phraseMatch) return phraseMatch[0];
+  return cleaned.split(" ").slice(0, 6).join(" ");
+}
+
 export function buildVerdictSentence(
   report: CrawlReport,
   score: ScoreBreakdown
 ): { text: string; highlight: string } {
+  // V2 path: when V2 has a populated verdict, use its first claim as the
+  // hero. Pick a high-impact phrase to highlight via gradient.
+  if (usableV2(report)) {
+    const firstClaim = report.v2Report!.verdict.claims[0]?.claim ?? "";
+    if (firstClaim.length > 20) {
+      return {
+        text: firstClaim,
+        highlight: pickClaimHighlight(firstClaim),
+      };
+    }
+  }
+
+  // V1 fallback (pre-V2 reports + edge cases).
   const clusters = clusterScreensByClassification(report);
   const topAreas = clusters.slice(0, 2).map((c) => c.classifier.toLowerCase());
   const critical = report.oracleFindings.filter(
@@ -445,12 +538,41 @@ export function buildExecutiveSummary(
   const critical = findings.filter((f) => f.severity === "critical").length;
   const high = findings.filter((f) => f.severity === "high").length;
   const med = findings.filter((f) => f.severity === "medium").length;
-  const uniqueScreens = report.v2Coverage.uniqueScreens || report.screens.length;
-  const elapsedMin =
-    report.v2Coverage.uniquePerMinute > 0
-      ? (uniqueScreens / report.v2Coverage.uniquePerMinute).toFixed(1)
-      : "\u2013";
-  const cost = `$${report.v2Coverage.costUSD.toFixed(2)}`;
+  const uniqueScreens = safeNum(report.v2Coverage?.uniqueScreens) || report.screens.length;
+  const upm = safeNum(report.v2Coverage?.uniquePerMinute);
+  const elapsedMin = upm > 0 ? (uniqueScreens / upm).toFixed(1) : "\u2013";
+  const cost = `$${safeNum(report.v2Coverage?.costUSD).toFixed(2)}`;
+
+  // V2 narrative path takes precedence when populated.
+  if (usableV2(report)) {
+    const v2 = report.v2Report!;
+    const claim2 = v2.verdict.claims[1]?.claim ?? "";
+    const claim3 = v2.verdict.claims[2]?.claim ?? "";
+    const concernCount = v2.diligence_flags.filter(
+      (f) => f.severity === "concern" || f.severity === "watch_item"
+    ).length;
+    const strengthCount = v2.diligence_flags.filter((f) => f.severity === "strength").length;
+    const criticalBugs = v2.critical_bugs?.length ?? 0;
+    const uxIssues = v2.ux_issues?.length ?? 0;
+    const screensReached = safeNum(v2.coverage_summary?.screens_reached, report.screens.length);
+    const costUsd = safeNum(report.v2Coverage?.costUSD);
+    const costStr = costUsd > 0 ? ` at a cost of $${costUsd.toFixed(2)}` : "";
+
+    const totalIssues = criticalBugs + uxIssues + concernCount;
+    const issueLine =
+      totalIssues > 0
+        ? `${totalIssues} ${totalIssues === 1 ? "concern" : "concerns"} surfaced (${criticalBugs} critical, ${uxIssues} UX, ${concernCount} flagged)`
+        : `No material concerns surfaced in the explored surface`;
+    const strengthLine =
+      strengthCount > 0
+        ? `${strengthCount} ${strengthCount === 1 ? "area" : "areas"} of citeable craft`
+        : "no strengths surfaced";
+
+    const claimsLine =
+      claim2 && claim3 ? `${claim2} ${claim3}` : claim2 || claim3 || "";
+
+    return `ProdScope reached ${screensReached} unique screens${costStr}. ${issueLine}, with ${strengthLine}. ${claimsLine} Full per-finding evidence, founder questions, and the screen atlas follow below.`;
+  }
 
   const coveragePct = score.coverage;
   const clusters = clusterScreensByClassification(report).slice(0, 3);
@@ -502,7 +624,64 @@ export function buildReproductionTrail(
   };
 }
 
+function v2SeverityToRecommendationSeverity(severity: string): Severity {
+  switch (severity) {
+    case "concern":
+    case "critical":
+      return "critical";
+    case "high":
+      return "high";
+    case "watch_item":
+    case "medium":
+      return "medium";
+    default:
+      return "low";
+  }
+}
+
+function v2RecommendationArea(claim: string): Recommendation["area"] {
+  const c = claim.toLowerCase();
+  if (/(crash|anr|background|init|launch)/.test(c)) return "stability";
+  if (/(a11y|accessibility|contrast|screen reader|wcag|focus)/.test(c))
+    return "accessibility";
+  if (/(slow|latency|spinner|jank|performance|cold start)/.test(c))
+    return "performance";
+  if (/(nav|tab|drawer|onboarding|sign[\s-]?up|sign[\s-]?in|consent)/.test(c))
+    return "navigation";
+  return "ux";
+}
+
 export function buildRecommendations(report: CrawlReport): Recommendation[] {
+  // V2 fallback: when V1 deterministic findings are empty but V2 produced
+  // a populated diligence report, derive recommendations from V2's
+  // concern/watch_item flags + critical_bugs. Each V2 flag's
+  // founder_question becomes the description body.
+  if (report.oracleFindings.length === 0 && usableV2(report)) {
+    const v2 = report.v2Report!;
+    const out: Recommendation[] = [];
+    concernFlags(report).forEach((f, i) => {
+      out.push({
+        id: `v2-rec-flag-${i}`,
+        title: f.claim.split(/[.!?]/)[0]?.slice(0, 80) || f.claim.slice(0, 80),
+        area: v2RecommendationArea(f.claim),
+        severity: v2SeverityToRecommendationSeverity(f.severity),
+        effort: f.severity === "concern" ? "M" : "S",
+        description: f.severity_rationale || f.founder_question,
+      });
+    });
+    (v2.critical_bugs ?? []).forEach((b, i) => {
+      out.push({
+        id: `v2-rec-bug-${i}`,
+        title: b.title || b.claim.slice(0, 80),
+        area: v2RecommendationArea(b.claim),
+        severity: v2SeverityToRecommendationSeverity(b.severity),
+        effort: "L",
+        description: b.claim,
+      });
+    });
+    return out;
+  }
+
   const out: Recommendation[] = [];
   const findings = report.oracleFindings;
 
@@ -642,5 +821,134 @@ export function hasUsableV2(report: CrawlReport | null): boolean {
   return (
     (v2.verdict?.claims?.length ?? 0) > 0 &&
     (v2.diligence_flags?.length ?? 0) > 0
+  );
+}
+
+// \u2500\u2500 Display findings \u2014 unify V1 + V2 for the CriticalFindings section \u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+/**
+ * The shape rendered by `CriticalFindings.tsx`. Extends V1's `Finding`
+ * with optional V2-only fields (founder_question + claim text from V2's
+ * EvidencedFinding/DiligenceFlag) so the same card layout can render
+ * either source.
+ */
+export interface DisplayFinding extends Finding {
+  /** When present, render the "Ask the founder \u2014" callout below the body. */
+  founderQuestion?: string;
+  /** Evidence screen IDs from V2 (when V2-sourced). */
+  evidenceScreenIds?: string[];
+  /** True when this came from V2 critical_bugs / ux_issues / flag (no V1 finding type). */
+  fromV2?: boolean;
+  /** When V2-sourced, the original verbose claim text. */
+  claim?: string;
+}
+
+const V2_SEVERITY_TO_V1: Record<string, Severity> = {
+  critical: "critical",
+  high: "high",
+  medium: "medium",
+  low: "low",
+  // Diligence-flag severities map to display severity:
+  concern: "high",
+  watch_item: "medium",
+  strength: "low", // unused \u2014 strengths don't enter displayFindings
+};
+
+function v2FindingToDisplay(
+  source: "critical_bug" | "ux_issue" | "concern_flag",
+  index: number,
+  title: string,
+  claim: string,
+  severity: string,
+  evidenceScreenIds: string[],
+  founderQuestion?: string
+): DisplayFinding {
+  const firstEvidence = evidenceScreenIds[0] ?? "";
+  const stepMatch = firstEvidence.match(/^screen_(\d+)$/);
+  const step = stepMatch ? Number(stepMatch[1]) : 0;
+  return {
+    id: `v2-${source}-${index}`,
+    type:
+      source === "critical_bug"
+        ? "crash"
+        : source === "ux_issue"
+          ? "ux_issue"
+          : "diligence_flag",
+    severity: V2_SEVERITY_TO_V1[severity] ?? "medium",
+    detail: title || claim,
+    step,
+    founderQuestion,
+    evidenceScreenIds,
+    fromV2: true,
+    claim,
+  };
+}
+
+/**
+ * Unified findings list for the CriticalFindings section.
+ *
+ * - If V1's `oracleFindings` is non-empty, return it (existing behavior).
+ * - Else, derive from V2: critical_bugs + ux_issues + concern/watch_item flags.
+ *
+ * V2-sourced items carry their `founder_question` so the card can render
+ * the "Ask the founder \u2014" callout \u2014 the deliverable's killer feature.
+ */
+export function displayFindings(report: CrawlReport): DisplayFinding[] {
+  if (report.oracleFindings.length > 0) {
+    return [...report.oracleFindings].sort(
+      (a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]
+    );
+  }
+
+  if (!usableV2(report)) return [];
+
+  const v2 = report.v2Report!;
+  const out: DisplayFinding[] = [];
+
+  (v2.critical_bugs ?? []).forEach((b, i) =>
+    out.push(
+      v2FindingToDisplay(
+        "critical_bug",
+        i,
+        b.title,
+        b.claim,
+        b.severity,
+        b.evidence_screen_ids
+      )
+    )
+  );
+
+  (v2.ux_issues ?? []).forEach((u, i) =>
+    out.push(
+      v2FindingToDisplay(
+        "ux_issue",
+        i,
+        u.title,
+        u.claim,
+        u.severity,
+        u.evidence_screen_ids
+      )
+    )
+  );
+
+  // Concerns + watch_items as findings (their founder_question is the
+  // killer field \u2014 must surface).
+  concernFlags(report).forEach((f, i) =>
+    out.push(
+      v2FindingToDisplay(
+        "concern_flag",
+        i,
+        f.claim.split(" ").slice(0, 8).join(" "), // short title from claim
+        f.claim,
+        f.severity,
+        f.evidence_screen_ids,
+        f.founder_question
+      )
+    )
+  );
+
+  // Stable sort by severity ladder.
+  return out.sort(
+    (a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]
   );
 }
